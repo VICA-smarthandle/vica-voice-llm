@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -)",
+      "Bash(mkdir -p docs)",
+      "Bash(.venv/bin/python *)",
+      "Bash(PYTHONPATH=/home/tony/tony/langchain .venv/bin/python *)",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && .venv/bin/python -m src.ros_node')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && .venv/bin/python -m src.ros_tts_node')",
+      "Bash(bash -lc ' *)",
+      "Bash(bash -lc '\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\necho \"활성 vica 노드:\"; ros2 node list 2>/dev/null | grep vica || echo \"  없음\"\necho \"프로세스:\"; pgrep -af \"src.ros\" 2>/dev/null || echo \"  없음\"\n')",
+      "Bash(bash -lc '\nkill -9 1581452 1590165 1590163 2>/dev/null\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\necho \"남은 vica 노드:\"; ros2 node list 2>/dev/null | grep vica || echo \"  없음 \\(깨끗\\)\"\necho \"남은 프로세스:\"; pgrep -af \"src.ros\" 2>/dev/null || echo \"  없음 \\(깨끗\\)\"\n')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null; ros2 daemon stop 2>/dev/null; ros2 daemon start 2>/dev/null; echo \"데몬 재시작 완료\"')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && source /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null && .venv/bin/python -m src.ros_node')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && source /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null && .venv/bin/python -m src.ros_tts_node')",
+      "Bash(bash -lc '\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\necho \"=== /vica/intent 타입 \\(단일이어야 함\\) ===\"\nros2 topic type /vica/intent 2>/dev/null\necho \"\"\necho \"=== robot_state\\(5층 공학관\\) + 질문 발행 -> intent 수신 ===\"\nros2 topic pub -r 2 /vica/robot_state vica_interfaces/msg/RobotState \"{current_floor: 5, current_building: 공학관, is_moving: false}\" >/dev/null 2>&1 &\nRP=$!\n\\( timeout 30 ros2 topic echo --once /vica/intent 2>/dev/null \\) &\nE=$!\nros2 topic pub -r 1 /vica/user_text std_msgs/msg/String \"{data: 지금 몇 층이야?}\" >/dev/null 2>&1 &\nP=$!\nwait $E\nkill $RP $P 2>/dev/null\n')",
+      "Bash(bash -lc '\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\nros2 topic pub -r 2 /vica/robot_state vica_interfaces/msg/RobotState \"{current_floor: 5, current_building: \\\\\"공학관\\\\\", is_moving: false}\" >/dev/null 2>&1 &\nRP=$!\n\\( timeout 30 ros2 topic echo --once /vica/intent 2>/dev/null \\) &\nE=$!\nros2 topic pub -r 1 /vica/user_text std_msgs/msg/String \"{data: \\\\\"지금 몇 층이야?\\\\\"}\" >/dev/null 2>&1 &\nP=$!\nwait $E\nkill $RP $P 2>/dev/null\n')",
+      "Bash(bash -lc '\nPIDS=$\\(pgrep -f \"python -m src.ros\" 2>/dev/null\\)\nif [ -n \"$PIDS\" ]; then echo \"잔여 PID 종료: $PIDS\"; kill -9 $PIDS 2>/dev/null; else echo \"노드 정리 완료 \\(잔여 없음\\)\"; fi\n')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && source /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null && .venv/bin/python -c \"import src.ros_node, src.langchain_intent_parser; print\\(\\\\\"import OK\\\\\"\\)\"')",
+      "Bash(bash -lc '\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\necho \"=== 1차: 407호 가자 ===\"\nros2 topic pub -r 3 /vica/user_text std_msgs/msg/String \"{data: \\\\\"407호 가자\\\\\"}\" >/dev/null 2>&1 &\nP1=$!\ntimeout 20 ros2 topic echo --once /vica/intent 2>/dev/null | grep -E \"^intent:|need_confirm:|reply:\"\nkill $P1 2>/dev/null\nsleep 1 2>/dev/null || true\necho \"\"\necho \"=== 2차: 응 맞아 \\(직전 맥락 기억하나?\\) ===\"\nros2 topic pub -r 3 /vica/user_text std_msgs/msg/String \"{data: \\\\\"응 맞아\\\\\"}\" >/dev/null 2>&1 &\nP2=$!\ntimeout 20 ros2 topic echo --once /vica/intent 2>/dev/null | grep -E \"^intent:|need_confirm:|reply:\"\nkill $P2 2>/dev/null\n')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && source /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null && .venv/bin/python -c \"import src.ros_robot_state_stub, src.ros_state_machine_stub; print\\(\\\\\"스텁 노드 import OK\\\\\"\\)\"')",
+      "Bash(bash -lc 'source /opt/ros/jazzy/setup.bash 2>/dev/null && source /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null && ros2 launch launch/vica_voice.launch.py')",
+      "Bash(bash -lc '\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nsource /home/tony/tony/langchain/ros2_ws/install/setup.bash 2>/dev/null\nsleep 6\necho \"=== 활성 노드 ===\"\nros2 node list 2>/dev/null | grep vica\necho \"=== 407호 가자 발행 ===\"\nros2 topic pub -r 1 /vica/user_text std_msgs/msg/String \"{data: \\\\\"407호 가자\\\\\"}\" >/dev/null 2>&1 &\nP=$!\nsleep 7\nkill $P 2>/dev/null\necho \"발행 완료\"\n')",
+      "Bash(bash -lc '\npkill -9 -f \"vica_voice.launch\" 2>/dev/null\npkill -9 -f \"python -m src.ros\" 2>/dev/null\nsource /opt/ros/jazzy/setup.bash 2>/dev/null\nros2 daemon stop >/dev/null 2>&1; ros2 daemon start >/dev/null 2>&1\necho \"노드 정리 + 데몬 캐시 비움 완료\"\n')",
+      "Bash(git --version)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)"
+    ]
+  }
+}

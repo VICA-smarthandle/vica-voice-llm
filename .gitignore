@@ -1,0 +1,23 @@
+# === 환경변수 (API 키 - 절대 커밋 금지) ===
+.env
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# === ROS2 빌드 산출물 (ARM 등에서 재생성) ===
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# === 로그/임시 ===
+*.log
+.ros/
+
+# === OS ===
+.DS_Store
+Thumbs.db

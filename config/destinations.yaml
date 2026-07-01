@@ -1,0 +1,122 @@
+destinations:
+  - id: "starlight_1f_restroom"
+    name: "별빛관 1층 화장실"
+    aliases:
+      - "별빛관 화장실"
+      - "별빛관 1층 화장실"
+      - "1층 화장실"
+      - "화장실"
+    category1: "facility"
+    category2: "restroom"
+    building: "starlight_building"
+    floor: 1
+    owner: ""
+    authorization: "public"
+    is_approachable: true
+    unavailable_reason: ""
+    pose:
+      frame_id: "map"
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    confirm_prompt: "별빛관 1층 화장실로 안내해드릴까요?"
+    arrival_message: "별빛관 1층 화장실 앞에 도착했습니다."
+
+  - id: "engineering_4f_room_407_prof_yoon_jiyoung_office"
+    name: "윤지영 교수님 사무실"
+    aliases:
+      - "윤지영 교수님"
+      - "윤지영 교수님 사무실"
+      - "윤지영 교수님 방"
+      - "컴퓨터공학과 윤지영 교수님 사무실"
+      - "407호"
+      - "공학관 407호"
+    category1: "person"
+    category2: "professor_office"
+    building: "engineering_building"
+    floor: 4
+    room: "407"
+    owner: "윤지영"
+    authorization: "public"
+    is_approachable: true
+    unavailable_reason: ""
+    pose:
+      frame_id: "map"
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    confirm_prompt: "윤지영 교수님 사무실로 안내해드릴까요?"
+    arrival_message: "윤지영 교수님 사무실 앞에 도착했습니다."
+
+  - id: "starlight_1f_information_center"
+    name: "별빛관 1층 안내센터"
+    aliases:
+      - "별빛관 안내센터"
+      - "별빛관 1층 안내센터"
+      - "안내센터"
+      - "안내 데스크"
+      - "인포메이션"
+    category1: "service"
+    category2: "information_center"
+    building: "starlight_building"
+    floor: 1
+    owner: ""
+    authorization: "public"
+    is_approachable: true
+    unavailable_reason: ""
+    pose:
+      frame_id: "map"
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    confirm_prompt: "별빛관 1층 안내센터로 안내해드릴까요?"
+    arrival_message: "별빛관 1층 안내센터 앞에 도착했습니다."
+
+  - id: "main_hall_b1_restaurant"
+    name: "메인홀 지하 1층 식당"
+    aliases:
+      - "메인홀 식당"
+      - "메인홀 지하 식당"
+      - "지하 1층 식당"
+      - "식당"
+      - "구내식당"
+    category1: "food"
+    category2: "restaurant"
+    building: "main_hall"
+    floor: -1
+    owner: ""
+    authorization: "public"
+    is_approachable: false
+    unavailable_reason: "현재 로봇이 접근할 수 없는 목적지입니다."
+    pose:
+      frame_id: "map"
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    confirm_prompt: "메인홀 지하 1층 식당은 현재 안내할 수 없습니다."
+    arrival_message: ""
+
+  - id: "administration_3f_room_305_classroom"
+    name: "행정대학건물 3층 305호 교실"
+    aliases:
+      - "행정대학건물 305호"
+      - "행정대학 305호"
+      - "305호 교실"
+      - "3층 305호"
+      - "행정대학건물 교실"
+    category1: "education"
+    category2: "classroom"
+    building: "administration_college_building"
+    floor: 3
+    room: "305"
+    owner: ""
+    authorization: "public"
+    is_approachable: true
+    unavailable_reason: ""
+    pose:
+      frame_id: "map"
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    confirm_prompt: "행정대학건물 3층 305호 교실로 안내해드릴까요?"
+    arrival_message: "행정대학건물 3층 305호 교실 앞에 도착했습니다."
