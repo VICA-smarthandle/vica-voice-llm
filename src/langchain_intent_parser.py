@@ -96,7 +96,16 @@ def _build_system_prompt(
 def _get_structured_llm(model: str):
     """구조화 출력(_IntentDraft) LLM 을 만든다. (클라우드=키 필요 / 로컬=키 불필요)"""
     api_key = os.environ.get("OLLAMA_API_KEY", "")
-    kwargs = {"model": model, "base_url": OLLAMA_HOST, "temperature": 0}
+    kwargs = {
+        "model": model,
+        "base_url": OLLAMA_HOST,
+        "temperature": 0,
+        # gemma4 등 thinking 모델의 내부 추론을 끈다.
+        # intent 분류에는 불필요하고, Jetson 에서 응답이 14~20초 -> 3~5초로 줄어든다.
+        "reasoning": False,
+        # 모델을 메모리에 상주시킨다 (기본 5분 후 언로드 -> 다음 발화가 ~20초 콜드스타트).
+        "keep_alive": -1,
+    }
     if api_key:  # 클라우드는 인증 헤더 필요, 로컬 Ollama 는 불필요
         kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {api_key}"}}
     llm = ChatOllama(**kwargs)
