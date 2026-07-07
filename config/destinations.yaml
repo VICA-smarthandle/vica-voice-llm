@@ -120,3 +120,376 @@ destinations:
       yaw: 0.0
     confirm_prompt: "행정대학건물 3층 305호 교실로 안내해드릴까요?"
     arrival_message: "행정대학건물 3층 305호 교실 앞에 도착했습니다."
+
+  # ---- 이하 확장 목적지 (2026-07-07) ----
+  # confirm_prompt / arrival_message 는 비워두면 destination_loader 가
+  # name 으로 자동 생성한다. pose 는 calibration 단계에서 채운다.
+
+  # ===== 공학관: 학과 사무실 =====
+  - id: "engineering_4f_room_401_cs_dept_office"
+    name: "컴퓨터공학과 사무실"
+    aliases:
+      - "컴공 사무실"
+      - "컴퓨터공학과 과사"
+      - "컴공 과사"
+      - "401호"
+      - "공학관 401호"
+    category1: "department"
+    category2: "department_office"
+    building: "engineering_building"
+    floor: 4
+    room: "401"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_3f_room_301_ee_dept_office"
+    name: "전자공학과 사무실"
+    aliases:
+      - "전자과 사무실"
+      - "전자공학과 과사"
+      - "전자과 과사"
+      - "301호"
+      - "공학관 301호"
+    category1: "department"
+    category2: "department_office"
+    building: "engineering_building"
+    floor: 3
+    room: "301"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_2f_room_205_me_dept_office"
+    name: "기계공학과 사무실"
+    aliases:
+      - "기계과 사무실"
+      - "기계공학과 과사"
+      - "기계과 과사"
+      - "205호"
+      - "공학관 205호"
+    category1: "department"
+    category2: "department_office"
+    building: "engineering_building"
+    floor: 2
+    room: "205"
+    authorization: "public"
+    is_approachable: true
+
+  # ===== 공학관: 교수 연구실 =====
+  - id: "engineering_4f_room_402_prof_kim_minjun_office"
+    name: "김민준 교수님 연구실"
+    aliases:
+      - "김민준 교수님"
+      - "김민준 교수님 방"
+      - "컴퓨터공학과 김민준 교수님 연구실"
+      - "402호"
+      - "공학관 402호"
+    category1: "person"
+    category2: "professor_office"
+    building: "engineering_building"
+    floor: 4
+    room: "402"
+    owner: "김민준"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_4f_room_410_prof_lee_seoyeon_office"
+    name: "이서연 교수님 연구실"
+    aliases:
+      - "이서연 교수님"
+      - "이서연 교수님 방"
+      - "컴퓨터공학과 이서연 교수님 연구실"
+      - "410호"
+      - "공학관 410호"
+    category1: "person"
+    category2: "professor_office"
+    building: "engineering_building"
+    floor: 4
+    room: "410"
+    owner: "이서연"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_3f_room_305_prof_park_dohyun_office"
+    name: "박도현 교수님 연구실"
+    aliases:
+      - "박도현 교수님"
+      - "박도현 교수님 방"
+      - "전자공학과 박도현 교수님 연구실"
+      - "공학관 305호"
+    category1: "person"
+    category2: "professor_office"
+    building: "engineering_building"
+    floor: 3
+    room: "305"
+    owner: "박도현"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_2f_room_210_prof_choi_haneul_office"
+    name: "최하늘 교수님 연구실"
+    aliases:
+      - "최하늘 교수님"
+      - "최하늘 교수님 방"
+      - "기계공학과 최하늘 교수님 연구실"
+      - "210호"
+      - "공학관 210호"
+    category1: "person"
+    category2: "professor_office"
+    building: "engineering_building"
+    floor: 2
+    room: "210"
+    owner: "최하늘"
+    authorization: "public"
+    is_approachable: true
+
+  # ===== 공학관: 시설 =====
+  - id: "engineering_1f_lobby"
+    name: "공학관 1층 로비"
+    aliases:
+      - "공학관 로비"
+      - "공학관 입구"
+      - "공학관 1층"
+    category1: "facility"
+    category2: "lobby"
+    building: "engineering_building"
+    floor: 1
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_2f_restroom"
+    name: "공학관 2층 화장실"
+    aliases:
+      - "공학관 화장실"
+      - "공학관 2층 화장실"
+    category1: "facility"
+    category2: "restroom"
+    building: "engineering_building"
+    floor: 2
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_1f_elevator"
+    name: "공학관 엘리베이터"
+    aliases:
+      - "엘리베이터"
+      - "공학관 승강기"
+      - "공학관 1층 엘리베이터"
+    category1: "facility"
+    category2: "elevator"
+    building: "engineering_building"
+    floor: 1
+    authorization: "public"
+    is_approachable: true
+
+  - id: "engineering_5f_room_501_capstone_lab"
+    name: "공학관 5층 캡스톤 실습실"
+    aliases:
+      - "캡스톤 실습실"
+      - "캡스톤실"
+      - "501호"
+      - "공학관 501호"
+      - "실습실"
+    category1: "education"
+    category2: "lab"
+    building: "engineering_building"
+    floor: 5
+    room: "501"
+    authorization: "public"
+    is_approachable: true
+
+  # 접근 제한 예시: 권한(restricted) + 접근 불가
+  - id: "engineering_b1_server_room"
+    name: "공학관 지하 서버실"
+    aliases:
+      - "서버실"
+      - "전산실"
+      - "공학관 서버실"
+    category1: "facility"
+    category2: "server_room"
+    building: "engineering_building"
+    floor: -1
+    authorization: "restricted"
+    is_approachable: false
+    unavailable_reason: "서버실은 관계자 외 출입 금지 구역이라 안내할 수 없습니다."
+    confirm_prompt: "공학관 지하 서버실은 관계자 외 출입 금지 구역입니다."
+
+  # ===== 별빛관 =====
+  - id: "starlight_2f_room_201_seminar"
+    name: "별빛관 2층 세미나실"
+    aliases:
+      - "세미나실"
+      - "별빛관 세미나실"
+      - "201호"
+      - "별빛관 201호"
+    category1: "education"
+    category2: "seminar_room"
+    building: "starlight_building"
+    floor: 2
+    room: "201"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "starlight_3f_health_center"
+    name: "별빛관 3층 보건실"
+    aliases:
+      - "보건실"
+      - "의무실"
+      - "양호실"
+      - "별빛관 보건실"
+    category1: "service"
+    category2: "health_center"
+    building: "starlight_building"
+    floor: 3
+    authorization: "public"
+    is_approachable: true
+
+  - id: "starlight_1f_cafe"
+    name: "별빛관 1층 카페"
+    aliases:
+      - "카페"
+      - "커피숍"
+      - "별빛관 카페"
+      - "커피 마시는 곳"
+    category1: "food"
+    category2: "cafe"
+    building: "starlight_building"
+    floor: 1
+    authorization: "public"
+    is_approachable: true
+
+  - id: "starlight_3f_career_center"
+    name: "별빛관 3층 취업지원센터"
+    aliases:
+      - "취업지원센터"
+      - "취업센터"
+      - "커리어센터"
+      - "진로상담"
+    category1: "service"
+    category2: "career_center"
+    building: "starlight_building"
+    floor: 3
+    authorization: "public"
+    is_approachable: true
+
+  # ===== 중앙도서관 =====
+  - id: "library_1f_information_desk"
+    name: "중앙도서관 1층 안내데스크"
+    aliases:
+      - "도서관"
+      - "중앙도서관"
+      - "도서관 안내데스크"
+      - "책 빌리는 곳"
+    category1: "service"
+    category2: "library"
+    building: "central_library"
+    floor: 1
+    authorization: "public"
+    is_approachable: true
+
+  - id: "library_2f_reading_room"
+    name: "중앙도서관 2층 열람실"
+    aliases:
+      - "열람실"
+      - "도서관 열람실"
+      - "공부하는 곳"
+      - "스터디룸"
+    category1: "education"
+    category2: "reading_room"
+    building: "central_library"
+    floor: 2
+    authorization: "public"
+    is_approachable: true
+
+  # ===== 학생회관 (실외 경로 = 접근 불가 예시) =====
+  - id: "student_union_1f_convenience_store"
+    name: "학생회관 1층 편의점"
+    aliases:
+      - "편의점"
+      - "매점"
+      - "학생회관 편의점"
+    category1: "food"
+    category2: "convenience_store"
+    building: "student_union"
+    floor: 1
+    authorization: "public"
+    is_approachable: false
+    unavailable_reason: "학생회관은 실외 이동 경로라 현재 로봇이 안내할 수 없습니다."
+    confirm_prompt: "학생회관 1층 편의점은 현재 안내할 수 없습니다."
+
+  - id: "student_union_2f_cafeteria"
+    name: "학생회관 2층 학생식당"
+    aliases:
+      - "학생식당"
+      - "학식"
+      - "학생회관 식당"
+    category1: "food"
+    category2: "restaurant"
+    building: "student_union"
+    floor: 2
+    authorization: "public"
+    is_approachable: false
+    unavailable_reason: "학생회관은 실외 이동 경로라 현재 로봇이 안내할 수 없습니다."
+    confirm_prompt: "학생회관 2층 학생식당은 현재 안내할 수 없습니다."
+
+  # ===== 행정대학건물 =====
+  - id: "administration_1f_admin_support_office"
+    name: "행정대학건물 1층 행정지원실"
+    aliases:
+      - "행정지원실"
+      - "행정실"
+      - "증명서 발급"
+      - "등록금 문의"
+    category1: "service"
+    category2: "admin_office"
+    building: "administration_college_building"
+    floor: 1
+    authorization: "public"
+    is_approachable: true
+
+  - id: "administration_4f_room_401_biz_dept_office"
+    name: "경영학과 사무실"
+    aliases:
+      - "경영학과 과사"
+      - "경영과 사무실"
+      - "행정대학 401호"
+      - "행정대학건물 401호"
+    category1: "department"
+    category2: "department_office"
+    building: "administration_college_building"
+    floor: 4
+    room: "401"
+    authorization: "public"
+    is_approachable: true
+
+  - id: "administration_4f_room_405_prof_jung_yujin_office"
+    name: "정유진 교수님 연구실"
+    aliases:
+      - "정유진 교수님"
+      - "정유진 교수님 방"
+      - "경영학과 정유진 교수님 연구실"
+      - "405호"
+      - "행정대학 405호"
+    category1: "person"
+    category2: "professor_office"
+    building: "administration_college_building"
+    floor: 4
+    room: "405"
+    owner: "정유진"
+    authorization: "public"
+    is_approachable: true
+
+  # 임시 폐쇄 예시 (공사)
+  - id: "administration_2f_auditorium"
+    name: "행정대학건물 2층 대강당"
+    aliases:
+      - "대강당"
+      - "강당"
+      - "행정대학 대강당"
+    category1: "facility"
+    category2: "auditorium"
+    building: "administration_college_building"
+    floor: 2
+    authorization: "public"
+    is_approachable: false
+    unavailable_reason: "대강당은 내부 공사로 임시 폐쇄되어 안내할 수 없습니다."
+    confirm_prompt: "행정대학건물 2층 대강당은 공사로 임시 폐쇄 중입니다."

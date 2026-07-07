@@ -41,11 +41,11 @@ def test_search_no_match(client):
 
 
 def test_post_then_search(client):
-    new_dest = {"id": "test_cafe", "name": "테스트 카페", "aliases": ["카페"]}
+    new_dest = {"id": "test_unique_place", "name": "테스트 전용 장소", "aliases": ["테스트장소"]}
     resp = client.post("/destinations", json=new_dest)
     assert resp.status_code == 200
-    resp = client.get("/destinations/search", params={"query": "카페"})
-    assert [d["id"] for d in resp.json()] == ["test_cafe"]
+    resp = client.get("/destinations/search", params={"query": "테스트장소"})
+    assert [d["id"] for d in resp.json()] == ["test_unique_place"]
 
 
 def test_patch_pose(client):
