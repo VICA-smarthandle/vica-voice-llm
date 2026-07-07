@@ -8,7 +8,7 @@
 - 지금은 그 결정 자리를 로그로만 표시한다.
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     source ros2_ws/install/setup.bash
     .venv/bin/python -m src.ros_state_machine_stub
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
 
@@ -24,7 +25,15 @@ class StateMachineStub(Node):
     def __init__(self) -> None:
         super().__init__("vica_state_machine_stub")
         self.create_subscription(VicaIntentMsg, "/vica/intent", self._on_intent, 10)
-        self.get_logger().info("[스텁] state machine 시작 (구독: /vica/intent)")
+        # 상시 긴급어 감지(Phase 4, LLM 우회 경로)도 구독한다.
+        self.create_subscription(EmergencyEventMsg, "/vica/emergency", self._on_emergency, 10)
+        self.get_logger().info("[스텁] state machine 시작 (구독: /vica/intent, /vica/emergency)")
+
+    def _on_emergency(self, msg: EmergencyEventMsg) -> None:
+        # 실제로는 safety supervisor 가 즉시 정지를 실행한다.
+        self.get_logger().warn(
+            f"🚨 긴급어 '{msg.keyword}' 수신 -> [실제] 즉시 정지 / safety supervisor override"
+        )
 
     def _on_intent(self, msg: VicaIntentMsg) -> None:
         # 긴급은 최우선. 실제로는 safety supervisor 가 즉시 정지시킨다.

@@ -4,11 +4,11 @@
 
 STT 노드는 push-to-talk(엔터 입력) 대화형이라 launch 에 넣지 않는다.
 마이크로 말하려면 별도 터미널에서 실행한다:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     .venv/bin/python -m src.ros_stt_node
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     ros2 launch launch/vica_voice.launch.py
 """
 import os

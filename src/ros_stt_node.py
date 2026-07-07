@@ -6,7 +6,7 @@
 이 노드는 구독이 없으므로 rclpy.spin 대신 입력 루프로 동작한다.
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     .venv/bin/python -m src.ros_stt_node
 """
 from __future__ import annotations

@@ -10,7 +10,7 @@
 - 긴급어는 parse_intent 이전에 emergency_filter 가 처리한다.
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     .venv/bin/python -m src.ros_node
 """
 from __future__ import annotations

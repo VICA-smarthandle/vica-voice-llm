@@ -4,7 +4,7 @@
 동작: reply 텍스트를 supertonic 으로 합성해 스피커로 재생한다.
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     .venv/bin/python -m src.ros_tts_node
 """
 from __future__ import annotations

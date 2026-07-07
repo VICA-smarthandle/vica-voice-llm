@@ -4,7 +4,7 @@
 로봇 통합 시 이 노드를 '진짜 로봇 상태 퍼블리셔'로 교체한다.
 
 실행:
-    source /opt/ros/jazzy/setup.bash
+    source /opt/ros/humble/setup.bash
     source ros2_ws/install/setup.bash
     .venv/bin/python -m src.ros_robot_state_stub
 """
