@@ -96,8 +96,40 @@ ros2 launch launch/vica_voice.launch.py     # LLM + TTS
 ---
 
 ## 성능 메모 (나중에)
-- Jetson 은 CUDA/cuDNN/TensorRT 가 있으므로:
-  - faster-whisper 를 `device="cuda", compute_type="float16"` 로 바꾸면 STT 가속 (src/stt.py)
-  - Ollama 는 CUDA 를 자동으로 쓴다
+- Ollama 는 CUDA 를 자동으로 쓴다.
 - gemma4 e2b 가 16GB 에 맞는지, 응답 속도가 실시간 대화에 충분한지 실기에서 확인.
 - 안 맞으면 더 작은 모델(예: llama3.2:3b, qwen2.5:3b)로 교체 — `.env` 의 `VICA_LLM_MODEL` 만 바꾸면 됨.
+
+## STT CUDA 가속 (2026-07-07 완료)
+
+pip 의 `ctranslate2` ARM64 휠은 **CPU 전용**이라 CUDA 소스 빌드가 필요하다.
+(Jetson AI Lab 인덱스의 cu128 휠도 `libctranslate2.so.4` 미포함이라 단독으로 못 씀)
+
+결과: STT(10초 오디오) small/CPU 5.2초 → **medium/CUDA 1.4초** (더 정확한 모델인데 3.7배 빠름).
+small 은 "식당"→"직당" 오인식이 있어 medium 채택. `.env`:
+`VICA_STT_MODEL=medium`, `VICA_STT_DEVICE=cuda`, `VICA_STT_COMPUTE=float16`
+
+빌드 산출물은 `~/jetson-builds/` 에 보존 (`ct2-install`=라이브러리+헤더, `ct2-python-src`=파이썬 패키지 소스).
+
+### `.venv` 재생성 시 재설치 방법 (재빌드 불필요)
+```bash
+cd ~/jetson-builds/ct2-python-src
+CTRANSLATE2_ROOT=~/jetson-builds/ct2-install LDFLAGS='-Wl,-rpath,$ORIGIN' \
+  ~/dev/vica-voice-llm/.venv/bin/pip install .
+cp ~/jetson-builds/ct2-install/lib/libctranslate2.so.4* \
+   ~/dev/vica-voice-llm/.venv/lib/python3.10/site-packages/ctranslate2/
+```
+(`LDFLAGS` 의 rpath `$ORIGIN` + lib 복사로 sudo/LD_LIBRARY_PATH 없이 동작)
+
+### 처음부터 다시 빌드하는 방법 (~10분, 8코어)
+```bash
+git clone --depth 1 --recursive https://github.com/OpenNMT/CTranslate2.git
+cd CTranslate2 && mkdir build && cd build
+PATH=/usr/local/cuda/bin:$PATH cmake .. -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_CUDA=ON -DWITH_CUDNN=ON -DCMAKE_CUDA_ARCHITECTURES=87 \
+  -DWITH_MKL=OFF -DWITH_OPENBLAS=ON -DOPENMP_RUNTIME=COMP -DBUILD_CLI=OFF \
+  -DCMAKE_INSTALL_PREFIX=$HOME/jetson-builds/ct2-install
+make -j4 && make install
+# 이후 위 '재설치 방법' 수행
+```
+필요 패키지: cmake, gcc/g++, nvcc(JetPack 포함), libcudnn9-dev-cuda-12, libopenblas-dev
