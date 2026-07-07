@@ -133,3 +133,15 @@ make -j4 && make install
 # 이후 위 '재설치 방법' 수행
 ```
 필요 패키지: cmake, gcc/g++, nvcc(JetPack 포함), libcudnn9-dev-cuda-12, libopenblas-dev
+
+## TTS CUDA 가속 (2026-07-07 완료)
+
+supertonic(onnxruntime)은 Jetson AI Lab 의 GPU 휠만 설치하면 된다 (빌드 불필요):
+
+```bash
+.venv/bin/pip uninstall -y onnxruntime
+.venv/bin/pip install onnxruntime-gpu==1.24.0 --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+```
+
+결과: 합성 3.0초 → **0.3초** (워밍업 후). provider 전환은 `src/tts.py` 에 이미 반영되어 있고,
+CUDA 가 없는 환경(PC)에서는 자동으로 CPU 폴백된다.

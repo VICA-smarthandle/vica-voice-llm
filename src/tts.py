@@ -12,6 +12,12 @@ from pathlib import Path
 
 import numpy as np
 import supertonic
+import supertonic.loader
+
+# supertonic 은 provider 가 CPU 로 하드코딩되어 있어 모듈 변수를 바꿔 GPU 를 켠다.
+# CUDA 가 없는 환경(PC 등)에서는 supertonic 이 자동으로 CPU 로 폴백한다.
+# Jetson: 합성 3.0초 -> 0.3초 (onnxruntime-gpu 필요, docs/jetson-setup.md 참고)
+supertonic.loader.DEFAULT_ONNX_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 class VicaTTS:
