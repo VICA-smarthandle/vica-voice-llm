@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Union
 
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()  # VICA_STT_* 환경변수 (.env) — 어떤 진입점에서 실행해도 적용되도록 여기서 로드
 
 SAMPLE_RATE = 16000  # whisper 표준 입력 샘플레이트
 

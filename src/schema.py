@@ -65,6 +65,17 @@ class VicaIntent(BaseModel):
     safety_flag: SafetyFlag = "normal"
 
 
+class EmergencyEvent(BaseModel):
+    """상시 긴급어 감지 이벤트. Safety Supervisor / State Machine 에 전달된다.
+
+    LLM 을 거치지 않는 안전 경로의 출력이다 (CLAUDE.md Phase 4).
+    """
+
+    keyword: str  # 매칭된 긴급어 (예: "멈춰")
+    source_text: str  # STT 가 인식한 원본 텍스트
+    detected_at: float  # 감지 시각 (time.time())
+
+
 class RobotState(BaseModel):
     """로봇의 현재 상태. ROS2 연결 전에는 더미 값을 쓴다.
 

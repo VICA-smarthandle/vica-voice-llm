@@ -6,10 +6,20 @@ CLI(main.py)는 이 모듈을 import 하지 않는다.
 """
 from __future__ import annotations
 
+from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
-from .schema import RobotState, VicaIntent
+from .schema import EmergencyEvent, RobotState, VicaIntent
+
+
+def emergency_to_msg(event: EmergencyEvent) -> EmergencyEventMsg:
+    """pydantic EmergencyEvent -> ROS2 EmergencyEvent 메시지."""
+    msg = EmergencyEventMsg()
+    msg.keyword = event.keyword
+    msg.source_text = event.source_text
+    msg.detected_at = float(event.detected_at)
+    return msg
 
 
 def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
