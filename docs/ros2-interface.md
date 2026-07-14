@@ -26,8 +26,23 @@
 | `/vica/intent` | `vica_interfaces/VicaIntent` | ros_node | ros_tts_node, **state machine** | LLM 의도 해석 결과 (아래 상세) |
 | `/vica/robot_state` | `vica_interfaces/RobotState` | **로봇 팀** | ros_node | 로봇 현재 상태 (질문 답변에 활용) |
 | `/vica/emergency` | `vica_interfaces/EmergencyEvent` | ros_emergency_node | **safety supervisor** | 긴급어 감지 이벤트 (LLM 우회) |
+| `/vica/tts_request` | `std_msgs/String` | **vica_mission_manager** | ros_tts_node | 멘트 요청 (우선순위 접두어, 아래 참조) |
 
 QoS 는 모두 기본 프로파일 depth 10 이다.
+
+### /vica/tts_request 우선순위 접두어 (2026-07-14, 진행순서 ②)
+
+ros_tts_node 는 단일 큐 + 우선순위(긴급 > 내레이션 > 응답)로 재생한다
+(`src/tts_queue.py`). String 페이로드 형식:
+
+```text
+"emergency:비상 정지합니다."    → 긴급: 하위 큐 비우고 재생 중 오디오 중단
+"narration:이동을 시작합니다."  → 내레이션 (접두어 없으면 이것이 기본)
+"response:안내할 수 없습니다."  → 응답 (/vica/intent 의 reply 와 같은 급)
+```
+
+우선순위별 큐 상한(기본 8) 초과 시 가장 낡은 멘트를 드롭한다 — 낡은 멘트가
+밀려서 재생되는 것을 막는다.
 
 ## 메시지 정의 (`vica_interfaces`)
 
