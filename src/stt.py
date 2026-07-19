@@ -21,6 +21,27 @@ load_dotenv()  # VICA_STT_* 환경변수 (.env) — 어떤 진입점에서 실�
 SAMPLE_RATE = 16000  # whisper 표준 입력 샘플레이트
 
 
+def _preload_cuda_ctranslate2() -> None:
+    """Jetson CUDA용 libctranslate2 를 미리 적재한다 (있을 때만).
+
+    pip 에는 Jetson GPU 빌드가 없어서 jetson-containers 이미지에서 추출한
+    코어 라이브러리를 .venv/ct2lib 에 두고 쓴다 (2026-07-19, GPU 0.5s vs CPU 6s+).
+    RTLD_GLOBAL 로 먼저 올려두면 ctranslate2 _ext 가 경로 설정 없이 링크된다.
+    """
+    import ctypes
+    import sys
+
+    lib = Path(sys.prefix) / "ct2lib" / "libctranslate2.so.4"
+    if lib.exists():
+        try:
+            ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            pass  # CUDA 미탑재 환경(PC 등)에선 pip 기본(CPU) 빌드로 동작
+
+
+_preload_cuda_ctranslate2()
+
+
 class VicaSTT:
     """한국어 음성 인식기. 모델은 생성 시 한 번만 로드한다."""
 
@@ -43,7 +64,12 @@ class VicaSTT:
     def transcribe(self, audio: Union[np.ndarray, str, Path]) -> str:
         """오디오(numpy float32 16kHz) 또는 wav 파일 경로 -> 텍스트."""
         source = str(audio) if isinstance(audio, Path) else audio
-        segments, _info = self._model.transcribe(source, language=self.language)
+        # vad_filter: push-to-talk 은 엔터까지의 무음도 통째로 녹음되므로
+        # 무음 구간을 잘라내는 게 변환 시간에 결정적 (Jetson 실측 2026-07-19).
+        # beam_size=1: 짧은 명령 발화엔 greedy 로 충분, 기본값(5) 대비 수 배 빠름.
+        segments, _info = self._model.transcribe(
+            source, language=self.language, vad_filter=True, beam_size=1
+        )
         return "".join(seg.text for seg in segments).strip()
 
     def record_until_enter(self) -> np.ndarray:
