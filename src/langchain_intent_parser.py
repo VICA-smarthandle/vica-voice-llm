@@ -10,7 +10,7 @@ import os
 from typing import Optional, Sequence
 
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,37 @@ load_dotenv()
 #   Jetson(로컬):  OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
 DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
+
+# 직전 확인 질문에 대한 짧은 긍정/부정 답변. 긴급어 필터와 같은 원칙으로
+# LLM 을 거치지 않고 코드가 결정한다 — 소형 모델이 is_confirmation 을 놓치면
+# 확인 질문이 무한 반복되는 문제가 실기에서 확인됨 (2026-07-19, exaone3.5:2.4b).
+_AFFIRMATIVES = frozenset(
+    {"네", "예", "응", "어", "그래", "그래요", "맞아", "맞아요",
+     "좋아", "좋아요", "네네", "네맞아요", "응응", "가자", "가줘"}
+)
+_NEGATIVES = frozenset(
+    {"아니", "아니요", "아뇨", "아니야", "아니에요", "싫어", "싫어요", "취소"}
+)
+
+
+def _normalize_short_reply(text: str) -> str:
+    """STT 가 붙이는 구두점·공백을 제거해 짧은 답변을 비교 가능하게 만든다."""
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _pending_confirm_destination(
+    history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
+):
+    """직전 AI 발화가 어떤 목적지의 confirm_prompt 였으면 그 목적지를 돌려준다."""
+    if not history:
+        return None
+    last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    if last_ai is None:
+        return None
+    for dest in destinations:
+        if dest.confirm_prompt and dest.confirm_prompt == last_ai.content:
+            return dest
+    return None
 
 
 class _IntentDraft(BaseModel):
@@ -120,6 +151,28 @@ def parse_intent(
     model: str = DEFAULT_MODEL,
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
+    # 규칙 기반 확인 처리: 직전 제안에 대한 짧은 긍정/부정은 LLM 없이 즉시 결정.
+    pending = _pending_confirm_destination(history, destinations)
+    if pending is not None:
+        word = _normalize_short_reply(user_text)
+        if word in _AFFIRMATIVES:
+            return VicaIntent(
+                intent="navigate",
+                destination_candidate=pending.name,
+                matched_destination_id=pending.id,
+                confidence=1.0,
+                reply=f"{pending.name} 안내를 시작합니다.",
+                need_confirm=False,
+                safety_flag="normal",
+            )
+        if word in _NEGATIVES:
+            return VicaIntent(
+                intent="clarify",
+                confidence=1.0,
+                reply="알겠습니다. 어디로 안내해드릴까요?",
+                need_confirm=False,
+            )
+
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:
