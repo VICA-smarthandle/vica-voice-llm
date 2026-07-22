@@ -91,14 +91,14 @@ PC 에서는 `OLLAMA_HOST=https://ollama.com` + API 키로 바꾸면 클라우�
 | `src/ros_node.py` | 글자 → 의미 해석(LLM) | `/vica/intent` | `/vica/user_text`, `/vica/robot_state` |
 | `src/ros_tts_node.py` | 답변을 소리로 재생 | - | `/vica/intent` |
 | `src/ros_emergency_node.py` | 마이크 상시 감시(긴급어) | `/vica/emergency` | - |
-| `src/ros_robot_state_stub.py` | (가짜) 로봇 상태 발행 — 로봇 팀이 교체 | `/vica/robot_state` | - |
-| `src/ros_state_machine_stub.py` | (가짜) 이동 판단 — 로봇 팀이 교체 | - | `/vica/intent`, `/vica/emergency` |
+
+`/vica/robot_state` 발행과 `/vica/intent`·`/vica/emergency` 를 구독하는 state machine 은
+로봇 팀의 실제 ROS2 노드(`ros2_ws`)가 담당한다. 이 저장소에는 개발용 스텁이 없다.
 
 ### 부가 시스템
 
 | 파일 | 역할 |
 |---|---|
-| `backend/app.py`, `backend/db.py` | 목적지 관리 API 서버 (FastAPI + SQLite, 선택 사항) |
 | `config/destinations.yaml` | 목적지 원본 데이터 (이름, 별칭, 좌표 등) |
 | `ros2_ws/src/vica_interfaces/` | ROS2 커스텀 메시지 정의 (.msg 파일) |
 
@@ -112,8 +112,7 @@ PC 에서는 `OLLAMA_HOST=https://ollama.com` + API 키로 바꾸면 클라우�
 
 ```text
 run() 시작
- ├─ load_destinations()      config/destinations.yaml 을 읽어 목적지 5개를 메모리에 올림
- │                           (.env 에 VICA_DEST_API 가 있으면 FastAPI 백엔드에서 대신 읽음)
+ ├─ load_destinations()      config/destinations.yaml 을 읽어 목적지를 메모리에 올림
  ├─ VicaTTS() 생성           TTS 모델 로드 (Jetson 은 GPU)
  ├─ VicaSTT() 생성           whisper 모델 로드 (VICA_STT=1 일 때만, Jetson 은 GPU)
  └─ history = []             대화 기억용 빈 목록
@@ -196,14 +195,14 @@ source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
    └─ intent_to_msg()      pydantic → ROS 메시지로 변환해
   → /vica/intent 토픽으로 발행 ──────┬──────────────────────┐
                                      ▼                      ▼
-[launch] ros_tts_node          [launch] ros_state_machine_stub (로봇 팀이 교체할 자리)
-  _on_intent() 가 받아서         _on_intent() 가 받아서
-  VicaTTS.speak(reply)           "이동 확정 → Nav2 goal 생성 대상: ..." 로그만 출력
-  → 스피커로 재생                 (실제 로봇에서는 여기서 이동을 결정/실행)
+[launch] ros_tts_node          (로봇 팀) state machine 노드 — 이 저장소 밖(ros2_ws)
+  _on_intent() 가 받아서         /vica/intent 를 구독해
+  VicaTTS.speak(reply)           이동 확정 → Nav2 goal 생성 여부를 결정/실행
+  → 스피커로 재생
 ```
 
-`/vica/robot_state` 는 반대 방향의 정보다: 로봇(지금은 스텁)이 "나 지금 별빛관 1층이야"를
-계속 발행하고, LLM 노드가 받아뒀다가 "지금 몇 층이야?" 같은 질문에 답할 때 쓴다.
+`/vica/robot_state` 는 반대 방향의 정보다: 로봇(로봇 팀의 실제 노드)이 "나 지금 별빛관
+1층이야"를 계속 발행하고, LLM 노드가 받아뒀다가 "지금 몇 층이야?" 같은 질문에 답할 때 쓴다.
 
 ### 긴급 경로: "멈춰!" 는 다른 길로 간다
 
@@ -228,17 +227,8 @@ push-to-talk 대화 중이든 로봇 이동 중이든 항상 동작한다.
 
 ## 7. 목적지는 어디서 오는가 (선택: FastAPI 백엔드)
 
-기본은 `config/destinations.yaml` 파일이다. `load_destinations()` 가 이 파일을 읽는다.
-
-관리자가 목적지를 자주 바꿔야 하면 API 서버를 쓸 수 있다:
-
-```bash
-.venv/bin/uvicorn backend.app:app --port 8000     # 서버 실행 (SQLite 에 저장)
-# .env 에 추가: VICA_DEST_API=http://localhost:8000
-```
-
-이러면 `load_destinations()` 가 YAML 대신 `GET /destinations` API 를 부른다.
-서버가 죽어 있으면? 경고만 남기고 **자동으로 YAML 로 폴백**한다 — 로봇은 계속 동작한다.
+목적지 원본은 `config/destinations.yaml` 파일이다. `load_destinations()` 가 이 파일을 읽는다.
+목적지·pose 편집은 관리자 앱(VICA_Supervisor)이 담당하고, 이 저장소는 YAML 을 읽기만 한다.
 
 pose(지도 좌표) 수정 예: `PATCH /destinations/{id}/pose` — calibration 도구가 쓸 API 다.
 파이프라인(LLM 쪽)은 절대 목적지를 수정하지 않는다. 조회만 한다.

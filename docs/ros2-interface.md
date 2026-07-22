@@ -15,8 +15,8 @@
           (상시 감시, LLM 우회)
 ```
 
-★ = 현재 개발용 스텁(`ros_state_machine_stub`, `ros_robot_state_stub`)이 자리를
-차지하고 있으며, **로봇 팀의 실제 노드로 교체 대상**이다.
+★ = 로봇 팀의 실제 ROS2 노드(`ros2_ws`)가 담당한다. 이 저장소에는 더 이상 개발용
+스텁이 없다(제거됨). 이 문서의 토픽·메시지 계약이 연동 기준이다.
 
 ## 토픽 목록
 
@@ -88,10 +88,10 @@ float64 detected_at   # 감지 시각 (unix time)
 ## 로봇 팀이 할 일
 
 1. **state machine 노드**: `/vica/intent` 와 `/vica/emergency` 구독,
-   위 조건 검사 후 Nav2 goal 생성 여부 결정. (`src/ros_state_machine_stub.py` 참고 후 교체)
+   위 조건 검사 후 Nav2 goal 생성 여부 결정. (이 문서의 메시지 계약을 연동 기준으로 사용)
 2. **robot_state 발행**: `/vica/robot_state` 를 실제 값으로 발행.
-   (`src/ros_robot_state_stub.py` 교체)
-3. launch 파일(`launch/vica_voice.launch.py`)에서 스텁 2개를 제거하고 실제 노드 연결.
+3. 이 저장소의 launch(`launch/vica_voice.launch.py`)는 LLM/TTS/emergency 노드만 띄운다.
+   개발용 스텁은 제거되었으므로 로봇 팀 노드를 별도로 실행해 연동한다.
 
 ## 빌드/실행
 

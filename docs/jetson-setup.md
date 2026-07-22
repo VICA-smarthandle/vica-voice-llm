@@ -1,12 +1,13 @@
 # Jetson Orin NX 16GB 이식 가이드
 
-PC(x86_64, Ubuntu 24.04, 클라우드 LLM)에서 만든 VICA 음성 파이프라인을
-Jetson(ARM64, Ubuntu 22.04, 로컬 LLM)으로 옮겨 실행하는 절차.
+PC(x86_64, Ubuntu 24.04)에서 만든 VICA 음성 파이프라인을 Jetson(ARM64, Ubuntu 22.04)
+으로 옮겨 실행하는 절차. STT/TTS 는 Jetson 온디바이스(GPU), LLM 은 Ollama Cloud(주 모델).
 
 > 핵심: 코드는 거의 그대로 간다. **환경을 다시 세우는 것**이 이식이다.
 > - `.venv` 재생성 (ARM64 휠)
 > - `vica_interfaces` 다시 `colcon build`
-> - LLM 을 로컬 Ollama(gemma4 e2b)로 (`.env` 만 바꾸면 됨)
+> - LLM 은 클라우드(Ollama Cloud) 유지 — `.env` 의 클라우드 3줄만 채우면 된다.
+>   (오프라인이 필요하면 로컬 Ollama 로 전환 가능)
 
 ## 대상 환경 (확인됨)
 - Ubuntu 22.04 / Python 3.10 / ARM64(aarch64)
@@ -46,7 +47,9 @@ pip install -r requirements.txt
 
 우리 코드는 `torch` 를 직접 쓰지 않는다(faster-whisper=ctranslate2, supertonic=onnxruntime).
 
-## 4. 로컬 LLM (Ollama + gemma4 e2b)
+## 4. (선택) 오프라인/폴백용 로컬 LLM (Ollama + gemma4 e2b)
+
+기본 LLM 은 Ollama Cloud 다. 아래는 오프라인이 필요할 때만 설정하는 선택 단계다.
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh   # ARM64 지원, CUDA 자동 감지
 ollama pull gemma4:e2b        # 정확한 태그는 https://ollama.com/library 에서 확인
@@ -54,14 +57,20 @@ ollama serve &                # 백그라운드 서버 (보통 자동 실행됨)
 ```
 빠른 확인: `ollama run gemma4:e2b "안녕"`
 
-## 5. `.env` 설정 (로컬 LLM 으로)
-`.env.example` 을 참고해 `.env` 를 만든다:
+## 5. `.env` 설정
+`.env.example` 을 참고해 `.env` 를 만든다. 기본은 클라우드 LLM:
+```bash
+OLLAMA_HOST=https://ollama.com
+VICA_LLM_MODEL=gemma4:cloud
+OLLAMA_API_KEY=<ollama cloud 키>
+```
+오프라인/폴백으로 로컬 Ollama 를 쓰려면 (4번 설치 후) 위 3줄 대신:
 ```bash
 OLLAMA_HOST=http://localhost:11434
 VICA_LLM_MODEL=gemma4:e2b
 # OLLAMA_API_KEY 는 로컬에선 필요 없음 (비워두거나 삭제)
 ```
-→ 코드 수정 없이 로컬 LLM 으로 전환된다.
+→ 코드 수정 없이 `.env` 만으로 전환된다.
 
 ## 6. (CLI 부터) 먼저 검증
 ```bash

@@ -191,9 +191,11 @@ Always-on Emergency Monitor
 
 초기 구현은 `emergency_filter.py`의 rule-based keyword detection으로 충분하다. openWakeWord는 별도 실험 파일에서 한국어 긴급어 모델 성능을 먼저 검증한다.
 
-### Phase 5: FastAPI + SQLite Destination Backend
+### Phase 5: FastAPI + SQLite Destination Backend (제거됨)
 
-테스트용 관리자 백엔드를 별도 세션에서 만들어도 된다.
+> 이 테스트용 백엔드는 제거되었다. 목적지는 `config/destinations.yaml` 단일 소스로
+> 읽고(`src/destination_loader.py`), 목적지·pose 편집은 관리자 앱(VICA_Supervisor)이
+> 담당한다. 아래 설계는 기록용으로만 남긴다.
 
 추천 구조:
 
@@ -253,7 +255,7 @@ Nav2 goal 생성 여부 결정
 5. `src/langchain_intent_parser.py`를 만든다.
 6. `src/main.py`에서 GPT parser 대신 LangChain parser를 사용하도록 조정한다.
 7. emergency filter는 LangChain 호출 전에 유지한다.
-8. FastAPI + SQLite backend가 준비되면 destination tool을 YAML 조회에서 API 조회로 교체한다.
+8. 목적지는 `config/destinations.yaml` 단일 소스로 유지한다 (테스트용 API 백엔드는 제거됨).
 
 ## Testing Rules
 

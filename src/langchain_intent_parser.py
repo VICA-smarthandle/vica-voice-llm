@@ -19,9 +19,10 @@ from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
 
-# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 PC=클라우드 / Jetson=로컬 전환).
-#   PC(클라우드):  OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
-#   Jetson(로컬):  OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
+# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 전환). 기본은 Ollama Cloud 이며
+# Jetson 온디바이스에서도 이 클라우드 모델을 주 모델로 사용한다.
+#   기본(클라우드):  OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
+#   (선택) 로컬:     OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
 DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
 
