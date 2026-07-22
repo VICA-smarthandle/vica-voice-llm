@@ -33,11 +33,19 @@ class VicaSTT:
     ):
         from faster_whisper import WhisperModel
 
-        # Jetson 에선 VICA_STT_DEVICE=cuda, VICA_STT_COMPUTE=float16 으로 GPU 가속.
+        # Jetson 온디바이스 기본은 GPU(cuda/float16). CUDA 초기화가 안 되는 환경에서는
+        # CPU(int8) 로 자동 폴백한다. VICA_STT_DEVICE/COMPUTE 로 명시하면 그 값을 쓴다.
         model_size = model_size or os.environ.get("VICA_STT_MODEL", "small")
-        device = device or os.environ.get("VICA_STT_DEVICE", "cpu")
-        compute_type = compute_type or os.environ.get("VICA_STT_COMPUTE", "int8")
-        self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        device = device or os.environ.get("VICA_STT_DEVICE", "cuda")
+        compute_type = compute_type or os.environ.get("VICA_STT_COMPUTE", "float16")
+        try:
+            self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        except Exception as exc:  # CUDA 미가용 등 -> CPU 폴백 (이미 cpu 면 그대로 실패)
+            if device == "cpu":
+                raise
+            print(f"[STT] {device} 로드 실패({exc}) -> CPU(int8) 폴백")
+            device, compute_type = "cpu", "int8"
+            self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
         self.language = language
 
     def transcribe(self, audio: Union[np.ndarray, str, Path]) -> str:
