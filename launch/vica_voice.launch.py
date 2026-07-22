@@ -38,8 +38,5 @@ def generate_launch_description() -> LaunchDescription:
             _python_node("src.ros_tts_node", "vica_tts"),
             # 상시 긴급어 감지 (LLM 우회 안전 경로, Phase 4)
             _python_node("src.ros_emergency_node", "vica_emergency"),
-            # 개발용 스텁 (로봇 통합 시 교체/제거). 혼자 전체 흐름을 데모하기 위한 자리표시자.
-            _python_node("src.ros_robot_state_stub", "vica_robot_state_stub"),
-            _python_node("src.ros_state_machine_stub", "vica_state_machine_stub"),
         ]
     )

@@ -19,7 +19,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .langchain_intent_parser import parse_intent
-from .schema import RobotState
 
 EXIT_WORDS = {"종료", "그만", "exit", "quit"}
 MAX_HISTORY = 8  # 최근 메시지만 유지 (대화가 길어져도 프롬프트가 커지지 않게)
@@ -28,8 +27,10 @@ MAX_HISTORY = 8  # 최근 메시지만 유지 (대화가 길어져도 프롬프�
 def run(use_tts: bool = True, use_stt: bool = False) -> None:
     destinations = load_destinations()
     history: list[BaseMessage] = []
-    # ROS2 연결 전까지는 더미 상태. 나중에 ROS2 가 robot_state 를 실시간으로 채운다.
-    robot_state = RobotState(current_floor=1, current_building="별빛관")
+    # CLI 프로토타입에는 실로봇 상태가 없다. parse_intent 는 robot_state=None 을
+    # "현재 위치 알 수 없음" 으로 처리한다. 실제 상태는 ROS2 경로(src/ros_node.py 의
+    # /vica/robot_state 구독)에서만 채운다.
+    robot_state = None
 
     tts = None
     if use_tts:
