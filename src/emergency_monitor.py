@@ -18,6 +18,7 @@ CLI 데모 실행:
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Callable, Optional
 
@@ -43,6 +44,7 @@ class EmergencyMonitor:
         hop_sec: float = 0.5,
         rms_threshold: float = 0.01,
         cooldown_sec: float = 2.0,
+        max_mute_sec: float = 8.0,
     ):
         self._on_event = on_event
         self._transcribe = transcribe
@@ -50,7 +52,58 @@ class EmergencyMonitor:
         self.hop_sec = hop_sec
         self.rms_threshold = rms_threshold
         self.cooldown_sec = cooldown_sec
+        # mute 가 걸린 채 TTS 노드가 죽으면 감시가 영구히 멈춘다. 그 상태를 막는
+        # fail-safe: 이 시간이 지나면 해제 신호가 없어도 스스로 감시를 재개한다.
+        self.max_mute_sec = max_mute_sec
+
         self._last_event_at = 0.0  # 마지막 이벤트 시각 (쿨다운용)
+        self._muted = False
+        self._muted_at = 0.0  # mute 가 걸린 시각 (fail-safe 계산용)
+        self._resume_at = 0.0  # 이 시각 전까지는 판정을 보류한다
+        self._buffer = np.zeros(self._window_samples, dtype=np.float32)
+        self._buffer_lock = threading.Lock()
+
+    @property
+    def _window_samples(self) -> int:
+        return int(self.window_sec * SAMPLE_RATE)
+
+    # -- TTS 재생 중 감시 억제 -------------------------------------------------
+
+    def set_muted(self, muted: bool, now: Optional[float] = None) -> None:
+        """TTS 재생 상태를 반영한다 (/vica/tts_state 구독자가 호출).
+
+        로봇이 말하는 동안 감시를 쉬어, 스피커로 나간 자기 목소리를 긴급어로
+        오인하는 자가 트리거를 막는다.
+
+        해제할 때가 중요하다. 창(window_sec)만큼의 오디오를 계속 담아 두므로
+        해제 직후 버퍼에는 아직 로봇 목소리가 남아 있다. 그래서 버퍼를 비우고,
+        새 소리가 창만큼 찰 때까지 판정을 보류한다.
+        """
+        now = time.time() if now is None else now
+        if muted:
+            if not self._muted:
+                self._muted_at = now
+            self._muted = True
+            return
+
+        if self._muted:
+            self._muted = False
+            self._clear_buffer()
+            self._resume_at = now + self.window_sec
+
+    def is_muted(self, now: Optional[float] = None) -> bool:
+        """현재 감시를 쉬는 중인지. max_mute_sec 를 넘기면 스스로 해제한다."""
+        if not self._muted:
+            return False
+        now = time.time() if now is None else now
+        if now - self._muted_at >= self.max_mute_sec:
+            self.set_muted(False, now=now)
+            return False
+        return True
+
+    def _clear_buffer(self) -> None:
+        with self._buffer_lock:
+            self._buffer = np.zeros(self._window_samples, dtype=np.float32)
 
     def _get_transcribe(self) -> Callable[[np.ndarray], str]:
         """STT 를 늦게 로드한다 (테스트에서는 주입된 가짜를 쓰므로 로드 안 함)."""
@@ -69,18 +122,26 @@ class EmergencyMonitor:
         """
         now = time.time() if now is None else now
 
-        # 1) 쿨다운: 방금 이벤트를 냈으면 같은 외침을 중복 감지하지 않는다.
+        # 1) TTS 재생 중에는 쉰다 (자가 트리거 차단). set_muted 참고.
+        if self.is_muted(now):
+            return None
+
+        # 2) 해제 직후 보류: 버퍼가 새 소리로 다시 찰 때까지 판정하지 않는다.
+        if now < self._resume_at:
+            return None
+
+        # 3) 쿨다운: 방금 이벤트를 냈으면 같은 외침을 중복 감지하지 않는다.
         if now - self._last_event_at < self.cooldown_sec:
             return None
 
-        # 2) 음량 게이트: 조용한 창은 STT 를 돌리지 않는다 (GPU 절약 + 환청 방지).
+        # 4) 음량 게이트: 조용한 창은 STT 를 돌리지 않는다 (GPU 절약 + 환청 방지).
         if audio.size == 0:
             return None
         rms = float(np.sqrt(np.mean(audio**2)))
         if rms < self.rms_threshold:
             return None
 
-        # 3) STT -> 긴급어 필터 (LLM 없음).
+        # 5) STT -> 긴급어 필터 (LLM 없음).
         text = self._get_transcribe()(audio)
         keyword = detect_emergency(text)
         if keyword is None:
@@ -96,20 +157,22 @@ class EmergencyMonitor:
         import sounddevice as sd
 
         self._get_transcribe()  # 루프 시작 전에 모델을 미리 로드
-        window = int(self.window_sec * SAMPLE_RATE)
-        hop = int(self.hop_sec * SAMPLE_RATE)
-        buffer = np.zeros(window, dtype=np.float32)  # 최근 window_sec 만큼의 오디오
+        window = self._window_samples
+        self._clear_buffer()
 
+        # 버퍼는 오디오 콜백 스레드가 쓰고, set_muted(ROS 콜백)와 판정 루프가 읽는다.
         def callback(indata, _frames, _time, _status):
-            nonlocal buffer
             chunk = indata[:, 0]
-            buffer = np.concatenate([buffer, chunk])[-window:]
+            with self._buffer_lock:
+                self._buffer = np.concatenate([self._buffer, chunk])[-window:]
 
         print(f"긴급어 상시 감시 시작 (창 {self.window_sec}초 / 간격 {self.hop_sec}초, 종료: Ctrl+C)")
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=callback):
             while True:
                 time.sleep(self.hop_sec)
-                self.process_window(buffer)
+                with self._buffer_lock:
+                    snapshot = self._buffer.copy()
+                self.process_window(snapshot)
 
 
 def _print_event(event: EmergencyEvent) -> None:

@@ -35,7 +35,10 @@ class VicaSTT:
 
         # Jetson 온디바이스 기본은 GPU(cuda/float16). CUDA 초기화가 안 되는 환경에서는
         # CPU(int8) 로 자동 폴백한다. VICA_STT_DEVICE/COMPUTE 로 명시하면 그 값을 쓴다.
-        model_size = model_size or os.environ.get("VICA_STT_MODEL", "small")
+        # 대화용 STT 는 medium. 발화 전체를 한 번에 옮기므로 정확도를 우선한다.
+        # (상시 긴급어 감시는 0.5초마다 짧은 창을 돌려야 해서 small 을 따로 쓴다 —
+        #  emergency_monitor.VICA_EMERGENCY_STT_MODEL 참고.)
+        model_size = model_size or os.environ.get("VICA_STT_MODEL", "medium")
         device = device or os.environ.get("VICA_STT_DEVICE", "cuda")
         compute_type = compute_type or os.environ.get("VICA_STT_COMPUTE", "float16")
         try:

@@ -15,19 +15,31 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from .replies import RETRY_PROMPT
 from .stt import VicaSTT
+from .tts_queue import RESPONSE, build_request
 
 
 class SttNode(Node):
     def __init__(self) -> None:
         super().__init__("vica_stt_node")
         self._pub = self.create_publisher(String, "/vica/user_text", 10)
+        self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
 
     def publish_text(self, text: str) -> None:
         msg = String()
         msg.data = text
         self._pub.publish(msg)
         self.get_logger().info(f"발행 /vica/user_text: '{text}'")
+
+    def ask_retry(self) -> None:
+        """인식 결과가 없을 때 다시 말해 달라고 알린다.
+
+        침묵으로 두면 눈으로 확인할 수 없는 사용자는 로봇이 못 들은 것인지,
+        생각 중인 것인지 구분하지 못해 다시 말할 시점을 잡을 수 없다.
+        """
+        self._tts_pub.publish(String(data=build_request(RESPONSE, RETRY_PROMPT)))
+        self.get_logger().warn("인식 결과 없음 -> 재발화 안내")
 
 
 def main(args=None) -> None:
@@ -45,7 +57,7 @@ def main(args=None) -> None:
                 break
             text = stt.listen().strip()
             if not text:
-                node.get_logger().warn("인식 결과 없음")
+                node.ask_retry()
                 continue
             node.publish_text(text)
     except KeyboardInterrupt:

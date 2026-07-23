@@ -17,7 +17,7 @@ import os
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from .destination_loader import load_destinations
-from .emergency_filter import detect_emergency
+from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .langchain_intent_parser import parse_intent
 
 EXIT_WORDS = {"종료", "그만", "exit", "quit"}
@@ -78,9 +78,9 @@ def run(use_tts: bool = True, use_stt: bool = False) -> None:
         if keyword:
             print(f"VICA > [긴급] '{keyword}' 감지 — 즉시 정지 신호 (safety_flag=emergency)\n")
             if tts:
-                tts.speak("긴급 정지합니다.")
+                tts.speak(EMERGENCY_REPLY)
             history.append(HumanMessage(text))
-            history.append(AIMessage("긴급 정지합니다."))
+            history.append(AIMessage(EMERGENCY_REPLY))
             history[:] = history[-MAX_HISTORY:]
             continue
 

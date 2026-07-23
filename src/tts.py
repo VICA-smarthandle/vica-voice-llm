@@ -57,3 +57,15 @@ class VicaTTS:
 
             print(f"[TTS] 재생 실패: {exc}", file=sys.stderr)
             return False
+
+    def stop(self) -> None:
+        """재생 중인 소리를 즉시 끊는다 (긴급 발화 선점용).
+
+        다른 스레드에서 불러도 된다. speak() 안의 sd.wait() 가 곧바로 돌아온다.
+        """
+        try:
+            import sounddevice as sd
+
+            sd.stop()
+        except Exception:
+            pass  # 오디오 장치가 없으면 끊을 것도 없다

@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
+from .replies import ASK_DESTINATION, LLM_UNAVAILABLE
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
@@ -137,7 +138,7 @@ def parse_intent(
         print(f"[LLM] 호출 실패: {exc}", file=sys.stderr)
         return VicaIntent(
             intent="unknown",
-            reply="죄송합니다. 지금은 요청을 처리할 수 없어요. 잠시 후 다시 말씀해 주세요.",
+            reply=LLM_UNAVAILABLE,
             confidence=0.0,
             need_confirm=False,
         )
@@ -160,7 +161,7 @@ def _finalize(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> V
         if matched is None:
             # LLM 이 목록에 없는 목적지를 골랐다 -> 되묻기로 안전하게 강등.
             result.intent = "clarify"
-            result.reply = result.reply or "어디로 안내해드릴까요?"
+            result.reply = result.reply or ASK_DESTINATION
         elif not matched.is_approachable:
             # 접근 불가 목적지 -> 코드가 정한 안내 문구, 확인 불필요.
             result.matched_destination_id = matched.id

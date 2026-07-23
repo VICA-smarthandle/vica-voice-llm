@@ -20,6 +20,7 @@ import threading
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from std_msgs.msg import Bool
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from .emergency_monitor import EmergencyMonitor
@@ -33,10 +34,19 @@ class EmergencyMonitorNode(Node):
         self._pub = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._monitor = EmergencyMonitor(on_event=self._on_event)
 
+        # TTS 재생 중에는 감시를 쉰다 — 스피커로 나간 로봇 자기 목소리를 긴급어로
+        # 오인하는 자가 트리거를 막기 위해서다 (ros_tts_node 참고).
+        self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
+
         # 마이크 감시 루프는 blocking 이라 별도 스레드에서 돌린다.
         self._thread = threading.Thread(target=self._monitor.run, daemon=True)
         self._thread.start()
-        self.get_logger().info("VICA 긴급어 상시 감시 시작 (발행: /vica/emergency)")
+        self.get_logger().info(
+            "VICA 긴급어 상시 감시 시작 (발행: /vica/emergency, 구독: /vica/tts_state)"
+        )
+
+    def _on_tts_state(self, msg: Bool) -> None:
+        self._monitor.set_muted(bool(msg.data))
 
     def _on_event(self, event: EmergencyEvent) -> None:
         self._pub.publish(emergency_to_msg(event))
