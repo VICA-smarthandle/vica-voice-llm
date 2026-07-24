@@ -20,6 +20,7 @@ navigate 확정 요청의 결과는 Mission Manager 만 알 수 있으므로 그
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import rclpy
 from langchain_core.messages import AIMessage, HumanMessage
@@ -42,7 +43,22 @@ from .tts_queue import RESPONSE, build_request, request_for_intent
 class LlmIntentNode(Node):
     def __init__(self) -> None:
         super().__init__("vica_llm_intent_node")
-        self._destinations = load_destinations()
+        self.declare_parameter(
+            "destinations_yaml",
+            str(
+                Path.home()
+                / "vica_data"
+                / "destinations"
+                / "vica_map_0630"
+                / "destinations.yaml"
+            ),
+        )
+        self._destinations_path = Path(
+            str(self.get_parameter("destinations_yaml").value)
+        ).expanduser()
+        self._destinations_mtime_ns: int | None = None
+        self._destinations = []
+        self._reload_destinations_if_changed(force=True)
         self._robot_state = RobotState()  # robot_state 토픽이 오기 전 기본값
         # 멀티턴 기억. 공용 로봇이라 한동안 발화가 없으면 새 대화로 보고 비운다.
         self._history = ConversationHistory()
@@ -65,6 +81,7 @@ class LlmIntentNode(Node):
         text = msg.data.strip()
         if not text:
             return
+        self._reload_destinations_if_changed()
 
         # 0) 한동안 발화가 없었으면 다른 사용자로 보고 이전 맥락을 버린다.
         #    안 그러면 다음 사람의 "거기로 가줘"가 앞사람 목적지로 해석된다.
@@ -111,6 +128,39 @@ class LlmIntentNode(Node):
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+
+    def _reload_destinations_if_changed(self, force: bool = False) -> None:
+        """저장 노드가 YAML을 교체하면 다음 발화 전에 public catalog를 갱신한다."""
+        try:
+            mtime_ns = self._destinations_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            if force or self._destinations:
+                self._destinations = []
+                self._destinations_mtime_ns = None
+                self.get_logger().warn(
+                    f"목적지 catalog가 없어 빈 목록을 사용합니다: "
+                    f"{self._destinations_path}"
+                )
+            return
+        if not force and mtime_ns == self._destinations_mtime_ns:
+            return
+        try:
+            loaded = load_destinations(self._destinations_path)
+        except Exception as exc:
+            self.get_logger().error(
+                f"목적지 catalog reload 실패, 이전 목록 유지: {exc}"
+            )
+            return
+        self._destinations = [
+            destination
+            for destination in loaded
+            if destination.authorization == "public"
+        ]
+        self._destinations_mtime_ns = mtime_ns
+        self.get_logger().info(
+            f"public 목적지 {len(self._destinations)}개 로드: "
+            f"{self._destinations_path}"
+        )
 
 
 def main(args=None) -> None:

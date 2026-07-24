@@ -49,5 +49,13 @@ def _load_from_yaml(path: Path | str) -> list[DestinationData]:
 
 
 def load_destinations(path: Path | str = DEFAULT_PATH) -> list[DestinationData]:
-    """config/destinations.yaml 에서 목적지 목록을 읽어 돌려준다."""
-    return _load_from_yaml(path)
+    """config/destinations.yaml 에서 목적지 목록을 읽어, 공개 목적지만 돌려준다.
+
+    목적지 원본은 destinations.yaml 단일 소스다(CLAUDE.md Phase 5). 비공개
+    (authorization != "public") 목적지는 음성 안내 대상에서 제외한다.
+    """
+    return [
+        destination
+        for destination in _load_from_yaml(path)
+        if destination.authorization == "public"
+    ]
