@@ -12,7 +12,13 @@ import os
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # YAML 전용 실행·단위 테스트에서는 python-dotenv가 필수 dependency가 아니다.
+    def load_dotenv() -> bool:
+        return False
 
 from .schema import DestinationData
 
@@ -70,9 +76,17 @@ def load_destinations(path: Path | str = DEFAULT_PATH) -> list[DestinationData]:
     api = os.environ.get("VICA_DEST_API", "").strip()
     if api:
         try:
-            return _load_from_api(api)
+            return [
+                destination
+                for destination in _load_from_api(api)
+                if destination.authorization == "public"
+            ]
         except Exception as exc:
             import sys
 
             print(f"[목적지] API 조회 실패({exc}) -> YAML 폴백", file=sys.stderr)
-    return _load_from_yaml(path)
+    return [
+        destination
+        for destination in _load_from_yaml(path)
+        if destination.authorization == "public"
+    ]
