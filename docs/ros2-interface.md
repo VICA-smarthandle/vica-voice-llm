@@ -1,113 +1,104 @@
-# VICA 음성/LLM 파트 — ROS2 인터페이스 명세 (로봇 팀 전달용)
+# VICA 음성·LLM ROS 2 계약
 
-작성: 2026-07-07. 음성/LLM 파트가 발행·구독하는 모든 토픽과 메시지 정의,
-그리고 로봇 팀이 구현/교체해야 할 부분을 정리한다.
+검토 기준일: 2026-07-26
 
-## 전체 그래프
+## 1. 현재 그래프
 
 ```text
-[마이크] ─ ros_stt_node ──/vica/user_text──▶ ros_node (LLM) ──/vica/intent──▶ ros_tts_node ─▶ [스피커]
-                                                 ▲                              │
-                              /vica/robot_state ─┘                              ▼
-                              (로봇 팀 발행)                        ★ state machine (로봇 팀)
+ros_stt_node
+├─ /vica/user_text ───────────────→ ros_node
+└─ /vica/tts_request ─────────────→ ros_tts_node
 
-[마이크] ─ ros_emergency_node ──/vica/emergency──▶ ★ safety supervisor / state machine (로봇 팀)
-          (상시 감시, LLM 우회)
+ros_node
+├─ /vica/intent ──────────────────→ Mission Manager
+├─ /vica/tts_request ─────────────→ ros_tts_node
+└─ /vica/robot_state ←───────────── Mission Manager
+
+ros_emergency_node
+├─ /vica/emergency ───────────────→ Mission Manager + E-stop bridge
+└─ /vica/tts_state ←─────────────── ros_tts_node
+
+Mission Manager
+└─ /vica/tts_request ─────────────→ ros_tts_node
 ```
 
-★ = 로봇 팀의 실제 ROS2 노드(`ros2_ws`)가 담당한다. 이 저장소에는 더 이상 개발용
-스텁이 없다(제거됨). 이 문서의 토픽·메시지 계약이 연동 기준이다.
+## 2. Topic
 
-## 토픽 목록
+| 이름 | 타입 | producer | consumer | 의미 |
+| --- | --- | --- | --- | --- |
+| `/vica/user_text` | `std_msgs/msg/String` | STT | LLM node | 인식 문장 |
+| `/vica/intent` | `vica_interfaces/msg/VicaIntent` | LLM node | Mission Manager | 이동 명령이 아닌 의도 후보 |
+| `/vica/robot_state` | `vica_interfaces/msg/RobotState` | Mission Manager | LLM node | 층·건물·이동 상태 |
+| `/vica/emergency` | `vica_interfaces/msg/EmergencyEvent` | 긴급어 감시 | Mission Manager, E-stop bridge | LLM 우회 긴급 이벤트 |
+| `/vica/tts_request` | `std_msgs/msg/String` | STT, LLM, Mission Manager | TTS | `priority:text` 재생 요청 |
+| `/vica/tts_state` | `std_msgs/msg/Bool` | TTS | 긴급어 감시 | 로봇 음성 재생 중 여부 |
 
-| 토픽 | 타입 | 발행 | 구독 | 설명 |
-|---|---|---|---|---|
-| `/vica/user_text` | `std_msgs/String` | ros_stt_node | ros_node | STT 인식 결과 (한국어 문장) |
-| `/vica/intent` | `vica_interfaces/VicaIntent` | ros_node | ros_tts_node, **state machine** | LLM 의도 해석 결과 (아래 상세) |
-| `/vica/robot_state` | `vica_interfaces/RobotState` | **로봇 팀** | ros_node | 로봇 현재 상태 (질문 답변에 활용) |
-| `/vica/emergency` | `vica_interfaces/EmergencyEvent` | ros_emergency_node | **safety supervisor** | 긴급어 감지 이벤트 (LLM 우회) |
+기본 QoS는 depth 10 reliable이다.
 
-QoS 는 모두 기본 프로파일 depth 10 이다.
+## 3. 공용 메시지
 
-## 메시지 정의 (`vica_interfaces`)
+정본은 `vica_ros2_ws/src/vica_interfaces/`다. 음성 저장소에는 메시지 사본을 두지 않으며,
+`vica_ros2_ws`를 빌드하고 source한 환경에서 import한다.
 
-### VicaIntent — LLM 의 '제안' (이동 명령 아님)
+### `VicaIntent`
 
 ```text
-string intent                  # navigate / question / clarify / unknown
-string destination_candidate   # LLM 이 고른 목적지 표현 (없으면 "")
-string matched_destination_id  # 코드가 확정한 목적지 id (없으면 "")
-float32 confidence             # 0.0 ~ 1.0
-bool need_confirm              # true 면 사용자 확인이 아직 안 끝났다
-string reply                   # 사용자에게 들려줄 한국어 답변 (TTS 가 재생)
-string safety_flag             # normal / emergency
+string intent
+string destination_candidate
+string matched_destination_id
+float32 confidence
+bool need_confirm
+string reply
+string safety_flag
 ```
 
-state machine 이 이동을 시작해도 되는 조건 (모두 만족해야 함):
+Mission Manager는 최소한 다음 조건과 자체 gate를 함께 검사한다.
 
 ```text
-intent == "navigate"
-matched_destination_id != ""     # 목적지가 DB 에서 확정됨
-need_confirm == false            # 사용자가 확인을 마침 ("응 맞아" 등)
-safety_flag == "normal"
+intent == navigate
+matched_destination_id != ""
+need_confirm == false
+safety_flag == normal
 ```
 
-이 조건을 만족해도 **최종 이동 판단은 state machine 몫**이다
-(현재 이동 가능 상태, 접근 가능 여부, safety supervisor 확인 등).
-
-### RobotState — 로봇 팀이 발행
+### `RobotState`
 
 ```text
-int32 current_floor    # 층. 알 수 없으면 -1
+int32 current_floor
 string current_building
 bool is_moving
 ```
 
-"지금 몇 층이야?" 같은 질문 답변에 쓰인다. 주기 발행(예: 1Hz) 또는 변경 시 발행.
-
-### EmergencyEvent — 긴급 정지 요청 (최우선 처리)
+### `EmergencyEvent`
 
 ```text
-string keyword        # 매칭된 긴급어 (예: "멈춰")
-string source_text    # STT 가 인식한 원본 텍스트
-float64 detected_at   # 감지 시각 (unix time)
+string keyword
+string source_text
+float64 detected_at
 ```
 
-- 마이크 상시 감시로 감지되며, **LLM 을 전혀 거치지 않는다** (감지 지연 약 1초).
-- 긴급어 목록: 멈춰, 정지, 스탑, 스톱, 안돼, 위험해, 잠깐, 천천히, 느리게
-- 이 이벤트를 받으면 safety supervisor / state machine 이 즉시 정지를 판단·실행한다.
+하드 긴급어는 `멈춰`, `정지`, `스탑`, `스톱`, `안돼`, `위험해`다. 음성 node는
+감지 이벤트만 발행하고, E-stop bridge가 `/voice_emergency_stop` 펄스로 변환한다.
 
-## 안전 계약 (음성/LLM 파트가 보장하는 것)
+## 4. 안전 경계
 
-- `/cmd_vel`, `/cmd_vel_safe` 를 발행하지 않는다.
-- Nav2 goal 을 직접 보내지 않는다.
-- 모터/속도/회전/정지 명령을 실행하지 않는다.
-- `VicaIntent` 는 제안일 뿐이며, 실제 이동·정지의 결정과 실행은
-  로봇 팀의 state machine / safety supervisor 가 한다.
+- 음성·LLM은 `/cmd_vel*`, Nav2 action과 CAN을 발행하지 않는다.
+- `/vica/intent`는 Mission gate 입력이며 Goal 자체가 아니다.
+- `/vica/emergency`의 실제 정지 권한은 중앙 E-stop 래치와 Safety Supervisor에 있다.
+- 음성·STT에는 E-stop reset 권한이 없다.
+- TTS 재생 중 감시 억제는 자가 오탐 방지 기능이며 물리 E-stop을 대체하지 않는다.
 
-## 로봇 팀이 할 일
-
-1. **state machine 노드**: `/vica/intent` 와 `/vica/emergency` 구독,
-   위 조건 검사 후 Nav2 goal 생성 여부 결정. (이 문서의 메시지 계약을 연동 기준으로 사용)
-2. **robot_state 발행**: `/vica/robot_state` 를 실제 값으로 발행.
-3. 이 저장소의 launch(`launch/vica_voice.launch.py`)는 LLM/TTS/emergency 노드만 띄운다.
-   개발용 스텁은 제거되었으므로 로봇 팀 노드를 별도로 실행해 연동한다.
-
-## 빌드/실행
+## 5. 실행 전제
 
 ```bash
-# 메시지 패키지 빌드 (최초 1회)
 source /opt/ros/humble/setup.bash
-cd ros2_ws && colcon build --packages-select vica_interfaces && cd ..
-
-# 음성 파트 실행
-source ros2_ws/install/setup.bash
-ros2 launch launch/vica_voice.launch.py        # LLM + TTS + 긴급 감시 + (스텁)
-# 별도 터미널: .venv/bin/python -m src.ros_stt_node   (push-to-talk 마이크)
-
-# 동작 확인
-ros2 topic echo /vica/intent
-ros2 topic echo /vica/emergency   # "멈춰!" 외치면 수신됨
+cd ../vica_ros2_ws
+colcon build --packages-select vica_interfaces
+source install/setup.bash
+cd ../vica-voice-llm
+ros2 launch launch/vica_voice.launch.py
 ```
 
-주의: `ros2 topic echo` 는 발행자가 아직 없으면 즉시 종료한다. 노드를 먼저 띄울 것.
+push-to-talk STT는 별도 터미널에서 `.venv/bin/python -m src.ros_stt_node`로 실행한다.
+개발 stub은 없으므로 Mission Manager와 `vica_safety`를 별도로 기동해야 한다.
+실제 음성·Mission·E-stop 종단은 `[미검증]`이다.

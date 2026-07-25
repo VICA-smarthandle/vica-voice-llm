@@ -1,7 +1,7 @@
 """VICA LLM intent ROS2 노드 (/vica/llm_intent_node).
 
 구독: /vica/user_text   (std_msgs/String)        - 사용자 발화 텍스트(STT 결과 등)
-구독: /vica/robot_state (std_msgs/String, JSON)   - 로봇 현재 상태
+구독: /vica/robot_state (vica_interfaces/RobotState) - 로봇 현재 상태
 발행: /vica/intent      (vica_interfaces/VicaIntent) - intent 해석 결과('제안')
 발행: /vica/tts_request (std_msgs/String)        - 사용자에게 들려줄 응답
 
