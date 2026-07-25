@@ -110,8 +110,16 @@ class EmergencyMonitor:
         if self._transcribe is None:
             from .stt import VicaSTT
 
-            # 짧은 창의 키워드 감지에는 small 이면 충분하다 (medium 은 대화용).
-            model = os.environ.get("VICA_EMERGENCY_STT_MODEL", "small")
+            # 대화용과 같은 medium 을 쓴다. small 은 한국어 긴급어를 너무 자주
+            # 놓쳤다 — 실기 측정에서 "멈춰" 60%, "정지" 20%였고, medium 에서
+            # "멈춰" 100%, "정지" 60%로 올랐다.
+            # (docs/measurements/emergency-20260725-1543.md, -1557.md)
+            #
+            # 대가는 판정 주기다. 2초 창 처리에 small 0.49초 / medium 1.17초라,
+            # hop 0.5초를 더한 주기가 약 1.0초 -> 1.7초로 늘어난다. 창(2.0초)보다는
+            # 짧으므로 검사되지 않고 지나가는 오디오는 없지만 여유는 줄었다.
+            # window_sec/hop_sec 를 늘릴 때는 이 여유를 다시 확인해야 한다.
+            model = os.environ.get("VICA_EMERGENCY_STT_MODEL", "medium")
             self._transcribe = VicaSTT(model_size=model).transcribe
         return self._transcribe
 
