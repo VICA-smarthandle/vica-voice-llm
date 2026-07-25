@@ -47,42 +47,43 @@ __all__ = [
 _TOKEN_SPLIT = re.compile(r"[\s,.!?~…·\"'()\[\]{}<>:;]+")
 
 
-def _is_hangul(char: str) -> bool:
-    return "가" <= char <= "힣"
+def _starts_at_token_boundary(text: str, keyword: str) -> bool:
+    """긴급어가 어절 경계에서 시작하는가.
 
+    어절(공백·문장부호로 나뉜 조각)을 start 번째부터 이어 붙여, 그 결과가 긴급어로
+    시작하는지 본다. 두 가지를 동시에 만족해야 하기 때문이다.
 
-def _starts_token(text: str, keyword: str) -> bool:
-    """어절 하나가 긴급어로 시작하는가. 예) "멈춰줘", "정지해 주세요"."""
-    return any(token.startswith(keyword) for token in _TOKEN_SPLIT.split(text) if token)
+    1. STT 는 띄어쓰기를 제멋대로 낸다. 특히 "안돼"를 거의 항상 "안 돼"로 적으므로
+       어절 하나만 봐서는 못 잡는다. 그래서 뒤 어절까지 이어 붙인다.
+    2. 그렇다고 공백을 통째로 지우고 아무 위치나 인정하면 "행정지원실"의 "정지"가
+       잡혀 엉뚱한 비상정지가 걸린다. 그래서 '어절이 시작하는 자리'에서만 인정한다.
 
-
-def _starts_word(text: str, keyword: str) -> bool:
-    """공백을 지운 문자열에서 긴급어가 낱말 첫머리에 오는가.
-
-    앞 글자가 한글이면 더 긴 낱말의 일부로 본다. "행정지원실"의 "정지",
-    "감정지수"의 "정지" 같은 오탐을 막는다. 반대로 "안 돼요"처럼 띄어 쓴 경우는
-    공백을 지운 뒤 첫머리에 오므로 잡힌다.
+    실측 근거: 예전 규칙(공백 제거 후 앞 글자가 한글이면 무시)은 whisper 가 "아 안 돼"
+    라고 정확히 받아쓴 5회를 전부 걸러냈다. 앞의 "아" 때문이다. 위급할 때 감탄사를
+    붙여 외치는 것은 자연스러우므로 놓치면 안 된다.
+    (docs/measurements/emergency-20260725-1600.md)
     """
-    norm = re.sub(r"\s+", "", text)
-    start = 0
-    while True:
-        index = norm.find(keyword, start)
-        if index < 0:
-            return False
-        if index == 0 or not _is_hangul(norm[index - 1]):
+    tokens = [token for token in _TOKEN_SPLIT.split(text) if token]
+    for start in range(len(tokens)):
+        joined = ""
+        for token in tokens[start:]:
+            joined += token
+            if len(joined) >= len(keyword):
+                break  # 긴급어 길이만큼만 모으면 판정에 충분하다
+        if joined.startswith(keyword):
             return True
-        start = index + 1
+    return False
 
 
 def detect_emergency(text: str) -> Optional[str]:
     """발화에 긴급어가 있으면 매칭된 키워드를, 없으면 None 을 돌려준다.
 
-    낱말 첫머리에서만 인정한다. 단순 부분 문자열로 보면 "행정지원실"(행정+지원실)
+    어절 첫머리에서만 인정한다. 단순 부분 문자열로 보면 "행정지원실"(행정+지원실)
     같은 일반 낱말이 "정지"로 잡혀 엉뚱한 비상정지가 걸린다.
     """
     if not text:
         return None
     for keyword in EMERGENCY_KEYWORDS:
-        if _starts_token(text, keyword) or _starts_word(text, keyword):
+        if _starts_at_token_boundary(text, keyword):
             return keyword
     return None
