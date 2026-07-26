@@ -21,6 +21,28 @@ load_dotenv()  # VICA_STT_* 환경변수 (.env) — 어떤 진입점에서 실�
 SAMPLE_RATE = 16000  # whisper 표준 입력 샘플레이트
 
 
+def _preload_cuda_ctranslate2() -> None:
+    """Jetson CUDA용 libctranslate2 를 미리 적재한다 (있을 때만).
+
+    pip 의 ctranslate2 ARM64 휠은 CPU 전용이라 Jetson GPU 빌드를 따로 둔다.
+    코어 라이브러리를 .venv/ct2lib 에 두고 RTLD_GLOBAL 로 먼저 올리면
+    ctranslate2 _ext 가 LD_LIBRARY_PATH 설정 없이 링크된다 (2026-07-19).
+    라이브러리가 없으면 아무것도 하지 않고 pip 기본(CPU) 빌드로 동작한다.
+    """
+    import ctypes
+    import sys
+
+    lib = Path(sys.prefix) / "ct2lib" / "libctranslate2.so.4"
+    if lib.exists():
+        try:
+            ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            pass  # CUDA 미탑재 환경(PC 등)에선 CPU 빌드로 폴백
+
+
+_preload_cuda_ctranslate2()
+
+
 class VicaSTT:
     """한국어 음성 인식기. 모델은 생성 시 한 번만 로드한다."""
 
