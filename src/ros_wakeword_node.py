@@ -48,6 +48,7 @@ class WakewordNode(Node):
         super().__init__("vica_wakeword_node")
         self._pub_emergency = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._pub_text = self.create_publisher(String, "/vica/user_text", 10)
+        self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
         self.create_subscription(Bool, "/vica/tts_active", self._on_tts_active, 10)
 
         self._monitor = WakewordMonitor(
@@ -74,6 +75,9 @@ class WakewordNode(Node):
 
     def _on_wake(self) -> None:
         _ack_beep()
+        msg = String()
+        msg.data = "wake"
+        self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
     def _on_tts_active(self, msg: Bool) -> None:

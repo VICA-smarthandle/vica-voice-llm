@@ -22,3 +22,6 @@ ros2_ws/log/
 .DS_Store
 Thumbs.db
 backend/destinations.db
+
+# === 시뮬레이션 계측 기록 ===
+logs/
