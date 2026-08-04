@@ -1,11 +1,13 @@
 """VICA 음성 파이프라인 ROS2 노드 일괄 실행 (launch).
 
-서비스형 노드인 LLM intent 노드 + TTS 노드를 함께 띄운다.
+LLM intent 노드 + TTS 노드 + 웨이크워드 노드(마이크 앞단)를 함께 띄운다.
 
-STT 노드는 push-to-talk(엔터 입력) 대화형이라 launch 에 넣지 않는다.
-마이크로 말하려면 별도 터미널에서 실행한다:
-    source /opt/ros/humble/setup.bash
-    .venv/bin/python -m src.ros_stt_node
+마이크 입력은 웨이크워드 노드가 담당한다 — "비카야" 호출 후 말하면
+/vica/user_text 로, 긴급어("멈춰" 등)는 whisper 검증을 거쳐 /vica/emergency 로
+발행된다 (P1-b, 근거: vica-wakeword/docs/integration-design.md).
+
+개발용 push-to-talk 이 필요하면 웨이크워드 노드 대신 별도 터미널에서:
+    .venv/bin/python -m src.ros_stt_node      # (마이크를 두 노드가 동시에 못 쓴다)
 
 실행:
     source /opt/ros/humble/setup.bash
@@ -66,7 +68,9 @@ def generate_launch_description() -> LaunchDescription:
                 ],
             ),
             _python_node("src.ros_tts_node", "vica_tts"),
-            # 상시 긴급어 감지 (LLM 우회 안전 경로, Phase 4)
-            _python_node("src.ros_emergency_node", "vica_emergency"),
+            # 웨이크워드 앞단: 호출(비카야) + 긴급어(whisper 검증) — LLM 우회 안전 경로.
+            # 기존 ros_emergency_node(whisper 상시)를 대체한다. 롤백 = 아랫줄을
+            # ros_emergency_node 로 되돌리고 push-to-talk STT 를 별도 실행.
+            _python_node("src.ros_wakeword_node", "vica_wakeword"),
         ]
     )

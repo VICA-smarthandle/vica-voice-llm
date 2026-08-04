@@ -1,7 +1,8 @@
 """pydantic 스키마 <-> ROS2 커스텀 메시지(vica_interfaces) 변환.
 
 이 모듈은 vica_interfaces 를 import 하므로 ROS2 노드에서만 사용한다.
-사용 전 `source ros2_ws/install/setup.bash` 가 필요하다.
+사용 전 `source ../vica_ros2_ws/install/setup.bash` 가 필요하다
+(정본 메시지 패키지 — docs/ros2-interface.md 3절).
 CLI(main.py)는 이 모듈을 import 하지 않는다.
 """
 from __future__ import annotations

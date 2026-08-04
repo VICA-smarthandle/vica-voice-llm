@@ -10,7 +10,7 @@ LLM 을 거치지 않는 안전 경로다 (CLAUDE.md Phase 4).
 - 실제 정지는 이 토픽을 구독하는 Safety Supervisor / State Machine 이 한다.
 
 실행:
-    source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
+    source /opt/ros/humble/setup.bash && source ../vica_ros2_ws/install/setup.bash
     .venv/bin/python -m src.ros_emergency_node
 """
 from __future__ import annotations

@@ -86,10 +86,11 @@ Jetson 에 ROS2 Humble 이 없으면 설치:
 # https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html 참고
 sudo apt install -y ros-humble-ros-base ros-dev-tools
 ```
-커스텀 메시지 재빌드:
+커스텀 메시지 재빌드 — **정본은 로봇 저장소다**. 음성 저장소에는 사본을 두지
+않는다 (`docs/ros2-interface.md` 3절).
 ```bash
 source /opt/ros/humble/setup.bash
-cd ~/langchain/ros2_ws
+cd <workspace>/vica_ros2_ws          # 예: ~/VICA-smarthandle/vica_ros2_ws
 colcon build --packages-select vica_interfaces
 source install/setup.bash
 ```
@@ -97,9 +98,10 @@ source install/setup.bash
 ## 8. ROS2 실행
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/langchain/ros2_ws/install/setup.bash
-ros2 launch launch/vica_voice.launch.py     # LLM + TTS
-# 별도 터미널(같은 source 2줄): python -m src.ros_stt_node   (마이크)
+source <workspace>/vica_ros2_ws/install/setup.bash
+ros2 launch launch/vica_voice.launch.py     # LLM + TTS + 웨이크워드(마이크 앞단)
+# push-to-talk 이 필요하면 웨이크워드 대신: python -m src.ros_stt_node
+# (마이크는 한 프로그램만 쓴다 — 동시 실행 금지)
 ```
 
 ---

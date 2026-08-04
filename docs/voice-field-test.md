@@ -74,8 +74,8 @@ cd ~/tony/vica_ros2_ws/src/vica_mission_manager && PYTHONPATH=. python3 -m pytes
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/dev/vica-voice-llm/ros2_ws/install/setup.bash
-cd ~/dev/vica-voice-llm
+source <workspace>/vica_ros2_ws/install/setup.bash   # 정본 메시지 (음성 저장소에 사본 없음)
+cd <workspace>/vica-voice-llm
 ```
 
 **터미널 1 — 음성 노드**

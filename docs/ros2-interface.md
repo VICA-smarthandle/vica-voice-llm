@@ -5,21 +5,29 @@
 ## 1. 현재 그래프
 
 ```text
-ros_stt_node
+ros_wakeword_node                     ← 마이크 앞단 (상시). launch 의 기본 진입 경로
 ├─ /vica/user_text ───────────────→ ros_node
-└─ /vica/tts_request ─────────────→ ros_tts_node
+├─ /vica/emergency ───────────────→ Mission Manager + E-stop bridge
+├─ /vica/wake ────────────────────→ (음성 저장소 내부 — 계측·UI 앵커)
+└─ /vica/tts_state ←─────────────── ros_tts_node
 
 ros_node
 ├─ /vica/intent ──────────────────→ Mission Manager
 ├─ /vica/tts_request ─────────────→ ros_tts_node
 └─ /vica/robot_state ←───────────── Mission Manager
 
-ros_emergency_node
-├─ /vica/emergency ───────────────→ Mission Manager + E-stop bridge
-└─ /vica/tts_state ←─────────────── ros_tts_node
-
 Mission Manager
 └─ /vica/tts_request ─────────────→ ros_tts_node
+```
+
+launch 에 들어가지 않는 대체 경로 2개 (계약은 위와 동일):
+
+```text
+ros_stt_node        개발용 push-to-talk. 마이크를 웨이크워드와 동시에 못 쓴다
+└─ /vica/user_text · /vica/tts_request
+
+ros_emergency_node  whisper 상시 감시. 웨이크워드 롤백용으로 남겨 둔다
+└─ /vica/emergency ·  /vica/tts_state ←
 ```
 
 ## 2. Topic
@@ -34,6 +42,21 @@ Mission Manager
 | `/vica/tts_state` | `std_msgs/msg/Bool` | TTS | 긴급어 감시 | 로봇 음성 재생 중 여부 |
 
 기본 QoS는 depth 10 reliable이다.
+
+"긴급어 감시"의 현재 구현은 `ros_wakeword_node`다(`ros_emergency_node`는 롤백용).
+`keyword`는 whisper 전사에서 정확 매칭으로 뽑으므로 값 범위는 종전과 같다 —
+브리지·래치 체인은 변경되지 않는다.
+
+`/vica/tts_state`는 문장 단위로 켜지고 꺼진다. 한 발화가 여러 번 true/false를
+낼 수 있으므로, 소비자는 첫 true를 재생 시작으로, 마지막 false를 종료로 본다.
+
+음성 저장소 내부 토픽(팀 계약 아님, 임의 변경 가능):
+
+| 이름 | 타입 | 용도 |
+| --- | --- | --- |
+| `/vica/wake` | `std_msgs/msg/String` | 호출 감지 앵커 — 계측의 "체감 응답" 기준점 |
+| `/vica/sim/event` | `std_msgs/msg/String` | **[SIM ONLY]** 가상 로봇 상태 변화 |
+| `/vica/sim/reset` | `std_msgs/msg/Empty` | **[SIM ONLY]** 래치 해제 (실기의 관리자 앱 reset 자리) |
 
 ## 3. 공용 메시지
 
@@ -61,13 +84,26 @@ need_confirm == false
 safety_flag == normal
 ```
 
+`intent` 허용값의 정본은 `vica_ros2_ws/src/vica_interfaces/msg/VicaIntent.msg`다.
+2026-07-27에 진행 중인 안내를 조작하는 `cancel`/`pause`/`resume`가 추가됐다
+(세 값에는 `matched_destination_id`가 필요 없다).
+
+**[GAP]** 음성 저장소의 파서는 아직 `navigate`/`question`/`clarify`/`unknown`
+네 값만 만든다 (`src/schema.py`의 `VicaIntentType`). 세 값이 실제로 필요한 시점은
+로봇 팀과 확인이 필요하다.
+
 ### `RobotState`
 
 ```text
 int32 current_floor
 string current_building
 bool is_moving
+bool is_paused     # 2026-07-27 정본 추가. 목적지를 기억한 채 멈춘 상태
 ```
+
+`is_paused`는 `is_moving=false`만으로는 구분되지 않는 "일시정지"를 나타낸다.
+**[GAP]** 음성 저장소는 아직 이 필드를 만들지도 읽지도 않는다 (`ros_robot_sim`
+포함). `cancel`/`pause`/`resume` intent 지원과 함께 다뤄야 한다.
 
 ### `EmergencyEvent`
 

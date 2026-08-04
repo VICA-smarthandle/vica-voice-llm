@@ -73,12 +73,16 @@ numba==0.65.1
 numpy==2.4.6
 ollama==0.6.2
 onnxruntime==1.27.0  # Jetson 에서는 onnxruntime-gpu 로 설치 (docs/jetson-setup.md)
+                     # [미확정] 인수인계 문서는 aarch64 cp310 마지막 버전인
+                     # 1.23.2 핀을 요구한다 — Jetson 설치 시 실측으로 확정할 것
+openwakeword==0.6.0
 orjson==3.11.9
 ormsgpack==1.12.2
 packaging==26.2
 phonemizer-fork==3.3.1
 platformdirs==4.10.0
 pooch==1.9.0
+psutil==7.2.2
 protobuf==7.35.1
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
