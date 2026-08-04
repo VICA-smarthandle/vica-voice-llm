@@ -10,12 +10,12 @@ import os
 from typing import Optional, Sequence
 
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
-from .replies import ASK_DESTINATION, LLM_UNAVAILABLE
+from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
@@ -95,6 +95,38 @@ def _build_system_prompt(
 - 부정만 하고 목적지를 안 말하면 clarify."""
 
 
+# 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
+# 않고 코드가 결정한다 — 소형 모델이 is_confirmation 을 놓치면 확인 질문이 무한
+# 반복되는 문제가 실기에서 확인됐다 (2026-07-19, exaone3.5:2.4b).
+_AFFIRMATIVES = frozenset(
+    {"네", "예", "응", "어", "그래", "그래요", "맞아", "맞아요",
+     "좋아", "좋아요", "네네", "네맞아요", "응응", "가자", "가줘"}
+)
+_NEGATIVES = frozenset(
+    {"아니", "아니요", "아뇨", "아니야", "아니에요", "싫어", "싫어요", "취소"}
+)
+
+
+def _normalize_short_reply(text: str) -> str:
+    """STT 가 붙이는 구두점·공백을 제거해 짧은 답변을 비교 가능하게 만든다."""
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _pending_confirm_destination(
+    history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
+):
+    """직전 AI 발화가 어떤 목적지의 confirm_prompt 였으면 그 목적지를 돌려준다."""
+    if not history:
+        return None
+    last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    if last_ai is None:
+        return None
+    for dest in destinations:
+        if dest.confirm_prompt and dest.confirm_prompt == last_ai.content:
+            return dest
+    return None
+
+
 def _get_structured_llm(model: str):
     """구조화 출력(_IntentDraft) LLM 을 만든다. (클라우드=키 필요 / 로컬=키 불필요)"""
     api_key = os.environ.get("OLLAMA_API_KEY", "")
@@ -122,6 +154,30 @@ def parse_intent(
     model: str = DEFAULT_MODEL,
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
+    # 직전 확인 질문에 대한 짧은 긍정/부정은 LLM 없이 코드가 결정한다 (아래 참고).
+    pending = _pending_confirm_destination(history, destinations)
+    if pending is not None:
+        word = _normalize_short_reply(user_text)
+        if word in _AFFIRMATIVES:
+            return VicaIntent(
+                intent="navigate",
+                destination_candidate=pending.name,
+                matched_destination_id=pending.id,
+                confidence=1.0,
+                # navigate + need_confirm=False 는 Mission Manager 가 말한다.
+                # 이 reply 는 로그·기록용이며 TTS 로 나가지 않는다 (tts_queue).
+                reply=f"{pending.name} 안내를 시작합니다.",
+                need_confirm=False,
+                safety_flag="normal",
+            )
+        if word in _NEGATIVES:
+            return VicaIntent(
+                intent="clarify",
+                confidence=1.0,
+                reply=CONFIRM_DECLINED,
+                need_confirm=False,
+            )
+
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:

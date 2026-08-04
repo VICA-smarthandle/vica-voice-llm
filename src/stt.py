@@ -76,7 +76,15 @@ class VicaSTT:
     def transcribe(self, audio: Union[np.ndarray, str, Path]) -> str:
         """오디오(numpy float32 16kHz) 또는 wav 파일 경로 -> 텍스트."""
         source = str(audio) if isinstance(audio, Path) else audio
-        segments, _info = self._model.transcribe(source, language=self.language)
+        # beam_size=1: 짧은 명령 발화엔 greedy 로 충분하고 기본값(5)보다 수 배 빠르다
+        # (Jetson 실측 2026-07-19).
+        #
+        # vad_filter 는 일부러 켜지 않는다. push-to-talk 시절에는 엔터까지의 긴 무음을
+        # 잘라내는 효과가 컸지만, 지금 입력은 웨이크워드가 골라낸 2~3초 클립이라
+        # 잘라낼 무음이 거의 없고, 작게 말한 긴급어를 무음으로 오판해 지울 위험이 있다.
+        segments, _info = self._model.transcribe(
+            source, language=self.language, beam_size=1
+        )
         return "".join(seg.text for seg in segments).strip()
 
     def record_until_enter(self) -> np.ndarray:
