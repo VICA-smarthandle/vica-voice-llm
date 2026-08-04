@@ -6,9 +6,10 @@ Code(또는 새 작업자)를 위한 것**이다. 이전 세션의 맥락 없이
 
 ## ⚠️ 브랜치 상황 (2026-08-04 갱신, 먼저 읽을 것)
 
-**`dev` 병합이 끝났다.** 작업 브랜치는 **`integrate/wakeword-dev`** 다 (개발 Jetson 은
-이 브랜치를 checkout 할 것). 7/29 시점의 "`feat/wakeword-integration` 을 쓰고 dev 는
-나중에 병합" 안내는 무효다.
+**병합이 끝났다. 이제 `dev` 하나만 보면 된다** (개발 Jetson 은 `dev` 를 checkout).
+7/29 시점의 "`feat/wakeword-integration` 을 쓰고 dev 는 나중에 병합" 안내는 무효이며,
+그 브랜치와 `chore/jetson-only-cleanup`·`integrate/interfaces-migration` 은 정리했다
+(마지막 것은 `archive/interfaces-migration-2026-07-19` 태그로 보존).
 
 병합으로 들어온 것 (직접 다시 만들지 말 것):
 
