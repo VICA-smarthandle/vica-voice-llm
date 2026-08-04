@@ -74,9 +74,17 @@ class TtsNode(Node):
         if not text:
             return
         result = self._queue.push(priority, text, now=time.time())
+
+        # 사라진 말은 반드시 남긴다. 조용히 버리면 "왜 그 안내가 안 나왔는지"를
+        # 사후에 추적할 수 없다 (docs/voice-improvement-backlog.md 3절).
         if not result.accepted:
-            self.get_logger().debug(f"발화 무시({result.reason}): {text}")
+            self.get_logger().warn(f"발화 무시({result.reason}): {text}")
             return
+        if result.dropped:
+            why = "긴급 선점" if result.preempt else "큐 정원 초과"
+            for lost in result.dropped:
+                self.get_logger().warn(f"발화 폐기({why}): {lost}")
+
         if result.preempt:
             self._preempt.set()
             self._tts.stop()

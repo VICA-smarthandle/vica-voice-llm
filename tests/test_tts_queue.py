@@ -139,6 +139,37 @@ def test_overflow_keeps_higher_priority():
     assert [queue.pop().text for _ in range(2)] == ["대답입니다", "안내 2"]
 
 
+def test_overflow_reports_what_was_dropped():
+    """버려진 발화를 돌려줘야 노드가 로그로 남길 수 있다.
+
+    조용히 사라지면 "왜 그 안내가 안 나왔는지" 를 사후에 추적할 수 없다.
+    """
+    queue = TtsQueue(max_len=2, dedup_sec=0.0)
+    assert queue.push(NARRATION, "안내 0", now=0.0).dropped == ()
+    assert queue.push(NARRATION, "안내 1", now=1.0).dropped == ()
+
+    result = queue.push(NARRATION, "안내 2", now=2.0)
+    assert result.accepted
+    assert result.dropped == ("안내 0",)      # 가장 오래된 것이 버려졌다
+
+
+def test_emergency_reports_preempted_utterances():
+    """긴급이 밀어낸 대기 발화도 사라진 말이므로 보고한다."""
+    queue = TtsQueue(dedup_sec=0.0)
+    queue.push(NARRATION, "안내입니다", now=0.0)
+    queue.push(RESPONSE, "대답입니다", now=1.0)
+
+    result = queue.push(EMERGENCY, "안전을 위해 멈추겠습니다", now=2.0)
+    assert result.preempt
+    assert set(result.dropped) == {"안내입니다", "대답입니다"}
+
+
+def test_no_drop_reported_when_queue_has_room():
+    queue = TtsQueue(dedup_sec=0.0)
+    for index in range(3):
+        assert queue.push(NARRATION, f"안내 {index}", now=float(index)).dropped == ()
+
+
 def test_unknown_priority_falls_back_to_narration():
     queue = TtsQueue()
     queue.push("이상한값", "문장", now=0.0)

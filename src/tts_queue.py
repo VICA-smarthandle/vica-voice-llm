@@ -43,6 +43,9 @@ class PushResult:
     accepted: bool
     preempt: bool = False  # 재생 중인 발화를 끊어야 하는가
     reason: str = ""  # 거절 사유 (로그용)
+    # 이 push 때문에 큐에서 사라진 발화들 (정원 초과 폐기 또는 긴급 선점).
+    # 노드가 로그로 남긴다 — 말이 조용히 사라지면 사후에 원인을 찾을 수 없다.
+    dropped: tuple[str, ...] = ()
 
 
 def parse_request(data: str) -> tuple[str, str]:
@@ -128,15 +131,15 @@ class TtsQueue:
 
             if priority == EMERGENCY:
                 # 안전 관련은 대기 중인 일반 발화를 밀어내고 바로 나간다.
+                dropped = tuple(i.text for i in self._items if i.priority != EMERGENCY)
                 self._items = [i for i in self._items if i.priority == EMERGENCY]
                 self._items.append(item)
                 self._sort()
-                return PushResult(accepted=True, preempt=True)
+                return PushResult(accepted=True, preempt=True, dropped=dropped)
 
             self._items.append(item)
             self._sort()
-            self._trim()
-            return PushResult(accepted=True)
+            return PushResult(accepted=True, dropped=self._trim())
 
     def pop(self) -> Optional[Utterance]:
         with self._lock:
@@ -153,14 +156,20 @@ class TtsQueue:
     def _sort(self) -> None:
         self._items.sort(key=lambda i: (_ORDER[i.priority], i.seq))
 
-    def _trim(self) -> None:
-        """정원을 넘으면 가장 낮은 우선순위의 가장 오래된 항목부터 버린다."""
+    def _trim(self) -> tuple[str, ...]:
+        """정원을 넘으면 가장 낮은 우선순위의 가장 오래된 항목부터 버린다.
+
+        버린 발화를 돌려준다 — 호출자가 로그로 남길 수 있어야 한다.
+        """
+        dropped: list[str] = []
         while len(self._items) > self.max_len:
             lowest = max(_ORDER[i.priority] for i in self._items)
             for index, item in enumerate(self._items):
                 if _ORDER[item.priority] == lowest:
+                    dropped.append(item.text)
                     del self._items[index]
                     break
+        return tuple(dropped)
 
     def _forget_old(self, now: float) -> None:
         self._recent = {
