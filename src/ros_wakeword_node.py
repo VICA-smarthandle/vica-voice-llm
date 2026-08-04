@@ -4,7 +4,7 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
 
 발행: /vica/emergency (vica_interfaces/EmergencyEvent)  ← 긴급, LLM 우회 (기존 계약)
       /vica/user_text (std_msgs/String)                 ← 호출 후 발화 (기존 계약)
-구독: /vica/tts_active (std_msgs/Bool)                  ← TTS 재생 중 자기 목소리 억제
+구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 중 자기 목소리 억제
 
 keyword 는 whisper 전사에서 정확 매칭으로 추출되므로 항상
 HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변경 없음.
@@ -49,7 +49,7 @@ class WakewordNode(Node):
         self._pub_emergency = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._pub_text = self.create_publisher(String, "/vica/user_text", 10)
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
-        self.create_subscription(Bool, "/vica/tts_active", self._on_tts_active, 10)
+        self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
 
         self._monitor = WakewordMonitor(
             on_emergency=self._on_emergency,
@@ -80,7 +80,7 @@ class WakewordNode(Node):
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
-    def _on_tts_active(self, msg: Bool) -> None:
+    def _on_tts_state(self, msg: Bool) -> None:
         self._monitor.set_muted(bool(msg.data))
 
 

@@ -17,8 +17,15 @@ Code(또는 새 작업자)를 위한 것**이다. 이전 세션의 맥락 없이
 - ros_tts_node 대폭 개편, ros_state_machine_stub 삭제, 테스트 다수
 
 겹치는 파일 5개(ros_tts_node·launch·requirements·CLAUDE.md·.gitignore)라 병합 시
-충돌 해결 필요 — 특히 dev 의 새 ros_tts_node 에 이 브랜치의 `/vica/tts_active`
-발행을 재이식해야 한다. 병합 전까지 이 브랜치 단독으로도 시뮬레이션은 완결 동작한다.
+충돌 해결 필요. 병합 전까지 이 브랜치 단독으로도 시뮬레이션은 완결 동작한다.
+
+> **2026-08-04 갱신 — ros_tts_node 재이식은 불필요해졌다.**
+> 이 문서는 원래 "dev 의 새 ros_tts_node 에 이 브랜치의 `/vica/tts_active` 발행을
+> 재이식하라"고 지시했으나, dev 는 **같은 신호를 `/vica/tts_state` 로 이미 발행**하며
+> 모든 면에서 우수하다 (문장 단위 발행 → 감시 사각지대 축소, `TAIL_SEC=0.4` 잔향
+> 처리, 워커 스레드 + 우선순위 큐, `docs/ros2-interface.md` 계약 등재).
+> 그래서 이 브랜치의 토픽 이름을 `/vica/tts_state` 로 통일했다.
+> **병합 시 ros_tts_node 는 dev 것을 그대로 채택하면 되고, 구독자 쪽은 손댈 필요가 없다.**
 
 ## 0. 지금 어디까지 왔나 (한 문단)
 
@@ -48,7 +55,8 @@ reSpeaker ch0 (80ms 프레임, 상시)
   (종지·중지→정지, 맘차·마음차→멈춰). 정본: `src/wakeword_gate.py` (테스트 있음).
 - 긴급어 구성(3단어 유지 vs 축소)은 **로봇 실기 라이브 시험 후 확정**. 스톱이
   약점(재현율 최저 + 오탐 대부분이 스톱 이웃)이라는 근거는 이미 확보됨.
-- TTS 재생 중 자기 목소리 억제: `/vica/tts_active` (AEC 스피커 배선 전 임시).
+- TTS 재생 중 자기 목소리 억제: `/vica/tts_state` (AEC 스피커 배선 전 임시).
+  이름 정본은 `docs/ros2-interface.md` — dev 의 긴급어 감시도 같은 토픽을 구독한다.
 
 ## 2. 성능 스냅샷 (PC 실측, 조용한 조건 — Jetson 에서 재측정 필요)
 

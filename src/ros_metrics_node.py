@@ -1,7 +1,7 @@
 """[SIM ONLY] 계측 ROS2 노드 — 모든 서비스 이벤트와 시스템 사용량을 기록한다.
 
 구독: /vica/wake · /vica/user_text · /vica/intent · /vica/emergency
-      /vica/tts_active · /vica/sim/event
+      /vica/tts_state · /vica/sim/event
 기록: logs/sim/<세션>.jsonl  (이벤트 원본 + 1초 간격 시스템 사용량)
       세션 이름: VICA_SIM_SESSION 환경변수, 없으면 시각
 
@@ -48,7 +48,7 @@ class MetricsNode(Node):
                                  lambda m: self._event("intent", m.intent or "(reply)"), 10)
         self.create_subscription(EmergencyEventMsg, "/vica/emergency",
                                  lambda m: self._event("emergency", m.keyword), 10)
-        self.create_subscription(Bool, "/vica/tts_active",
+        self.create_subscription(Bool, "/vica/tts_state",
                                  lambda m: self._event("tts_start" if m.data else "tts_end", ""), 10)
         self.create_subscription(String, "/vica/sim/event",
                                  lambda m: self._event("sim_event", m.data), 10)
