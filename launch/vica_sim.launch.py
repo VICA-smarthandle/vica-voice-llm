@@ -50,6 +50,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             _python_node("src.ros_tts_node", "vica_tts"),
             _python_node("src.ros_wakeword_node", "vica_wakeword"),
+            # 회전·도착 청각 안내 (음 + 말). 알리기만 한다.
+            _python_node("src.ros_audio_cue_node", "vica_audio_cue"),
             _python_node("src.ros_robot_sim", "vica_robot_sim"),
             _python_node("src.ros_metrics_node", "vica_metrics"),
         ]

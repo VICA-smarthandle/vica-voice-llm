@@ -72,5 +72,7 @@ def generate_launch_description() -> LaunchDescription:
             # 기존 ros_emergency_node(whisper 상시)를 대체한다. 롤백 = 아랫줄을
             # ros_emergency_node 로 되돌리고 push-to-talk STT 를 별도 실행.
             _python_node("src.ros_wakeword_node", "vica_wakeword"),
+            # 회전·도착 청각 안내 (음 + 말). 알리기만 한다.
+            _python_node("src.ros_audio_cue_node", "vica_audio_cue"),
         ]
     )

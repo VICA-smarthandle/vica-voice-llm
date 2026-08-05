@@ -29,3 +29,6 @@ backend/destinations.db
 
 # === 시뮬레이션 계측 기록 ===
 logs/
+
+# 미리 합성한 안내 음성 (scripts/make_cue_wavs.py 로 생성)
+/assets/

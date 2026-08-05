@@ -18,29 +18,27 @@ HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변
 from __future__ import annotations
 
 import threading
+import time
+from pathlib import Path
 
-import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
+from . import audio_cue
+from .cue_logic import GUIDANCE_END_EVENTS, GreetingState
+from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
+from .tts_queue import RESPONSE, build_request
 from .wakeword_monitor import WakewordMonitor
 
-
-def _ack_beep() -> None:
-    """호출 응답음 (시각장애인 사용자용 청각 피드백). 실패해도 감시는 계속된다."""
-    try:
-        import sounddevice as sd
-
-        t = np.arange(int(0.12 * 44100)) / 44100
-        tone = (0.4 * np.sin(2 * np.pi * 880 * t) * np.hanning(len(t))).astype(np.float32)
-        sd.play(tone, 44100)
-    except Exception:
-        pass
+# 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
+# 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
+# 만드는 법: scripts/make_cue_wavs.py (TTS 가 있는 기기에서 한 번 실행)
+GREETING_WAV = Path(__file__).resolve().parent.parent / "assets" / "wake_greeting.wav"
 
 
 class WakewordNode(Node):
@@ -49,7 +47,13 @@ class WakewordNode(Node):
         self._pub_emergency = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._pub_text = self.create_publisher(String, "/vica/user_text", 10)
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
+        self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
+        self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
+
+        # 안내 한 건의 첫 호출에만 말로 답한다. 이후는 짧은 음.
+        self._greeting = GreetingState()
+        self._greeting_wav = self._load_greeting_wav()
 
         self._monitor = WakewordMonitor(
             on_emergency=self._on_emergency,
@@ -68,17 +72,52 @@ class WakewordNode(Node):
             f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})")
 
     def _on_user_text(self, text: str) -> None:
+        # 부르고 실제로 말이 이어졌을 때만 인사가 성립한다. 잘못 부르고 떠난
+        # 사람 뒤에 온 다음 사용자가 인사를 못 받는 것을 막는다.
+        self._greeting.on_user_spoke(time.time())
         msg = String()
         msg.data = text
         self._pub_text.publish(msg)
         self.get_logger().info(f"🗣️ 호출 발화 -> /vica/user_text: {text!r}")
 
     def _on_wake(self) -> None:
-        _ack_beep()
+        if self._greeting.on_wake(time.time()):
+            self._greet()
+        else:
+            audio_cue.play(audio_cue.wake_ack())
         msg = String()
         msg.data = "wake"
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
+
+    def _greet(self) -> None:
+        """안내 한 건의 첫 호출. 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
+        if self._greeting_wav is not None:
+            audio_cue.play(*self._greeting_wav)
+            return
+        # 폴백: 큐를 거치므로 조금 늦다. 파일을 만들어 두면 즉시 난다.
+        self._tts_pub.publish(String(data=build_request(RESPONSE, WAKE_GREETING)))
+
+    def _load_greeting_wav(self):
+        """인사 음성 파일을 읽어 둔다. 없으면 None (TTS 폴백)."""
+        if not GREETING_WAV.exists():
+            self.get_logger().warn(
+                f"인사 음성이 없어 TTS 로 대체한다 (조금 늦다): {GREETING_WAV}\n"
+                "  만들기: .venv/bin/python scripts/make_cue_wavs.py")
+            return None
+        try:
+            import soundfile as sf
+
+            data, rate = sf.read(str(GREETING_WAV), dtype="float32")
+            return data, rate
+        except Exception as exc:
+            self.get_logger().warn(f"인사 음성을 읽지 못해 TTS 로 대체한다: {exc}")
+            return None
+
+    def _on_goal_event(self, msg: String) -> None:
+        # 도착·취소·실패 = 안내 한 건이 끝났다. 다음 사용자에게 다시 인사한다.
+        if (msg.data or "").strip() in GUIDANCE_END_EVENTS:
+            self._greeting.on_guidance_ended()
 
     def _on_tts_state(self, msg: Bool) -> None:
         self._monitor.set_muted(bool(msg.data))
