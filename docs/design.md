@@ -77,17 +77,26 @@ TTS 입력은 `/vica/tts_request` 하나로 통합한다. `tts_queue.py`가 우�
 ## 6. 코드 구조
 
 ```text
-launch/vica_voice.launch.py
+launch/vica_voice.launch.py     실기       (LLM·TTS·웨이크워드·청각 안내)
+launch/vica_sim.launch.py       [SIM ONLY] (+ 가상 로봇·계측)
 src/
-├── ros_stt_node.py
-├── ros_node.py
-├── ros_tts_node.py
-├── ros_emergency_node.py
+├── ros_wakeword_node.py        마이크 앞단 (호출 + 긴급, launch 기본)
+│   ├── wakeword_monitor.py     상시 감시 엔진
+│   └── wakeword_gate.py        관문·정확 매칭 (순수 로직)
+├── ros_audio_cue_node.py       회전·도착 청각 안내
+│   ├── cue_logic.py            판정 (순수 로직)
+│   └── audio_cue.py            안내음 생성·재생
+├── ros_node.py                 LLM 해석 → /vica/intent
+├── ros_tts_node.py             TTS 큐 재생 + /vica/tts_state
+├── ros_stt_node.py             push-to-talk (개발용, launch 에 없음)
+├── ros_emergency_node.py       whisper 상시 감시 (롤백, launch 에 없음)
 ├── destination_loader.py
 ├── destination_matcher.py
 ├── emergency_filter.py
 ├── langchain_intent_parser.py
 ├── tts_queue.py
+├── tts_text.py                 문장 분할 (감시 사각지대 축소)
+├── replies.py                  고정 문구 (자가 트리거 검사 대상)
 ├── history.py
 ├── schema.py
 └── ros_convert.py
