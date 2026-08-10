@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
+from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
 from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
@@ -98,18 +99,13 @@ def _build_system_prompt(
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
 # 않고 코드가 결정한다 — 소형 모델이 is_confirmation 을 놓치면 확인 질문이 무한
 # 반복되는 문제가 실기에서 확인됐다 (2026-07-19, exaone3.5:2.4b).
-_AFFIRMATIVES = frozenset(
-    {"네", "예", "응", "어", "그래", "그래요", "맞아", "맞아요",
-     "좋아", "좋아요", "네네", "네맞아요", "응응", "가자", "가줘"}
-)
-_NEGATIVES = frozenset(
-    {"아니", "아니요", "아뇨", "아니야", "아니에요", "싫어", "싫어요", "취소"}
-)
-
-
-def _normalize_short_reply(text: str) -> str:
-    """STT 가 붙이는 구두점·공백을 제거해 짧은 답변을 비교 가능하게 만든다."""
-    return "".join(ch for ch in text if ch.isalnum())
+#
+# 목록의 정본은 `handle_mode.py` 다. 스마트핸들 모드 질문도 같은 "네/아니요"를
+# 받으므로, 두 곳에 따로 두면 한쪽만 고쳐져 어긋난다. 아래 이름은 이 모듈의
+# 기존 호출부와 테스트가 쓰던 것이라 별칭으로 남긴다.
+_AFFIRMATIVES = AFFIRMATIVES
+_NEGATIVES = NEGATIVES
+_normalize_short_reply = normalize_short_reply
 
 
 def _pending_confirm_destination(
