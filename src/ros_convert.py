@@ -55,4 +55,5 @@ def msg_to_robot_state(msg: RobotStateMsg) -> RobotState:
         current_floor=None if msg.current_floor < 0 else msg.current_floor,
         current_building=msg.current_building,
         is_moving=msg.is_moving,
+        is_paused=msg.is_paused,
     )

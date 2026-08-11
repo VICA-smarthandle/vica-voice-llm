@@ -43,7 +43,20 @@ class DestinationData(BaseModel):
 
 
 # intent 종류와 안전 플래그는 정해진 값만 허용한다 (오타/임의값 방지).
-VicaIntentType = Literal["navigate", "question", "clarify", "unknown"]
+#
+# cancel / pause / resume 은 진행 중인 안내를 조작하는 요청이다. 목적지가 아니라
+# 현재 안내가 대상이므로 matched_destination_id 가 필요 없다. 정본은
+# vica_ros2_ws/src/vica_interfaces/msg/VicaIntent.msg 주석이며 2026-07-27 에
+# 늘었는데 음성 쪽이 따라가지 못하고 있었다(2026-08-10 반영).
+VicaIntentType = Literal[
+    "navigate",
+    "question",
+    "clarify",
+    "unknown",
+    "cancel",
+    "pause",
+    "resume",
+]
 SafetyFlag = Literal["normal", "emergency"]
 
 
@@ -86,3 +99,6 @@ class RobotState(BaseModel):
     current_floor: Optional[int] = None
     current_building: str = ""
     is_moving: bool = False
+    # 목적지를 기억한 채 멈춰 있다. "가자" 같은 말이 확인 응답인지 재개 요청인지
+    # 가르는 근거다(mission_command.classify_mission_command).
+    is_paused: bool = False

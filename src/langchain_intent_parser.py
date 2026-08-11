@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
 from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
+from .mission_command import classify_mission_command
 from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
@@ -35,7 +36,11 @@ class _IntentDraft(BaseModel):
     matched_destination_id / need_confirm / safety_flag 는 코드가 채운다.
     """
 
-    intent: VicaIntentType = Field(description="navigate / question / clarify / unknown 중 하나")
+    intent: VicaIntentType = Field(
+        description="navigate / question / clarify / cancel / unknown 중 하나. "
+        "pause 와 resume 은 LLM 이 내지 않는다 — 되묻지 않고 즉시 실행되므로 "
+        "mission_command 규칙이 이 호출 이전에 판정한다."
+    )
     destination_candidate: Optional[str] = Field(
         default=None,
         description="navigate 일 때, 목적지 목록의 name 중 가장 알맞은 하나. 없으면 null.",
@@ -79,6 +84,8 @@ def _build_system_prompt(
 - navigate: 어딘가로 가고 싶어함. 직접 표현("407호 가자")뿐 아니라 간접 표현("배 아파"->화장실, "배고파"->식당)도 포함.
 - question: 이동이 아니라 정보 질문("지금 몇 층이야?").
 - clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
+- cancel: 진행 중인 안내를 그만두고 싶어함("취소해줘", "안 갈래", "그만 됐어", "내릴게").
+  목적지를 새로 말하는 것은 cancel 이 아니라 navigate 다.
 - unknown: 안내와 무관하거나 이해 불가.
 
 [목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
@@ -173,6 +180,19 @@ def parse_intent(
                 reply=CONFIRM_DECLINED,
                 need_confirm=False,
             )
+
+    # 일시정지·재개는 Mission Manager 가 되묻지 않고 즉시 실행한다. 오인식이 곧
+    # 실행이므로 LLM 에 맡기지 않고 정해진 말로만 판정한다 (mission_command 참고).
+    # 취소는 되묻기가 받쳐주므로 아래 LLM 이 낸다.
+    command = classify_mission_command(
+        user_text,
+        confirm_pending=pending is not None,
+        is_paused=bool(getattr(robot_state, "is_paused", False)),
+    )
+    if command is not None:
+        # reply 는 비운다. 결과 문구는 게이트를 통과시킨 Mission Manager 가 말한다
+        # (tts_queue.request_for_intent 가 이 intent 들을 침묵 처리한다).
+        return VicaIntent(intent=command, confidence=1.0, need_confirm=False)
 
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]

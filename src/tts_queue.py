@@ -23,6 +23,10 @@ EMERGENCY = "emergency"
 RESPONSE = "response"
 NARRATION = "narration"
 
+# 진행 중인 안내를 조작하는 intent. 결과 문구는 게이트를 통과시킨 Mission Manager 가
+# 말하므로 음성 쪽은 침묵한다 (request_for_intent 참고).
+MISSION_COMMAND_INTENTS = frozenset({"cancel", "pause", "resume"})
+
 # 앞에 올수록 먼저 재생된다.
 PRIORITIES = (EMERGENCY, RESPONSE, NARRATION)
 _ORDER = {name: index for index, name in enumerate(PRIORITIES)}
@@ -79,7 +83,12 @@ def request_for_intent(intent) -> Optional[str]:
 
     - navigate + need_confirm=False → Mission Manager 가 말한다 (여기서는 침묵)
     - navigate + need_confirm=True  → 확인 질문이므로 LLM 이 말한다
+    - cancel / pause / resume       → Mission Manager 가 말한다 (여기서는 침묵)
     - 그 밖의 intent            → Mission Manager 가 관여하지 않으므로 LLM 이 말한다
+
+    cancel/pause/resume 도 게이트가 있다. 주행 중이 아니면 거부되고 그때의 문구는
+    Mission Manager 가 낸다(MSG_NOT_NAVIGATING 등). 여기서도 말하면 같은 상황에
+    두 문장이 겹쳐 나가고, 거부됐는데 수락된 것처럼 들릴 수 있다.
 
     VicaIntent(pydantic)와 ROS 메시지 양쪽에 쓰도록 속성으로만 접근한다.
     """
@@ -87,9 +96,10 @@ def request_for_intent(intent) -> Optional[str]:
     if not reply:
         return None
 
-    if getattr(intent, "intent", "") == "navigate" and not getattr(
-        intent, "need_confirm", False
-    ):
+    kind = getattr(intent, "intent", "")
+    if kind in MISSION_COMMAND_INTENTS:
+        return None
+    if kind == "navigate" and not getattr(intent, "need_confirm", False):
         return None
 
     priority = (
