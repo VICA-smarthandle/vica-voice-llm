@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .handle_mode import normalize_short_reply
+from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
 
 PAUSE = "pause"
 RESUME = "resume"
@@ -63,6 +63,82 @@ RESUME_PHRASES = frozenset({
 # 그 대답이고, 일시정지 상태면 재개 요청이다. 사용자가 같은 말을 두 뜻으로
 # 쓰는 것이 자연스러우므로 어느 한쪽을 포기하지 않는다(2026-08-10 결정).
 AMBIGUOUS_RESUME_PHRASES = frozenset({"가자", "가줘", "가"})
+
+
+# 취소 되묻기를 기다리는 시간. Mission Manager 의 confirm_timeout_sec 과 같은 값이다
+# (mission_logic 이 이 시한을 넘기면 MSG_CANCEL_KEPT 로 안내를 이어간다). 음성 쪽이
+# 더 길게 잡으면 로봇은 이미 포기했는데 음성만 확정을 보내는 어긋남이 생긴다.
+DEFAULT_CANCEL_CONFIRM_WINDOW_SEC = 30.0
+
+
+class CancelConfirm:
+    """취소 되묻기에 대한 답을 받는다.
+
+    ## 왜 필요한가
+
+    Mission Manager 는 "취소해줘"에 곧바로 취소하지 않고 "안내를 취소할까요?"로
+    되묻는다. 그런데 확정 경로가 `intent == "cancel"` 하나뿐이라
+    (`mission_manager_node:267`) 사용자가 "네"라고 답하면 아무 일도 일어나지 않았다.
+
+    목적지 확인 단축(`_pending_confirm_destination`)으로도 잡히지 않는다. 그것은
+    직전 AI 발화가 **목적지의** `confirm_prompt` 일 때만 걸리는데, 되묻는 문장은
+    Mission Manager 가 말하므로 `ros_node` 의 대화 기록에 아예 없기 때문이다.
+    `MODE_ASK` 와 같은 구조의 문제다 — 질문한 쪽과 답을 받는 쪽이 다르다.
+
+    그래서 **되물을 것을 아는 쪽**(취소 intent 를 내보낸 음성 노드)이 직접 기억한다.
+
+    ## 게이트에 막혔을 때
+
+    Mission Manager 가 게이트로 취소를 거부하면 되묻지 않는데, 음성 쪽은 그것을
+    모른 채 기다린다. 이때 "네"가 오면 취소를 한 번 더 보내고 다시 거부되어
+    거부 문구가 나온다. 안전 쪽으로 기우는 실패이며(취소가 일어나지 않는다)
+    시한이 지나면 스스로 풀린다.
+    """
+
+    def __init__(
+        self, window_sec: float = DEFAULT_CANCEL_CONFIRM_WINDOW_SEC
+    ) -> None:
+        self.window_sec = window_sec
+        self._asked_at: Optional[float] = None
+
+    @property
+    def waiting(self) -> bool:
+        return self._asked_at is not None
+
+    def on_requested(self, now: float) -> None:
+        """취소 intent 를 내보냈다. Mission Manager 가 곧 되묻는다."""
+        self._asked_at = now
+
+    def take_answer(self, text: str, now: float) -> Optional[bool]:
+        """대기 중이면 발화를 답으로 읽는다. True=확정, False=철회, None=답 아님.
+
+        답으로 읽히면 대기를 푼다. 시한을 넘긴 뒤의 답은 무시하고 대기도 푼다 —
+        Mission Manager 쪽 시한도 같은 값이라 이미 포기한 상태다.
+        """
+        if self._asked_at is None:
+            return None
+        if now - self._asked_at >= self.window_sec:
+            self._asked_at = None
+            return None
+
+        word = normalize_short_reply(text)
+        # "취소"를 다시 말하는 것도 확정이다. Mission Manager 가 원래 기대하던 형태다.
+        if word in AFFIRMATIVES or word in _CANCEL_REPEAT_WORDS:
+            self._asked_at = None
+            return True
+        if word in NEGATIVES:
+            self._asked_at = None
+            return False
+        return None
+
+    def reset(self) -> None:
+        """안내가 끝났거나 취소가 확정됐다. 대기를 비운다."""
+        self._asked_at = None
+
+
+# 되묻기에 "취소"라고 다시 답하는 경우. NEGATIVES 에도 "취소"가 있어 순서가
+# 중요하다 — 되묻는 중의 "취소"는 부정이 아니라 확정이다.
+_CANCEL_REPEAT_WORDS = frozenset({"취소", "취소해", "취소해줘", "취소요"})
 
 
 def classify_mission_command(

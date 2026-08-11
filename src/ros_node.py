@@ -34,6 +34,7 @@ from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import parse_intent
+from .mission_command import CancelConfirm
 from .replies import ACK_LISTENING
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import RobotState, VicaIntent
@@ -62,6 +63,9 @@ class LlmIntentNode(Node):
         self._robot_state = RobotState()  # robot_state 토픽이 오기 전 기본값
         # 멀티턴 기억. 공용 로봇이라 한동안 발화가 없으면 새 대화로 보고 비운다.
         self._history = ConversationHistory()
+        # 취소 되묻기 대기. 되묻는 문장은 Mission Manager 가 말하므로 history 로는
+        # 알 수 없다. 취소를 내보낸 이쪽이 직접 기억한다.
+        self._cancel_confirm = CancelConfirm()
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
@@ -88,6 +92,31 @@ class LlmIntentNode(Node):
         if self._history.begin_turn(time.time()):
             self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
 
+        # 0-1) 취소 되묻기에 대한 답이면 LLM 을 거치지 않고 그대로 확정한다.
+        #      Mission Manager 는 "안내를 취소할까요?"로 되묻지만 그 문장을 말한 것은
+        #      저쪽이라 이 노드의 대화 기록에 없다. 되물을 것을 아는 쪽이 기억한다.
+        answer = self._cancel_confirm.take_answer(text, time.time())
+        if answer is not None:
+            if answer:
+                # intent=cancel 을 한 번 더 보낸다. Mission Manager 가 이것을
+                # 재확인 긍정으로 읽는다(mission_manager_node 의 cancel 분기).
+                self._intent_pub.publish(
+                    intent_to_msg(
+                        VicaIntent(intent="cancel", confidence=1.0, need_confirm=False)
+                    )
+                )
+                self.get_logger().info(f"취소 재확인 긍정 ('{text}') -> intent=cancel")
+            else:
+                # 철회는 보낼 값이 없다. Mission Manager 에 부정을 전달할 intent 가
+                # 아직 없어(_on_voice_mission_command 는 cancel 만 확정으로 읽는다)
+                # 저쪽 시한(confirm_timeout_sec)이 지나면 MSG_CANCEL_KEPT 로 안내를
+                # 이어간다. 그때까지 주행은 계속되므로 안전 쪽이다. [GAP]
+                self.get_logger().info(
+                    f"취소 재확인 부정 ('{text}') -> 전달 경로 없음. "
+                    "Mission Manager 시한 뒤 안내가 이어진다"
+                )
+            return
+
         # 1) 긴급어는 LLM 이전에 처리한다 (안전 경로).
         keyword = detect_emergency(text)
         if keyword:
@@ -112,6 +141,11 @@ class LlmIntentNode(Node):
                 history=self._history.messages,
                 robot_state=self._robot_state,
             )
+
+        # 2-1) 취소를 내보냈다면 Mission Manager 가 곧 되묻는다. 그 답을 받을
+        #      준비를 해 둔다 (0-1 참고).
+        if intent.intent == "cancel":
+            self._cancel_confirm.on_requested(time.time())
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         self._intent_pub.publish(intent_to_msg(intent))
