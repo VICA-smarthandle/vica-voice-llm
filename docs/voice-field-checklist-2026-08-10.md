@@ -11,6 +11,131 @@
 
 ---
 
+## A. 실행 매뉴얼 — 젯슨에서 이 순서대로
+
+절차의 **근거**는 `docs/voice-field-test.md`에, **채울 표**는 아래 0~8절에 있다.
+이 절은 **복사해서 붙여 넣는 명령**만 모았다.
+
+### A.1 터미널 배치
+
+터미널 5개를 쓴다. 창 4·5는 시험 항목에 따라 명령을 바꾼다.
+
+```text
+창 1  음성 노드 (launch)         ← 로그를 계속 본다
+창 2  ros2 topic echo /vica/emergency   ← 긴급어. 2단계 내내 켜 둔다
+창 3  ros2 topic echo /vica/wake        ← 호출. 3단계에서 본다
+창 4  조작용 (topic pub 등)
+창 5  터치센서 mock (5-4에서만)
+```
+
+**모든 창에서 먼저** 실행한다. 하나라도 빠뜨리면 메시지 타입을 못 찾는다.
+
+```bash
+source /opt/ros/humble/setup.bash
+source <workspace>/vica_ros2_ws/install/setup.bash
+cd <workspace>/vica-voice-llm
+```
+
+### A.2 코드 받기 (한 번만)
+
+**`dev`가 아니라 시험 브랜치를 받는다.** 오늘 것은 `dev`에 없다.
+
+```bash
+cd <workspace>/vica-voice-llm
+git fetch origin && git checkout test/voice-field-2026-08-10
+
+cd <workspace>/vica_ros2_ws
+git fetch origin && git checkout test/mock-touch-and-mic-open
+colcon build --packages-select vica_user_guidance --symlink-install
+source install/setup.bash
+```
+
+- [ ] 두 저장소 모두 시험 브랜치인지 확인 (`git branch --show-current`)
+
+`vica_user_guidance` 빌드가 필요한 이유는 새 실행 파일(`mock_touch_keyboard`)이
+등록됐기 때문이다. 빌드하지 않으면 5-4에서 `ros2 run` 이 실패한다.
+
+### A.3 `.env` 확인
+
+`.gitignore`에 있어 **git 으로 따라오지 않는다.** 없으면 4단계(대화)가 통째로 막힌다.
+1~3단계는 없어도 된다.
+
+```bash
+cd <workspace>/vica-voice-llm
+cat .env | grep -c OLLAMA_API_KEY      # 1 이 나와야 한다
+cp .env.example .env                   # 없으면 만들고 키를 채운다
+```
+
+### A.4 실행
+
+**창 1 — 음성 노드**
+
+```bash
+ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630
+```
+
+시험 2-7에서만 인자를 바꿔 다시 띄운다.
+
+```bash
+ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630 suppress_during_tts:=false
+```
+
+**창 2·3 — 감시**
+
+```bash
+ros2 topic echo /vica/emergency        # 창 2
+ros2 topic echo /vica/wake             # 창 3
+```
+
+**창 4 — 조작용.** 자주 쓰는 명령을 미리 적어 둔다.
+
+```bash
+# TTS 재생 (2-1, 2-7)
+ros2 topic pub -1 /vica/tts_request std_msgs/String \
+  "{data: 'narration:지금 이동 중입니다. 먼저 현재 안내를 취소해 주세요.'}"
+
+# 긴급 선점 확인 (2-5)
+ros2 topic pub -1 /vica/tts_request std_msgs/String \
+  "{data: 'emergency:안전을 위해 멈추겠습니다.'}"
+
+# 재생 신호 (2-6)
+ros2 topic echo /vica/tts_state
+
+# intent 확인 (4-3)
+ros2 topic echo /vica/intent
+```
+
+**창 5 — 터치센서 mock (5-4에서만).** guidance driver 를 mock 모드로 따로 띄운다.
+
+```bash
+ros2 launch vica_user_guidance user_guidance.launch.py enable_serial:=false
+ros2 run vica_user_guidance mock_touch_keyboard     # 스페이스 = 잡음/놓음
+```
+
+### A.5 E-stop 이 걸렸을 때 푸는 법
+
+2-2·2-7·5-2에서 **실제로 걸린다.** 미리 익혀 둔다.
+
+1. 관리자 앱 → 안전 초기화
+2. 앱이 없으면 터미널에서 `/app_estop_reset` 서비스 호출
+
+```bash
+ros2 service list | grep estop        # 이름 확인
+ros2 topic echo /estop_state          # 풀렸는지 확인 (false 여야 한다)
+```
+
+> 앱·STT 의 `false` 는 입력 해제일 뿐 **래치 reset 이 아니다.** 원인을 먼저 없애야
+> reset 이 승인된다.
+
+### A.6 끝낼 때 (필수)
+
+- [ ] `suppress_during_tts` 를 **기본값 true** 로 되돌린다 (인자 없이 launch)
+- [ ] 터치센서 mock 노드를 `q` 로 종료한다 (놓음 상태로 끝난다)
+- [ ] 바꾼 값이 있으면 7절 표에 적는다
+- [ ] `git status` 로 의도치 않은 변경이 없는지 본다
+
+---
+
 ## 0. 시작 전 (필수)
 
 - [ ] **물리 E-stop 버튼**을 손이 닿는 곳에 둔다
@@ -266,7 +391,7 @@ ros2 launch launch/vica_voice.launch.py suppress_during_tts:=false
 
 ---
 
-## 5-4. 터치센서 mock — 손잡이 잡기·놓기 (2026-08-10 신규)
+### 5-4. 터치센서 mock — 손잡이 잡기·놓기 (2026-08-10 신규)
 
 터치센서가 미장착이라 키보드로 흉내낸다. **`enable_serial=false` 일 때만** 구독이
 열린다 — 실기 배선에서는 이 경로가 아예 없다.
