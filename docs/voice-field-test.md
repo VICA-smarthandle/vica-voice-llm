@@ -3,6 +3,11 @@
 2026-07-23 음성 관련 변경(자가 트리거 차단, 안내 음성 복구, 긴급어 정리, 즉시 피드백,
 거리 안내)을 Jetson 실기에서 확인하는 절차다.
 
+> **2026-08-10 갱신.** 마이크 앞단이 push-to-talk STT 에서 웨이크워드로 바뀌었고
+> (2026-08-04) 청각 안내 노드가 늘었다(2026-08-05). 그에 맞춰 2절의 노드 목록·로그
+> 줄·mute 시간을 고쳤고, 웨이크워드 감지 시험(2-6·2-7)을 새로 넣었다. 3절의 STT
+> 노드 실행 절차도 바꿨다 — **마이크를 두 프로그램이 함께 쓸 수 없다.**
+
 환경 구축(venv, ROS2, CUDA, `.env`)은 `docs/jetson-setup.md`가 정본이다. 이 문서는
 **이미 돌아가던 장비에서 이번 변경만 확인**하는 데 초점을 둔다.
 
@@ -31,15 +36,17 @@
 
 ```bash
 # 음성 저장소
-cd ~/dev/vica-voice-llm        # 실기 경로에 맞게
+cd <workspace>/vica-voice-llm
 git pull                        # 또는 scp 로 복사
 
 # ROS 저장소 (Mission Manager 멘트·거리 안내)
-cd ~/tony/vica_ros2_ws
+cd <workspace>/vica_ros2_ws
 git pull
 source /opt/ros/humble/setup.bash
 colcon build --packages-select vica_mission_manager
 ```
+
+두 저장소 모두 **`dev`** 를 본다(`workspace.repos`).
 
 ### 왜 같이 올려야 하나
 
@@ -60,11 +67,15 @@ colcon build --packages-select vica_mission_manager
 장비에 올린 뒤, 마이크·스피커를 켜기 전에 자동 검사부터 돌린다.
 
 ```bash
-cd ~/dev/vica-voice-llm && .venv/bin/python -m pytest tests/ -q
+cd <workspace>/vica-voice-llm && .venv/bin/python -m pytest tests/ -q
 cd ~/tony/vica_ros2_ws/src/vica_mission_manager && PYTHONPATH=. python3 -m pytest test/ -q
 ```
 
-기대: 각각 76개 / 83개 통과(2개 건너뜀). 여기서 실패하면 아래 단계로 가지 않는다.
+**실패가 0인지만 본다.** 시험 수는 계속 늘어나므로 특정 숫자를 기대값으로 두지
+않는다(2026-08-10 기준 음성 저장소 154건). 여기서 실패하면 아래 단계로 가지 않는다.
+
+`ModuleNotFoundError`가 나오면 시험이 아니라 **venv 문제**다. `pydantic`·`langchain`
+이 없는 환경에서는 6개 모듈이 수집 단계에서 실패한다. `docs/jetson-setup.md`를 본다.
 
 ---
 
@@ -84,19 +95,34 @@ cd <workspace>/vica-voice-llm
 ros2 launch launch/vica_voice.launch.py
 ```
 
-LLM · TTS · 긴급어 감시 세 노드가 뜬다. 로그에 다음이 보여야 한다.
+**네 노드**가 뜬다. 로그에 다음 네 줄이 다 보여야 한다.
 
 ```
+VICA LLM intent node 시작 (구독: /vica/user_text, /vica/robot_state | 발행: /vica/intent)
 VICA TTS node 시작 (구독: /vica/tts_request | 발행: /vica/tts_state)
-VICA 긴급어 상시 감시 시작 (발행: /vica/emergency, 구독: /vica/tts_state)
+VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text)
+VICA 청각 안내 시작 (구독: /vica/turn_guide, /vica_goal_event)
 ```
 
-`/vica/tts_state`가 두 줄에 다 나와야 한다. 없으면 옛 버전이다.
+세 번째 줄이 **"긴급어 상시 감시"** 로 나오면 옛 버전이다(`ros_emergency_node`).
+웨이크워드 노드는 호출어와 긴급어를 함께 맡으므로 둘을 같이 띄우지 않는다.
+
+웨이크워드 모델 두 개가 있어야 뜬다. 없으면 이 노드만 조용히 죽는다.
+
+```bash
+ls models/vica_bikaya_v1.onnx models/vica_modelb_v2.onnx
+```
 
 **터미널 2 — 감시용**
 
 ```bash
 ros2 topic echo /vica/emergency      # 긴급어가 잡힐 때만 출력
+```
+
+호출("비카야")을 함께 보려면 창을 하나 더 연다.
+
+```bash
+ros2 topic echo /vica/wake           # 호출이 잡힐 때만 출력
 ```
 
 **터미널 3 — 조작용**
@@ -172,9 +198,15 @@ ros2 topic pub -1 /vica/tts_request std_msgs/String \
 > 이 시험이 실패하면 mute가 과하게 걸린 것이다. 안전 기능이 죽은 상태이므로
 > **다음 단계로 진행하지 않는다.**
 
-이어서 **로봇이 말한 직후 1초 안에** "멈춰"라고 해 본다. 감시가 다시 열리기까지
-약 2.4초 걸리므로 이때는 안 잡힐 수 있다. 이건 설계된 동작이고, 그 값이 실제
-사용에서 너무 긴지 판단해 기록한다.
+이어서 **로봇이 말한 직후** "멈춰"라고 해 본다. 감시는 `/vica/tts_state`가 false 로
+바뀔 때 열리고, TTS 노드는 재생이 끝나고 `TAIL_SEC`(0.4초) 뒤에 그 신호를 낸다
+(`ros_tts_node.py:40`). 즉 **약 0.4초**의 사각지대가 있다. 이건 설계된 동작이고,
+그 값이 실제 사용에서 너무 긴지 판단해 기록한다.
+
+> **`/vica/tts_state`가 끊기면 어떻게 되는가.** TTS 노드가 죽어 false 가 오지 않으면
+> 감시가 영구히 닫힌다. 그래서 `set_muted`에 fail-safe 시한 **10초**가 있다
+> (`wakeword_monitor.py:81`). 시험하려면 TTS 노드만 죽이고 10초 뒤 "멈춰"를 해 본다 —
+> 잡혀야 한다. 잡히지 않으면 안전 감시가 영구히 닫힌 것이다.
 
 ---
 
@@ -189,15 +221,78 @@ ros2 topic pub -1 /vica/tts_request std_msgs/String \
 
 ---
 
+### 시험 2-6. 호출어가 잡히는가 ★ 진입 경로
+
+**웨이크워드는 유일한 진입 경로다.** 시각장애인 사용자는 엔터를 칠 수 없고 핸들에
+버튼을 더 달 수 없다. 이것이 안 잡히면 서비스 전체를 쓸 수 없다.
+
+`ros2 topic echo /vica/wake` 창을 보며 **"비카야"** 라고 한다.
+
+| 확인 | 기대 |
+| --- | --- |
+| `/vica/wake` | 출력이 뜬다 |
+| 소리 | **"네?"** (안내 한 건의 첫 호출) |
+| 두 번째 호출 | 짧은 음만 난다. 말로 답하지 않는다 |
+
+두 번째가 다른 이유는 `cue_logic.GreetingState` 때문이다 — 안내 한 건에 한 번만
+말로 답하고, 도착·취소·실패로 안내가 끝나면 다시 말로 답한다.
+
+**거리를 바꿔 가며 각 10회** 세고 기록한다. LOSO 화자 일반화는 마쳤지만
+(멈춰 93 % / 정지 86 % / 스톱 78 %) **실제 마이크·거리·소음은 처음이다.**
+
+| 거리 | 감지 | 비고 |
+| --- | --- | --- |
+| 0.5 m | / 10 | |
+| 1.5 m | / 10 | 손잡이를 잡은 사용자의 실제 거리 |
+| 3 m | / 10 | |
+
+**두 사람이 번갈아** 해 본다. 화자에 따라 갈리면 모델 문제다.
+
+---
+
+### 시험 2-7. 비슷한 말에 잘못 열리지 않는가
+
+`/vica/wake` 창을 보며 다음을 말한다. **아무것도 뜨면 안 된다.**
+
+- "비키야"
+- "비카"
+- "이거야"
+- "미카엘"
+
+오탐이 잦으면 관문 임계값을 올린다(6절). 다만 **2-6이 먼저다** — 안 열리는 것이
+잘못 열리는 것보다 나쁘다.
+
+---
+
 ## 3. 대화 확인 (LLM 포함)
 
-**터미널 3**에서 STT 노드를 띄운다.
+### ⚠️ 마이크는 한 프로그램만 쓴다
+
+웨이크워드 노드가 이미 마이크를 잡고 있다. `ros_stt_node`(push-to-talk)를 함께
+띄우면 **둘 다 제대로 못 듣는다.** 둘 중 하나만 고른다.
+
+**방법 A — 웨이크워드로 (실제 사용 경로. 이쪽을 권한다)**
+
+터미널 1을 그대로 두고 말로 진행한다.
+
+```text
+"비카야"  →  "네?"  →  "식당으로 가줘"  →  확인 질문  →  "네"
+```
+
+**방법 B — push-to-talk 로 (엔터로 시점을 통제하고 싶을 때)**
+
+터미널 1의 launch 를 **끄고** 노드를 따로 띄운다.
 
 ```bash
+# 터미널 1 (launch 종료 후)
+.venv/bin/python -m src.ros_node &
+.venv/bin/python -m src.ros_tts_node &
+# 터미널 3
 .venv/bin/python -m src.ros_stt_node
 ```
 
-엔터를 눌러 녹음하고, 말한 뒤 다시 엔터.
+엔터를 눌러 녹음하고, 말한 뒤 다시 엔터. **이 방법에서는 긴급어 감시가 없다** —
+웨이크워드 노드를 껐기 때문이다. 물리 E-stop 을 손에 둔다.
 
 | 시험 | 말할 것 | 기대 |
 | --- | --- | --- |
@@ -273,11 +368,19 @@ ros2 launch vica_mission_manager mission_manager.launch.py \
 | 값 | 위치 | 기본 | 언제 바꾸나 |
 | --- | --- | --- | --- |
 | 재생 후 대기 | `src/ros_tts_node.py` `TAIL_SEC` | 0.4초 | 시험 2-1에서 자가 트리거가 나면 늘린다 |
+| **호출 관문** | `src/wakeword_monitor.py` `gate_a` | **0.6** | 2-7 오탐이 잦으면 올린다. **2-6이 먼저다** |
+| **긴급 관문** | `src/wakeword_monitor.py` `gate_b` | **0.5** | 2-4가 실패하면 내린다. 자가 트리거가 나면 올린다 |
 | 문장 최대 길이 | `src/tts_text.py` `MAX_CHUNK_CHARS` | 40자 | 시험 2-4에서 감시 공백이 길게 느껴지면 줄인다 |
 | 즉시 응답 문구 | `src/replies.py` `ACK_LISTENING` | "네." | 거슬리면 바꾸거나 비운다 |
 | 거리 안내 지점 | `mission_logic.py` `DISTANCE_MILESTONES_M` | 10m, 3m | 실제 거리 감각과 맞춘다 |
 | 대화 초기화 시간 | `src/history.py` `DEFAULT_IDLE_RESET_SEC` | 180초 | 사용 패턴에 맞춘다 |
-| mute 안전장치 | `src/emergency_monitor.py` `max_mute_sec` | 8초 | 긴 안내가 잘리면 늘린다 |
+| **mute 안전장치** | `src/wakeword_monitor.py` `set_muted(failsafe_sec)` | **10초** | 긴 안내가 잘리면 늘린다 |
+
+두 관문 모두 **2프레임 연속**으로 임계값을 넘어야 열린다(`FrameGate(persist=2)`).
+한 프레임만 튀는 잡음은 여기서 걸러진다.
+
+`src/emergency_monitor.py`의 `max_mute_sec`(8초)은 롤백 경로(`ros_emergency_node`)
+전용이며 launch 에 없다. 웨이크워드 경로는 위 `failsafe_sec`을 쓴다.
 
 값을 바꾸면 자동 검사를 다시 돌린다. 특히 **문구를 바꿨을 때는 반드시** 돌린다 —
 긴급어가 섞이면 검사가 막아 준다.
@@ -292,6 +395,9 @@ ros2 launch vica_mission_manager mission_manager.launch.py \
 | 요청은 오는데 소리가 없다 | TTS 노드 로그의 `재생 실패` (오디오 장치) |
 | 로봇이 자기 말에 멈춘다 | 두 저장소가 모두 새 버전인지, `/vica/tts_state`가 켜지는지 |
 | 사람 "멈춰"에 반응이 없다 | `/vica/tts_state`가 `true`로 눌러붙어 있는지 |
+| **"비카야"에 반응이 없다** | 웨이크워드 노드가 떴는지(로그 세 번째 줄), `models/*.onnx` 두 개가 있는지 |
+| **웨이크워드 노드만 안 뜬다** | 모델 파일 경로. `VICA_WAKE_MODEL_A`·`_B` 환경변수로도 지정한다 |
+| **마이크를 아무도 못 듣는다** | `ros_stt_node`를 같이 띄우지 않았는지. 마이크는 한 프로그램만 쓴다 |
 | 안내 멘트가 안 들린다 | Mission Manager를 `colcon build` 했는지 |
 | 말이 밀려서 늦게 나온다 | TTS 노드 로그의 `발화 대기` 줄 수 |
 
@@ -303,9 +409,12 @@ ros2 launch vica_mission_manager mission_manager.launch.py \
 
 - [ ] 시험 2-1 결과 (볼륨 최대에서도 자가 트리거 없음?)
 - [ ] 시험 2-4 결과 (사람 "멈춰"가 잡히는가, 발화 직후 몇 초 뒤부터 잡히는가)
+- [ ] **시험 2-6 감지표** (거리 3구간 × 10회, 화자 2명). 진입 경로라 가장 중요하다
+- [ ] **시험 2-7 오탐 건수**
+- [ ] **첫 호출 "네?" 와 두 번째 짧은 음이 구분되는가**
 - [ ] 시험 3-1의 "네."가 자연스러운가
 - [ ] 시험 4-2의 거리 안내 시점이 적절한가
-- [ ] `TAIL_SEC`를 바꿨다면 최종값
+- [ ] `TAIL_SEC`·`gate_a`·`gate_b`를 바꿨다면 최종값
 - [ ] 안 되는 항목과 그때의 노드 로그
 
 ---
@@ -315,6 +424,7 @@ ros2 launch vica_mission_manager mission_manager.launch.py \
 | 항목 | 상태 |
 | --- | --- |
 | 로봇이 말하는 중에 사용자가 끼어들기 | 재생 중 마이크를 닫으므로 불가. 방식 결정 필요 |
-| 말로 대화 시작 (터미널 엔터 없이) | 마이크 장치 충돌 때문에 구조 변경 필요 |
-| 주행 중 목적지 변경 | 취소 수단이 E-stop뿐. 정책 결정 필요 |
+| ~~말로 대화 시작~~ | **해결됨** — 웨이크워드가 진입 경로다(2026-08-04) |
+| 주행 중 목적지 변경·취소 | 로봇 쪽은 구현돼 있다(`cancel`/`pause`/`resume`). **음성 쪽 intent 가 없어** 말로는 아직 안 된다 |
+| 스마트핸들 모드 | 터치센서 미장착. 문구·판정만 준비됨 |
 | 주행 중 "천천히"로 감속 | 감속 경로 미구현 |
