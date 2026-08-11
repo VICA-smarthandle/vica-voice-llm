@@ -54,6 +54,9 @@ VicaIntentType = Literal[
     "clarify",
     "unknown",
     "cancel",
+    # 취소 되묻기에 대한 부정. "안내를 취소할까요?"에 "아니요"라고 답한 경우다
+    # (2026-08-10 추가). 되묻는 중이 아니면 Mission Manager 가 무시한다.
+    "cancel_keep",
     "pause",
     "resume",
 ]

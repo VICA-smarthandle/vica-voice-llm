@@ -46,14 +46,19 @@ git fetch origin && git checkout test/voice-field-2026-08-10
 
 cd <workspace>/vica_ros2_ws
 git fetch origin && git checkout test/mock-touch-and-mic-open
-colcon build --packages-select vica_user_guidance --symlink-install
+colcon build --packages-select vica_interfaces vica_mission_manager vica_user_guidance --symlink-install
 source install/setup.bash
 ```
 
 - [ ] 두 저장소 모두 시험 브랜치인지 확인 (`git branch --show-current`)
 
-`vica_user_guidance` 빌드가 필요한 이유는 새 실행 파일(`mock_touch_keyboard`)이
-등록됐기 때문이다. 빌드하지 않으면 5-4에서 `ros2 run` 이 실패한다.
+빌드가 필요한 패키지가 셋이다.
+
+| 패키지 | 왜 |
+| --- | --- |
+| `vica_interfaces` | `VicaIntent.msg` 주석에 `cancel_keep` 계약이 늘었다 |
+| `vica_mission_manager` | `cancel_keep` 분기가 새로 생겼다 (5-4) |
+| `vica_user_guidance` | 새 실행 파일 `mock_touch_keyboard` 가 등록됐다 (5-5) |
 
 ### A.3 `.env` 확인
 
@@ -421,12 +426,17 @@ ros2 launch launch/vica_voice.launch.py suppress_during_tts:=false
 (`mission_command.CancelConfirm`).
 
 - [ ] "취소해줘" → 되묻기 → **"네"** → 취소된다
-- [ ] "취소해줘" → 되묻기 → **"아니요"** → 취소되지 않고 안내가 이어진다
+- [ ] "취소해줘" → 되묻기 → **"아니요"** → **곧바로** "안내를 계속하겠습니다"
+- [ ] 그 뒤 주행이 **끊기지 않고 이어진다**
 
-> ⚠️ **"아니요"에는 즉시 응답이 없다.** 부정을 Mission Manager 로 전달할 intent 가
-> 아직 없어(`_on_voice_mission_command` 는 cancel 만 확정으로 읽는다) 저쪽 시한
-> 30초가 지나야 "안내를 계속하겠습니다"가 나온다. **주행은 그동안 계속된다.**
-> 몇 초 만에 응답이 오는지 적어 온다 → ________ 초
+> "아니요"도 즉시 응답하도록 `cancel_keep` intent 를 새로 두었다(2026-08-10).
+> 전에는 부정을 전달할 값이 없어 Mission Manager 의 시한 30초가 지나야 응답이
+> 나왔고, 눈으로 확인할 수 없는 사용자에게 그 30초가 침묵이었다.
+>
+> **로봇 저장소도 함께 받아야 한다** — `test/mock-touch-and-mic-open` 브랜치에
+> 있고 `vica_mission_manager` 빌드가 필요하다(A.2).
+
+응답까지 걸린 시간: ________ 초
 
 기록: ______________________________________________
 

@@ -107,13 +107,18 @@ class LlmIntentNode(Node):
                 )
                 self.get_logger().info(f"취소 재확인 긍정 ('{text}') -> intent=cancel")
             else:
-                # 철회는 보낼 값이 없다. Mission Manager 에 부정을 전달할 intent 가
-                # 아직 없어(_on_voice_mission_command 는 cancel 만 확정으로 읽는다)
-                # 저쪽 시한(confirm_timeout_sec)이 지나면 MSG_CANCEL_KEPT 로 안내를
-                # 이어간다. 그때까지 주행은 계속되므로 안전 쪽이다. [GAP]
+                # 철회. Mission Manager 가 즉시 "안내를 계속하겠습니다"로 답한다.
+                # 이 값이 없던 동안에는 저쪽 시한(30초)이 지나야 응답이 나왔고,
+                # 눈으로 확인할 수 없는 사용자에게 그 30초가 침묵으로 남았다.
+                self._intent_pub.publish(
+                    intent_to_msg(
+                        VicaIntent(
+                            intent="cancel_keep", confidence=1.0, need_confirm=False
+                        )
+                    )
+                )
                 self.get_logger().info(
-                    f"취소 재확인 부정 ('{text}') -> 전달 경로 없음. "
-                    "Mission Manager 시한 뒤 안내가 이어진다"
+                    f"취소 재확인 부정 ('{text}') -> intent=cancel_keep"
                 )
             return
 

@@ -25,7 +25,7 @@ NARRATION = "narration"
 
 # 진행 중인 안내를 조작하는 intent. 결과 문구는 게이트를 통과시킨 Mission Manager 가
 # 말하므로 음성 쪽은 침묵한다 (request_for_intent 참고).
-MISSION_COMMAND_INTENTS = frozenset({"cancel", "pause", "resume"})
+MISSION_COMMAND_INTENTS = frozenset({"cancel", "cancel_keep", "pause", "resume"})
 
 # 앞에 올수록 먼저 재생된다.
 PRIORITIES = (EMERGENCY, RESPONSE, NARRATION)
