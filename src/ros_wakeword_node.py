@@ -51,6 +51,19 @@ class WakewordNode(Node):
         self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
 
+        # TTS 재생 중 감시를 억제할지. 기본은 억제(현행 동작)다.
+        #
+        # false 로 두면 로봇이 말하는 동안에도 마이크를 연 채 듣는다. **계측 전용**이며
+        # 실기 운용에서 끄지 않는다. 목적은 "mute 가 없을 때 자기 목소리를 얼마나
+        # 긴급어로 오인하는가"를 재는 것이다. 지금 자가 트리거 방어는 mute 하나뿐인데,
+        # /vica/tts_state 가 끊기면 fail-safe 시한(10초) 동안 실제로 마이크가 열린다.
+        # 그 구간의 위험도가 이 값으로만 측정된다. 남는 것은 AEC(reSpeaker XVF-3000)
+        # 성능이며, 그것이 충분하면 mute 시간을 줄일 여지가 생긴다.
+        self.declare_parameter("suppress_during_tts", True)
+        self._suppress_during_tts = bool(
+            self.get_parameter("suppress_during_tts").value
+        )
+
         # 안내 한 건의 첫 호출에만 말로 답한다. 이후는 짧은 음.
         self._greeting = GreetingState()
         self._greeting_wav = self._load_greeting_wav()
@@ -65,6 +78,11 @@ class WakewordNode(Node):
         self._thread.start()
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text)")
+        if not self._suppress_during_tts:
+            self.get_logger().warn(
+                "suppress_during_tts=false — 계측 모드. 로봇이 말하는 동안에도 마이크를 "
+                "연 채 듣는다. 자기 목소리가 긴급어로 잡힐 수 있다. 실기 운용에서 쓰지 않는다."
+            )
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
         self._pub_emergency.publish(emergency_to_msg(event))
@@ -120,6 +138,10 @@ class WakewordNode(Node):
             self._greeting.on_guidance_ended()
 
     def _on_tts_state(self, msg: Bool) -> None:
+        # 계측 모드에서는 신호를 받되 억제하지 않는다. 구독을 끊지 않는 이유는
+        # 토픽이 실제로 오고 있는지를 같은 조건에서 확인해야 하기 때문이다.
+        if not self._suppress_during_tts:
+            return
         self._monitor.set_muted(bool(msg.data))
 
 

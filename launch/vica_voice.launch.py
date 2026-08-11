@@ -42,6 +42,7 @@ def generate_launch_description() -> LaunchDescription:
     map_id = LaunchConfiguration("map_id")
     storage_root = LaunchConfiguration("destination_storage_root")
     destinations_yaml = LaunchConfiguration("destinations_yaml")
+    suppress_during_tts = LaunchConfiguration("suppress_during_tts")
     default_root = PathJoinSubstitution(
         [EnvironmentVariable("HOME"), "vica_data", "destinations"]
     )
@@ -58,6 +59,9 @@ def generate_launch_description() -> LaunchDescription:
                     [storage_root, map_id, "destinations.yaml"]
                 ),
             ),
+            # false 면 로봇이 말하는 동안에도 마이크를 연 채 듣는다. **계측 전용**이다
+            # (ros_wakeword_node 의 같은 이름 파라미터 주석 참고). 기본은 현행 동작.
+            DeclareLaunchArgument("suppress_during_tts", default_value="true"),
             _python_node(
                 "src.ros_node",
                 "vica_llm",
@@ -71,7 +75,15 @@ def generate_launch_description() -> LaunchDescription:
             # 웨이크워드 앞단: 호출(비카야) + 긴급어(whisper 검증) — LLM 우회 안전 경로.
             # 기존 ros_emergency_node(whisper 상시)를 대체한다. 롤백 = 아랫줄을
             # ros_emergency_node 로 되돌리고 push-to-talk STT 를 별도 실행.
-            _python_node("src.ros_wakeword_node", "vica_wakeword"),
+            _python_node(
+                "src.ros_wakeword_node",
+                "vica_wakeword",
+                [
+                    "--ros-args",
+                    "-p",
+                    ["suppress_during_tts:=", suppress_during_tts],
+                ],
+            ),
             # 회전·도착 청각 안내 (음 + 말). 알리기만 한다.
             _python_node("src.ros_audio_cue_node", "vica_audio_cue"),
         ]
