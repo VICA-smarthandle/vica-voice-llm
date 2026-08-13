@@ -13,9 +13,9 @@
 2. `CLAUDE.md`, `AGENTS.md` — 안전 규칙. 특히 **긴급어는 LLM 이전 차단, LLM 은 로봇을 움직이지 않는다**
 3. `scripts/gpt_realtime_probe.py` 머리 주석
 
-시간이 있으면: `docs/jetson-handoff.md` (저장소 전반), 워크스페이스의
-`docs/plan_gpt_realtime_llm.md` (이 시험의 근거 보고서 — 아직 미커밋이라 없을 수 있다.
-핵심은 아래 1절에 요약했다).
+시간이 있으면: `docs/plan_gpt_realtime_llm.md` (이 시험의 근거 보고서 — **같은
+브랜치에 있다**. 핵심은 아래 1절에 요약했으니 급하면 건너뛰어도 된다),
+`docs/jetson-handoff.md` (저장소 전반).
 
 ---
 
