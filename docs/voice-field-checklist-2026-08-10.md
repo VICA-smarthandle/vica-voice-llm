@@ -16,6 +16,55 @@
 절차의 **근거**는 `docs/voice-field-test.md`에, **채울 표**는 아래 0~8절에 있다.
 이 절은 **복사해서 붙여 넣는 명령**만 모았다.
 
+> 2026-08-11 첫 기동에서 막힌 지점을 전부 반영했다. A.0 은 그때 새로 드러난
+> **설치 단계**이고, A.1 의 `export` 두 줄은 **빠뜨리면 노드가 죽는다.**
+
+`<workspace>` 는 실제 경로로 바꾼다. 이 젯슨에서는 `~/VICA-smarthandle` 이다.
+
+### A.0 설치 확인 (기기당 한 번, 4개 전부 있어야 한다)
+
+이미 되어 있으면 넘어간다. **하나라도 없으면 그 항목의 명령을 실행한다.**
+
+```bash
+cd <workspace>/vica-voice-llm
+
+test -f .venv/lib/python3.10/site-packages/openwakeword/resources/models/melspectrogram.onnx \
+  && echo "OK  openWakeWord 기본 모델" || echo "없음 → ①"
+test -f assets/wake_greeting.wav && echo "OK  인사 음성" || echo "없음 → ②"
+.venv/bin/python -c "import ctranslate2 as c; print('OK  STT CUDA' if c.get_cuda_device_count() else '없음 → ③')"
+test -f .env && echo "OK  .env" || echo "없음 → ④"
+```
+
+**① openWakeWord 기본 모델** — pip 패키지에 **들어 있지 않다.** 없으면 웨이크워드
+스레드가 `melspectrogram.onnx ... File doesn't exist` 로 죽고 **2·3단계가 통째로
+막힌다.** VICA 자체 모델(`models/*.onnx`)과는 별개다.
+
+```bash
+.venv/bin/python -c "from openwakeword.utils import download_models; download_models(model_names=['__vica_none__'])"
+```
+
+> 더미 이름을 넘기면 공식 사전학습 모델(hey_jarvis 등)은 받지 않고 항상 받는
+> feature(melspectrogram, embedding) + VAD 만 가져온다. 약 6MB.
+
+**② 인사 음성** — 없으면 노드가 TTS 로 대체하는데 **3-2 가 재는 "네?" 까지의
+시간이 왜곡된다.**
+
+```bash
+.venv/bin/python scripts/make_cue_wavs.py
+```
+
+**③ STT CUDA** — PyPI 의 aarch64 `ctranslate2` 는 **CPU 전용**이다. 이 젯슨에는
+CUDA 로 빌드한 4.8.1 이 `~/jetson-builds` 에 있고, venv 의 CPU 판과 버전이 같아
+교체만 하면 된다(재빌드 불필요). 자세한 절차는 `docs/jetson-handoff.md` §3.
+
+**④ `.env`** — `.gitignore` 에 있어 **git 으로 따라오지 않는다.** 없으면 4단계
+(대화)가 통째로 막힌다. 1~3단계는 없어도 된다.
+
+```bash
+cp .env.example .env      # mv 가 아니다 — 템플릿은 팀 공용이라 남겨 둔다
+# .env 의 OLLAMA_API_KEY 에 실제 키를 채운다
+```
+
 ### A.1 터미널 배치
 
 터미널 5개를 쓴다. 창 4·5는 시험 항목에 따라 명령을 바꾼다.
@@ -32,9 +81,31 @@
 
 ```bash
 source /opt/ros/humble/setup.bash
-source <workspace>/vica_ros2_ws/install/setup.bash
+source <workspace>/vica_ros2_ws/install/setup.bash     # ← 빠뜨리면 노드 3개가 죽는다
 cd <workspace>/vica-voice-llm
 ```
+
+**창 1 에서는 추가로** 두 줄을 더 내보낸다.
+
+```bash
+export VICA_STT_DEVICE=cuda
+export VICA_STT_COMPUTE=float16
+```
+
+> **이 두 줄은 선택이 아니다.** 코드 기본값은 `cpu` 이고
+> (`src/wakeword_monitor.py:212`), 그러면 compute 가 `int8` 로 정해지는데 이
+> CUDA 빌드는 **CPU 에서 float32 만 지원**해서 웨이크워드 스레드가
+> `ValueError: Requested int8 compute type ...` 로 죽는다.
+> `.env` 에 적어도 소용없다 — 이 노드들은 `.env` 를 읽지 않고 셸 환경변수만 본다.
+
+증상별로 어디를 빠뜨렸는지 바로 알 수 있다.
+
+| 노드 로그 | 빠뜨린 것 |
+| --- | --- |
+| `ModuleNotFoundError: No module named 'vica_interfaces'` | `install/setup.bash` source |
+| `ValueError: Requested int8 compute type` | `export VICA_STT_DEVICE=cuda` |
+| `NO_SUCHFILE ... melspectrogram.onnx` | A.0 ① |
+| `목적지 catalog가 없어 빈 목록을 사용합니다` | A.4 의 `destinations_yaml:=` |
 
 ### A.2 코드 받기 (한 번만)
 
@@ -60,30 +131,58 @@ source install/setup.bash
 | `vica_mission_manager` | `cancel_keep` 분기가 새로 생겼다 (5-4) |
 | `vica_user_guidance` | 새 실행 파일 `mock_touch_keyboard` 가 등록됐다 (5-5) |
 
-### A.3 `.env` 확인
+### A.3 마이크 확인
 
-`.gitignore`에 있어 **git 으로 따라오지 않는다.** 없으면 4단계(대화)가 통째로 막힌다.
-1~3단계는 없어도 된다.
+reSpeaker 를 **6채널로** 잡아야 한다. ch0(처리음)이 모델 입력이고, 폴백으로 기본
+마이크 1채널을 잡으면 학습-실전 분포가 어긋나 3단계 수치가 무의미해진다.
 
 ```bash
-cd <workspace>/vica-voice-llm
-cat .env | grep -c OLLAMA_API_KEY      # 1 이 나와야 한다
-cp .env.example .env                   # 없으면 만들고 키를 채운다
+lsusb | grep 2886                     # ReSpeaker 4 Mic Array 가 보여야 한다
+.venv/bin/python -c "
+import sounddevice as sd
+hit=next((i for i,d in enumerate(sd.query_devices())
+          if 'respeaker' in d['name'].lower() and d['max_input_channels']>=6), None)
+print('탐지:', f'장치 {hit}, 6ch' if hit is not None else '없음 → 1ch 폴백')"
 ```
+
+- [ ] `장치 N, 6ch` 로 나온다
+
+> **다른 프로그램이 마이크를 잡고 있으면 목록에서 사라진다.** 노드가 떠 있는
+> 상태로 확인하면 `없음` 으로 보이니, **반드시 노드를 내린 뒤** 확인한다.
+> 녹음 도구·데모·노드를 동시에 실행하지 않는다.
 
 ### A.4 실행
 
 **창 1 — 음성 노드**
 
 ```bash
-ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630
+ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630 \
+  destinations_yaml:=$PWD/config/destinations.yaml
 ```
 
-시험 2-7에서만 인자를 바꿔 다시 띄운다.
+> `destinations_yaml` 을 붙이는 이유: launch 기본값은
+> `$HOME/vica_data/destinations/<map_id>/destinations.yaml` 인데 그 저장소가 아직
+> 정의되지 않았다. 빼면 목적지 0개로 떠서 **4단계가 통째로 막힌다.**
+
+시험 2-7에서만 인자를 하나 더 바꿔 다시 띄운다.
 
 ```bash
-ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630 suppress_during_tts:=false
+ros2 launch launch/vica_voice.launch.py map_id:=vica_map_0630 \
+  destinations_yaml:=$PWD/config/destinations.yaml suppress_during_tts:=false
 ```
+
+기동 직후 **이 두 줄을 확인하고 넘어간다.**
+
+```text
+public 목적지 28개 로드: .../config/destinations.yaml
+웨이크워드 상시 감시 시작 (장치 24, 6ch — Ctrl+C 종료)
+```
+
+- [ ] 목적지 개수가 0이 아니다
+- [ ] `6ch` 다 (`장치 None, 1ch` 면 A.3 으로 돌아간다)
+
+> 두 번째 줄은 `print` 라서 ROS 로그 접두사(`[INFO] [...]`)가 없다. 스크롤에
+> 묻히기 쉬우니 찾아서 본다.
 
 **창 2·3 — 감시**
 
@@ -110,7 +209,7 @@ ros2 topic echo /vica/tts_state
 ros2 topic echo /vica/intent
 ```
 
-**창 5 — 터치센서 mock (5-4에서만).** guidance driver 를 mock 모드로 따로 띄운다.
+**창 5 — 터치센서 mock (5-5에서만).** guidance driver 를 mock 모드로 따로 띄운다.
 
 ```bash
 ros2 launch vica_user_guidance user_guidance.launch.py enable_serial:=false
@@ -121,23 +220,41 @@ ros2 run vica_user_guidance mock_touch_keyboard     # 스페이스 = 잡음/놓�
 
 2-2·2-7·5-2에서 **실제로 걸린다.** 미리 익혀 둔다.
 
-1. 관리자 앱 → 안전 초기화
-2. 앱이 없으면 터미널에서 `/app_estop_reset` 서비스 호출
+**전제 — 안전 스택이 떠 있어야 한다.** 음성 노드는 `/vica/emergency` 를 발행할
+뿐이고, 중앙 래치를 거는 것은 `emergency_stop_node` 다. 아래가 안 떠 있으면
+**E-stop 이 걸리지도, 리셋 서비스가 있지도 않다.**
 
 ```bash
-ros2 service list | grep estop        # 이름 확인
-ros2 topic echo /estop_state          # 풀렸는지 확인 (false 여야 한다)
+ros2 launch vica_safety safety_bringup.launch.py    # 별도 창
+ros2 service list | grep estop                      # 서비스가 보이는지 확인
 ```
+
+1. 관리자 앱 → 안전 초기화
+2. 앱이 없으면 터미널에서 호출한다
+
+```bash
+ros2 service call /app_estop_reset std_srvs/srv/Trigger {}
+ros2 topic echo /estop_state          # 풀렸는지 확인 (false 여야 한다)
+ros2 topic echo /app_estop_state      # reset_allowed 와 safety_state 를 같이 본다
+```
+
+`success: false` 로 거부되면 **원인이 아직 살아 있는 것**이다. 물리 버튼이 눌린
+채인지, 긴급어가 계속 잡히는지, 앱에서 건 E-stop 이 남았는지 본다.
+`safety_state` 가 `ESTOP_RELEASED_WAIT_RESET` 이 된 뒤에야 승인된다
+(`vica_safety/app_emergency_node.py:51`).
 
 > 앱·STT 의 `false` 는 입력 해제일 뿐 **래치 reset 이 아니다.** 원인을 먼저 없애야
 > reset 이 승인된다.
+>
+> 유지보수용 `/safety_reset` 도 같은 검사를 거치지만 호출자 인증이 없는 `[GAP]`
+> 이다(`GOVERNANCE.md` §5). 시험에서는 `/app_estop_reset` 을 쓴다.
 
 ### A.6 끝낼 때 (필수)
 
-- [ ] `suppress_during_tts` 를 **기본값 true** 로 되돌린다 (인자 없이 launch)
+- [ ] `suppress_during_tts` 를 **기본값 true** 로 되돌린다 (그 인자만 빼고 launch)
 - [ ] 터치센서 mock 노드를 `q` 로 종료한다 (놓음 상태로 끝난다)
 - [ ] 바꾼 값이 있으면 7절 표에 적는다
-- [ ] `git status` 로 의도치 않은 변경이 없는지 본다
+- [ ] `git status` 로 의도치 않은 변경이 없는지 본다 (두 저장소 각각)
 
 ---
 
@@ -154,6 +271,9 @@ cd <workspace>/vica-voice-llm && .venv/bin/python -m pytest tests/ -q
 ```
 
 - [ ] **실패 0** (숫자는 기록만) → 실패 _____ 건
+
+> 2026-08-11 기준 **221 통과**. 크게 다르면 브랜치나 merge 상태를 먼저 본다
+> (이 브랜치에는 `dev` 의 긴급어 수정 4커밋이 merge 되어 있다).
 
 ---
 
@@ -209,6 +329,13 @@ ros2 topic pub -1 /vica/tts_request std_msgs/String \
 
 - [ ] 로봇 발화 **직후** "멈춰" → 잡히기까지 약 _____ 초 (설계값 0.4)
 
+> **설계값 0.4 초는 PC GPU 기준이다.** 2026-08-11 젯슨 실측에서 검증 STT
+> (medium, cuda/float16)가 **2초 창 하나에 1.84초**를 썼다(무음 입력). 창 주기에
+> 여유가 거의 없으므로 여기서 나오는 값이 `docs/jetson-handoff.md` §2 의
+> "Jetson 예상 ~1.2초 — 실측할 것" 을 닫는 수치다. **느리게 나와도 그것이 결과다.**
+> 참기 어려우면 창 1을 내리고 `VICA_VERIFY_STT_MODEL=small` 로 한 번 더 재서
+> small↔medium 을 같은 날 수치로 비교해 둔다.
+
 ### 2-3. fail-safe가 사는가
 
 TTS 노드만 종료하고 10초 뒤 "멈춰".
@@ -228,8 +355,14 @@ TTS 노드만 종료하고 10초 뒤 "멈춰".
 
 긴 문장 재생 **중에** emergency 우선순위 요청.
 
-- [ ] 하던 말이 즉시 끊기고 긴급 문장이 나온다
+- [ ] 하던 말이 **즉시 끊긴다** ← 선점 판정은 이것 하나다
 - [ ] 끊긴 말이 **이어지지 않는다**
+- [ ] 끊긴 뒤 긴급 문장이 나오기까지 _____ 초 (합성 지연. 판정 아님)
+
+> **선점과 합성을 나눠서 본다.** 2026-08-11 실측에서 TTS 가 CPU 로 돌고 있어
+> (`onnxruntime` 1.23.2 는 CUDA provider 가 없다) 4.46초 음성 합성에 **약 4초**가
+> 걸렸다. GPU 면 10배 빠르다(`src/tts.py:19`). 하던 말이 즉시 멈추면 **선점은
+> 통과**이고, 그 뒤 침묵은 합성 지연이지 결함이 아니다.
 
 ### 2-6. 말하는 중 신호가 켜지고 꺼지는가
 
@@ -266,6 +399,32 @@ ros2 launch launch/vica_voice.launch.py suppress_during_tts:=false
 
 - 오인 0건 → AEC 가 잡아준다. mute 시간을 줄일 여지가 생기고 끼어들기 가능성이 열린다
 - 오인 잦음 → mute 가 필수임이 증명된다. **fail-safe 10초가 위험 구간**이므로 그 값을 줄인다
+
+> ⚠️ **AEC 는 자가 각성을 막지 못한다 (2026-08-13 측정).**
+>
+> 사람 목소리 "비카야" 를 스피커로 45초 되틀면서 운영과 같은 판정기로 채점했다.
+>
+> | 항목 | 값 |
+> | --- | --- |
+> | 대조군(녹음 직접 채점) | 8초에 5회 발동 |
+> | 되틀기 45초 | **5회 발동** (억제 없으면 28회 예상 → 82% 억제) |
+> | 환산 | **9초에 한 번꼴.** 인사말 7.24초당 약 0.8회 |
+>
+> 82 % 를 걸러도 **인사할 때마다 거의 매번 자기가 깨어난다.** 이유는 세 가지다 —
+> 웨이크워드 모델은 크기가 아니라 패턴을 보고, AGC 가 지운 만큼 최대 31.6 dB 까지
+> 되살리며, 스피커의 비선형 왜곡은 애초에 뺄 수 없다.
+>
+> **레벨로 AEC 를 판정하지 말 것.** 조건에 따라 ±20 dB 로 뒤집힌다. 판정기가
+> 발동하느냐만 보면 된다.
+>
+> ➡️ **결론: mute 가 유일하게 실효 있는 방어다.** 2026-08-13 에 인사말 구간은
+> 마이크를 mute 하기로 확정했다. 이 계측은 "mute 가 없으면 어떻게 되는가" 를
+> 재는 것이지 mute 를 줄일 근거를 찾는 것이 아니다.
+>
+> ⚠️ **TTS 정규화(2026-08-13, +10.8 dB) 이후 조건이 바뀌었다.** 자기 목소리가 그만큼
+> 크게 들어오므로 이전 수치는 무효다. 기록에 **"TTS 정규화 적용 후"** 를 같이 적는다.
+>
+> 근거: `devlog/2026-08-13-자가각성-AEC측정-TONY0043.md`
 
 - [ ] **시험 뒤 `suppress_during_tts` 를 기본값(true)으로 되돌린다**
 
