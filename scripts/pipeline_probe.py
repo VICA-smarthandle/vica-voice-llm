@@ -120,11 +120,12 @@ def _speak_with_button(tts, reply: str, rec: dict, t_utter_end: float) -> None:
 def _measure_once(text, destinations, stt, tts, label: str) -> dict:
     """한 회차: (텍스트 또는 마이크) → 긴급어 필터 → intent → TTS+버튼."""
     from src.emergency_filter import detect_emergency
-    from src.langchain_intent_parser import parse_intent
+    from src.langchain_intent_parser import DEFAULT_MODEL, parse_intent
     from src.metrics import sample_system
     from src.replies import LLM_UNAVAILABLE
 
-    rec: dict = {"t_start": round(time.time(), 3), "label": label}
+    # 변형 구분용 (A=gemma4:cloud, C=gemma4:e2b 등 — OLLAMA_HOST/VICA_LLM_MODEL 로 전환)
+    rec: dict = {"t_start": round(time.time(), 3), "label": label, "model": DEFAULT_MODEL}
 
     if stt is not None:
         input(f"🎤 [{label}] 엔터를 누르면 녹음 시작 → 발화 → 엔터로 종료: ")
