@@ -84,6 +84,11 @@ def _load(need_stt: bool, need_tts: bool, need_llm: bool):
 
         tts = VicaTTS()
         print(f"[로드] TTS {time.perf_counter() - t0:.1f}초")
+        # CUDA 워밍업 — 세션 첫 합성은 ~4배 느리다 (2026-08-13 실측 1.35초 vs 0.33초).
+        # 실전(ros_tts_node)은 상주 프로세스라 워밍업된 상태가 정상 조건이다.
+        t0 = time.perf_counter()
+        tts._synthesize("준비되었습니다.")
+        print(f"[로드] TTS 워밍업 {time.perf_counter() - t0:.1f}초")
 
     from src.metrics import sample_system
 
