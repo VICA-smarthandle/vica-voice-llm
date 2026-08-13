@@ -19,6 +19,29 @@ import supertonic.loader
 # 합성 3.0초 -> 0.3초 (onnxruntime-gpu 필요, docs/jetson-setup.md 참고)
 supertonic.loader.DEFAULT_ONNX_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
+# 재생 음량 목표(최대진폭).
+#
+# 합성 원본은 최대진폭이 0.3 안팎이라 디지털 여유의 30 % 도 쓰지 않는다. 스피커가
+# 고정 게인이면 그 손실이 그대로 체감 음량이 된다 — 2026-08-13 실측에서 음성이
+# 안내음(DEFAULT_VOLUME=0.4)보다 11.7 dB 작았다.
+#
+# 1.0 에 딱 맞추면 반올림으로 클리핑이 나므로 0.95 로 둔다.
+PEAK_TARGET = 0.95
+
+
+def normalize_peak(wav: np.ndarray, target: float = PEAK_TARGET) -> np.ndarray:
+    """최대진폭을 target 에 맞춘다.
+
+    무음이거나 정수형이면 그대로 돌려준다 — 정수형은 스케일 규약이 달라
+    여기서 건드리지 않는다.
+    """
+    if wav.size == 0 or not np.issubdtype(wav.dtype, np.floating):
+        return wav
+    peak = float(np.abs(wav).max())
+    if peak <= 0.0:
+        return wav
+    return (wav * (target / peak)).astype(wav.dtype, copy=False)
+
 
 class VicaTTS:
     """한국어 음성 합성기. 모델은 생성 시 한 번만 로드한다."""
@@ -33,12 +56,16 @@ class VicaTTS:
         # synthesize 의 두 번째 반환값은 '오디오 길이(초)'다. 샘플레이트가 아니다.
         # 실제 샘플레이트는 모델 속성(self._tts.sample_rate)에 들어 있다.
         wav, _duration = self._tts.synthesize(text, self._style, lang=self.lang)
-        return np.asarray(wav).squeeze(), int(self._tts.sample_rate)
+        return normalize_peak(np.asarray(wav).squeeze()), int(self._tts.sample_rate)
 
     def save(self, text: str, path: str | Path) -> None:
-        """합성 결과를 wav 파일로 저장한다."""
+        """합성 결과를 wav 파일로 저장한다.
+
+        재생과 같은 정규화를 거친다 — 미리 만들어 둔 안내 음성(assets/)이
+        실시간 합성보다 작게 나오면 안 된다.
+        """
         wav, _ = self._tts.synthesize(text, self._style, lang=self.lang)
-        self._tts.save_audio(wav, str(path))
+        self._tts.save_audio(normalize_peak(np.asarray(wav)), str(path))
 
     def speak(self, text: str) -> bool:
         """합성 후 스피커로 재생한다. 오디오 장치가 없으면 False 를 돌려준다."""
