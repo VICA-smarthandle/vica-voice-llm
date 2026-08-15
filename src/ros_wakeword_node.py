@@ -5,6 +5,7 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
 발행: /vica/emergency (vica_interfaces/EmergencyEvent)  ← 긴급, LLM 우회 (기존 계약)
       /vica/user_text (std_msgs/String)                 ← 호출 후 발화 (기존 계약)
 구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 중 자기 목소리 억제
+      /vica/listen_request (std_msgs/Bool)              ← 질문 후 재청취 예약 (true=예약)
 
 keyword 는 whisper 전사에서 정확 매칭으로 추출되므로 항상
 HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변경 없음.
@@ -50,6 +51,10 @@ class WakewordNode(Node):
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
+        # 질문을 말한 노드(LLM node, Mission Manager)가 true 를 보내면, 그 질문
+        # TTS 가 끝나는 순간 웨이크워드 없이 청취 창을 연다. "안내를 취소할까요?"
+        # 에 "아니요" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
+        self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
 
         # 안내 한 건의 첫 호출에만 말로 답한다. 이후는 짧은 음.
         self._greeting = GreetingState()
@@ -118,6 +123,13 @@ class WakewordNode(Node):
         # 도착·취소·실패 = 안내 한 건이 끝났다. 다음 사용자에게 다시 인사한다.
         if (msg.data or "").strip() in GUIDANCE_END_EVENTS:
             self._greeting.on_guidance_ended()
+
+    def _on_listen_request(self, msg: Bool) -> None:
+        if msg.data:
+            self._monitor.arm_followup()
+            self.get_logger().info("질문 예약 — TTS 종료 후 재청취 창을 연다")
+        else:
+            self._monitor.disarm_followup()
 
     def _on_tts_state(self, msg: Bool) -> None:
         self._monitor.set_muted(bool(msg.data))
