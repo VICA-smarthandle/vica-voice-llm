@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .langchain_intent_parser import parse_intent
+from .replies import USAGE_GUIDE
 
 EXIT_WORDS = {"종료", "그만", "exit", "quit"}
 MAX_HISTORY = 8  # 최근 메시지만 유지 (대화가 길어져도 프롬프트가 커지지 않게)
@@ -55,6 +56,11 @@ def run(use_tts: bool = True, use_stt: bool = False) -> None:
     mode = "마이크" if stt else "키보드"
     print(f"VICA 음성 파이프라인 프로토타입 [{mode} 입력] (종료하려면 '종료')")
     print(f"목적지 {len(destinations)}개 로드됨\n")
+    # 첫 상호작용에서 로봇이 자기 어휘를 가르쳐 준다 — 어휘를 모르면 본능적으로
+    # "멈춰"(E-stop)를 쓰게 된다. ROS 경로의 인사 연결은 웨이크워드 작업 뒤 후속.
+    print(f"VICA > {USAGE_GUIDE}\n")
+    if tts:
+        tts.speak(USAGE_GUIDE)
 
     while True:
         try:

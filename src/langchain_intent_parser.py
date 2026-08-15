@@ -16,17 +16,38 @@ from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
 from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
-from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE
+from .replies import (
+    ASK_DESTINATION,
+    CANCEL_CONFIRM,
+    COMMAND_DECLINED,
+    CONFIRM_DECLINED,
+    LLM_UNAVAILABLE,
+    PAUSE_ACK,
+    RESUME_CONFIRM,
+    RETRY_PROMPT,
+)
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
 
-# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 전환). 기본은 Ollama Cloud 이며
-# Jetson 온디바이스에서도 이 클라우드 모델을 주 모델로 사용한다.
-#   기본(클라우드):  OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
-#   (선택) 로컬:     OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
+# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 전환). 기본은 Ollama Cloud 다.
+#   기본(ollama 클라우드): OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
+#   (선택) ollama 로컬:    OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (키 불필요)
+#   (선택) openai:         VICA_LLM_PROVIDER=openai  VICA_OPENAI_MODEL=gpt-5.4-mini  OPENAI_API_KEY=...
+#
+# 모델 변수는 백엔드별로 분리한다 — VICA_LLM_MODEL 은 ollama 전용이다. 하나를
+# 겸용하면 .env 의 ollama 태그(gemma4:cloud)가 openai 로 넘어가 404 가 난다
+# (2026-08-15 스모크에서 실제 발생).
+#
+# openai 경로 도입 근거 (2026-08-15 젯슨 실측, logs/llm_bench.jsonl): gpt-5.4-mini
+# 지연 중앙값 0.92초·최대 1.86초로 gemma4:cloud(0.95초, 꼬리 7.95초)보다 꼬리가
+# 짧고, 판정 18/18, strict json_schema 구조화 출력 완전 준수, 발화당 ~1.9k/40 토큰.
+PROVIDER = os.environ.get("VICA_LLM_PROVIDER", "ollama")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
-DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
+if PROVIDER == "openai":
+    DEFAULT_MODEL = os.environ.get("VICA_OPENAI_MODEL", "gpt-5.4-mini")
+else:
+    DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
 
 
 class _IntentDraft(BaseModel):
@@ -35,7 +56,9 @@ class _IntentDraft(BaseModel):
     matched_destination_id / need_confirm / safety_flag 는 코드가 채운다.
     """
 
-    intent: VicaIntentType = Field(description="navigate / question / clarify / unknown 중 하나")
+    intent: VicaIntentType = Field(
+        description="navigate / question / clarify / unknown / cancel / pause / resume 중 하나"
+    )
     destination_candidate: Optional[str] = Field(
         default=None,
         description="navigate 일 때, 목적지 목록의 name 중 가장 알맞은 하나. 없으면 null.",
@@ -45,7 +68,17 @@ class _IntentDraft(BaseModel):
         description="직전 로봇 제안('OO로 안내할까요?')에 사용자가 긍정(응/네/맞아)한 경우 true",
     )
     confidence: Optional[float] = Field(default=0.0, description="해석 확신도 0~1")
-    reply: str = Field(default="", description="사용자에게 들려줄 한국어 답변")
+    reply: str = Field(
+        default="",
+        # navigate 의 확인 문구는 코드가 confirm_prompt 로 갈아끼우므로(_finalize),
+        # 모델이 문장을 써 봐야 폐기된다. 빈 문자열이면 그만큼 생성 토큰이 줄어
+        # 지연이 준다 (Jetson 로컬 22tok/s 실측 기준 ~1초 이상).
+        description=(
+            "사용자에게 들려줄 한국어 답변. intent 가 navigate 이고 "
+            "destination_candidate 를 채웠으면 빈 문자열로 둬라 (확인 문구는 "
+            "시스템이 만든다)."
+        ),
+    )
 
 
 def _format_robot_state(robot_state: Optional[RobotState]) -> str:
@@ -80,13 +113,18 @@ def _build_system_prompt(
 - question: 이동이 아니라 정보 질문("지금 몇 층이야?").
 - clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
 - unknown: 안내와 무관하거나 이해 불가.
+- cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
+- pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
+- resume: 멈춘 안내를 다시 시작하려 함 ("다시 가자", "출발해").
 
 [목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
-- reply 는 짧고 친절한 한국어.
+- navigate(destination_candidate 포함)·cancel·pause·resume 으로 분류하면 reply 는
+  빈 문자열로 둬라. 확인 질문은 시스템이 만든다.
+- 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
 [멀티턴 대화]
@@ -123,8 +161,51 @@ def _pending_confirm_destination(
     return None
 
 
+# 제어 확인 문구 -> intent. 로봇의 직전 발화가 이 중 하나면 "네" 한마디로 확정된다.
+# pause 는 여기 없다 — 서는 방향은 되묻지 않고 즉시 요청한다 (replies.PAUSE_ACK).
+_COMMAND_CONFIRMS = {
+    CANCEL_CONFIRM: "cancel",
+    RESUME_CONFIRM: "resume",
+}
+
+# LLM 없이 잡는 명백한 취소·일시정지 발화 (normalize_short_reply 적용 후 비교).
+# 긴급어 필터와 같은 원칙 — 결정적 명령의 감지는 룰이 빠르고 확실하다.
+# 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 분류한다.
+_CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
+_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
+
+# 제어가 확정됐을 때의 reply. 실행이 아니라 요청이다 — MissionCommand 서비스
+# 호출은 ROS 노드, 수락/거절 판정은 Mission Manager 몫이며 이 문구는 로그용이다.
+_COMMAND_REQUESTED = "주행 제어를 요청합니다."
+
+
+def _pending_command(history: Optional[list[BaseMessage]]) -> Optional[str]:
+    """직전 AI 발화가 제어 확인 질문이었으면 해당 intent 를 돌려준다."""
+    if not history:
+        return None
+    last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    if last_ai is None:
+        return None
+    return _COMMAND_CONFIRMS.get(last_ai.content)
+
+
 def _get_structured_llm(model: str):
-    """구조화 출력(_IntentDraft) LLM 을 만든다. (클라우드=키 필요 / 로컬=키 불필요)"""
+    """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다."""
+    if PROVIDER == "openai":
+        # 지연 import — ollama 만 쓰는 환경에 openai 패키지를 요구하지 않는다.
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=model,
+            temperature=0,
+            # 로봇 대화에서 무한 대기는 곧 침묵이다. 실측 꼬리(1.86초)의 여유
+            # 배수에서 끊고, 실패는 parse_intent 의 LLM_UNAVAILABLE 폴백이 받는다.
+            timeout=15,
+            max_retries=1,
+        )
+        # strict=True: 스키마를 서버가 문법 수준에서 강제한다 (실측 준수 18/18).
+        return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
+
     api_key = os.environ.get("OLLAMA_API_KEY", "")
     kwargs = {
         "model": model,
@@ -151,6 +232,24 @@ def parse_intent(
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
     # 직전 확인 질문에 대한 짧은 긍정/부정은 LLM 없이 코드가 결정한다 (아래 참고).
+    pending_command = _pending_command(history)
+    if pending_command is not None:
+        word = _normalize_short_reply(user_text)
+        if word in _AFFIRMATIVES:
+            return VicaIntent(
+                intent=pending_command,
+                confidence=1.0,
+                reply=_COMMAND_REQUESTED,
+                need_confirm=False,
+            )
+        if word in _NEGATIVES:
+            return VicaIntent(
+                intent="unknown",
+                confidence=1.0,
+                reply=COMMAND_DECLINED,
+                need_confirm=False,
+            )
+
     pending = _pending_confirm_destination(history, destinations)
     if pending is not None:
         word = _normalize_short_reply(user_text)
@@ -174,6 +273,14 @@ def parse_intent(
                 need_confirm=False,
             )
 
+    # 명백한 취소·일시정지 발화는 LLM 없이 직행한다 (0초, 오판 없음).
+    # 목적지·제어 확인 대기 중이면 위 블록들이 먼저 처리하므로 여기 오지 않는다.
+    word = _normalize_short_reply(user_text)
+    if word in _CANCEL_WORDS:
+        return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
+    if word in _PAUSE_WORDS:
+        return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
+
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:
@@ -194,13 +301,14 @@ def parse_intent(
             confidence=0.0,
             need_confirm=False,
         )
-    return _finalize(draft, destinations, pending=pending)
+    return _finalize(draft, destinations, pending=pending, pending_command=pending_command)
 
 
 def _finalize(
     draft: _IntentDraft,
     destinations: Sequence[DestinationData],
     pending: Optional[DestinationData] = None,
+    pending_command: Optional[str] = None,
 ) -> VicaIntent:
     """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)
 
@@ -240,5 +348,29 @@ def _finalize(
             result.matched_destination_id = matched.id
             result.reply = matched.confirm_prompt
             result.need_confirm = True
+
+    if draft.intent in ("cancel", "pause", "resume"):
+        if draft.intent == "pause":
+            # 서는 방향은 되묻지 않는다 — 오분류해도 잠시 서는 것뿐(안전한 실패).
+            # 감속 정지 실행과 수락/거절 판정은 Mission Manager 몫이다.
+            result.reply = PAUSE_ACK
+            result.need_confirm = False
+        elif pending_command == draft.intent:
+            # 방금 이 제어를 물었고 사용자가 말로 다시 수락했다 ("응, 취소해 줘").
+            result.reply = _COMMAND_REQUESTED
+            result.need_confirm = False
+        else:
+            # 버리는 쪽(cancel)과 움직이는 쪽(resume)은 반드시 되묻는다 —
+            # LLM 제안만으로는 실행되지 않는다 (is_confirmation 게이팅과 같은 원칙).
+            result.reply = {
+                "cancel": CANCEL_CONFIRM,
+                "resume": RESUME_CONFIRM,
+            }[draft.intent]
+            result.need_confirm = True
+
+    if not result.reply:
+        # reply 생략은 navigate·제어 전용 지시인데, 모델이 다른 intent 에서도 비울
+        # 수 있다. 침묵은 소리로만 상태를 아는 사용자에게 최악이므로 고정 문구로 메운다.
+        result.reply = ASK_DESTINATION if result.intent == "clarify" else RETRY_PROMPT
 
     return result
