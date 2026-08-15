@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
 from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
-from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE
+from .replies import ASK_DESTINATION, CONFIRM_DECLINED, LLM_UNAVAILABLE, RETRY_PROMPT
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
@@ -45,7 +45,17 @@ class _IntentDraft(BaseModel):
         description="직전 로봇 제안('OO로 안내할까요?')에 사용자가 긍정(응/네/맞아)한 경우 true",
     )
     confidence: Optional[float] = Field(default=0.0, description="해석 확신도 0~1")
-    reply: str = Field(default="", description="사용자에게 들려줄 한국어 답변")
+    reply: str = Field(
+        default="",
+        # navigate 의 확인 문구는 코드가 confirm_prompt 로 갈아끼우므로(_finalize),
+        # 모델이 문장을 써 봐야 폐기된다. 빈 문자열이면 그만큼 생성 토큰이 줄어
+        # 지연이 준다 (Jetson 로컬 22tok/s 실측 기준 ~1초 이상).
+        description=(
+            "사용자에게 들려줄 한국어 답변. intent 가 navigate 이고 "
+            "destination_candidate 를 채웠으면 빈 문자열로 둬라 (확인 문구는 "
+            "시스템이 만든다)."
+        ),
+    )
 
 
 def _format_robot_state(robot_state: Optional[RobotState]) -> str:
@@ -86,7 +96,9 @@ def _build_system_prompt(
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
-- reply 는 짧고 친절한 한국어.
+- navigate 로 분류하고 destination_candidate 를 채웠으면 reply 는 빈 문자열로 둬라.
+  확인 질문은 시스템이 만든다.
+- 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
 [멀티턴 대화]
@@ -240,5 +252,10 @@ def _finalize(
             result.matched_destination_id = matched.id
             result.reply = matched.confirm_prompt
             result.need_confirm = True
+
+    if not result.reply:
+        # reply 생략은 navigate 전용 지시인데, 모델이 다른 intent 에서도 비울 수
+        # 있다. 침묵은 소리로만 상태를 아는 사용자에게 최악이므로 고정 문구로 메운다.
+        result.reply = ASK_DESTINATION if result.intent == "clarify" else RETRY_PROMPT
 
     return result
