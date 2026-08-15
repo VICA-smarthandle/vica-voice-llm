@@ -194,11 +194,20 @@ def parse_intent(
             confidence=0.0,
             need_confirm=False,
         )
-    return _finalize(draft, destinations)
+    return _finalize(draft, destinations, pending=pending)
 
 
-def _finalize(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> VicaIntent:
-    """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)"""
+def _finalize(
+    draft: _IntentDraft,
+    destinations: Sequence[DestinationData],
+    pending: Optional[DestinationData] = None,
+) -> VicaIntent:
+    """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)
+
+    pending 은 코드가 대화 이력에서 확인한 '대기 중인 확인 질문'의 목적지다.
+    draft.is_confirmation 은 이것과 대조해서만 믿는다 — 확인 질문이 없었는데
+    LLM 이 true 를 줘도(모델 오판) 확인 절차를 건너뛸 수 없다.
+    """
     result = VicaIntent(
         intent=draft.intent,
         destination_candidate=draft.destination_candidate,
@@ -219,8 +228,10 @@ def _finalize(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> V
             result.matched_destination_id = matched.id
             result.reply = matched.unavailable_reason or matched.confirm_prompt
             result.need_confirm = False
-        elif draft.is_confirmation:
+        elif draft.is_confirmation and pending is not None and matched.id == pending.id:
             # 사용자가 직전 제안을 수락 -> 확인 끝, 안내 시작.
+            # (코드가 아는 pending 과 목적지까지 일치할 때만. 불일치·부재면 아래
+            #  else 로 떨어져 정상 확인 질문을 다시 한다.)
             result.matched_destination_id = matched.id
             result.reply = f"{matched.name} 안내를 시작합니다."
             result.need_confirm = False

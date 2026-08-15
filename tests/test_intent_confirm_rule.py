@@ -7,6 +7,8 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.langchain_intent_parser import (
+    _finalize,
+    _IntentDraft,
     _normalize_short_reply,
     _pending_confirm_destination,
     parse_intent,
@@ -60,3 +62,41 @@ class TestParseIntentShortcut:
         assert result.intent == "clarify"
         assert result.matched_destination_id is None
         assert result.need_confirm is False
+
+
+class TestFinalizeConfirmationGate:
+    """is_confirmation 은 코드가 아는 pending 과 일치할 때만 믿는다.
+
+    배경: _finalize 가 이력을 모른 채 is_confirmation=true 를 그대로 믿으면,
+    확인 질문을 한 적이 없어도 need_confirm=False 로 안내가 시작된다
+    (2026-08-12 발견, 2026-08-15 게이팅).
+    """
+
+    def _draft(self):
+        return _IntentDraft(
+            intent="navigate",
+            destination_candidate=DEST.name,
+            is_confirmation=True,
+            confidence=0.9,
+            reply="",
+        )
+
+    def test_no_pending_still_requires_confirm(self):
+        result = _finalize(self._draft(), [DEST], pending=None)
+        assert result.need_confirm is True
+        assert result.reply == DEST.confirm_prompt
+
+    def test_pending_mismatch_still_requires_confirm(self):
+        other = DestinationData(
+            id="starlight_1f_restroom",
+            name="별빛관 1층 화장실",
+            confirm_prompt="별빛관 1층 화장실로 안내해드릴까요?",
+        )
+        result = _finalize(self._draft(), [DEST, other], pending=other)
+        assert result.need_confirm is True
+        assert result.matched_destination_id == DEST.id
+
+    def test_pending_match_confirms(self):
+        result = _finalize(self._draft(), [DEST], pending=DEST)
+        assert result.need_confirm is False
+        assert "안내를 시작" in result.reply
