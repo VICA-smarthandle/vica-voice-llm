@@ -40,6 +40,7 @@ ros_emergency_node  whisper 상시 감시. 웨이크워드 롤백용으로 남�
 | `/vica/emergency` | `vica_interfaces/msg/EmergencyEvent` | 긴급어 감시 | Mission Manager, E-stop bridge | LLM 우회 긴급 이벤트 |
 | `/vica/tts_request` | `std_msgs/msg/String` | STT, LLM, Mission Manager | TTS | `priority:text` 재생 요청 |
 | `/vica/tts_state` | `std_msgs/msg/Bool` | TTS | 긴급어 감시 | 로봇 음성 재생 중 여부 |
+| `/vica/listen_request` | `std_msgs/msg/Bool` | LLM node, Mission Manager | 웨이크워드 노드 | `true` = 방금 말한 것이 질문("~할까요?"). 질문 TTS 종료 직후 웨이크워드 없이 재청취 창을 연다 — 사용자가 "비카야" 재호출 없이 "네/아니요"로 답한다. `false` = 예약 취소. 예약은 20초 지나면 스스로 무효(질문 유실 대비) |
 
 기본 QoS는 depth 10 reliable이다.
 

@@ -42,6 +42,9 @@ POST_ROLL_FRAMES = 4            # 긴급 발동 후 말끝 보존 0.32초
 LISTEN_MAX_SEC = 6.0            # 호출 후 청취 창 상한
 LISTEN_SILENCE_END_SEC = 0.8    # 발화 시작 후 이만큼 조용하면 청취 종료
 SPEECH_RMS = 0.01               # 발화 판정 RMS (EmergencyMonitor 게이트와 동일)
+# 재청취(arm_followup) 예약의 유효 시간. 질문 TTS 가 유실돼 mute 해제가 안 오면
+# 예약이 남아, 한참 뒤 무관한 안내가 끝난 순간 마이크가 열리는 오동작을 막는다.
+FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
 
 
 class WakewordMonitor:
@@ -73,8 +76,27 @@ class WakewordMonitor:
         self._collect: list[np.ndarray] = []   # postroll·listen 수집분
         self._listen_started_speech = False
         self._listen_silence = 0.0
+        self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
         self._muted_until = 0.0
         self._muted = False
+        # 재청취 예약: 로봇이 질문을 말하는 중("~할까요?")이면 노드가 걸어 두고,
+        # TTS 가 끝나(mute 해제) 이 예약이 살아 있으면 웨이크워드 없이 청취를 연다.
+        # 사용자가 "응" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
+        self._followup_armed = False
+        self._followup_armed_at = 0.0
+
+    # ---------------------------------------------------------------- 재청취
+    def arm_followup(self, now: Optional[float] = None) -> None:
+        """"방금 질문을 말했다"는 예약. 다음 TTS 종료(mute 해제) 때 청취를 연다.
+
+        질문을 하는 노드(LLM node, Mission Manager)가 /vica/listen_request 로
+        알리고, 웨이크워드 노드가 이 메서드를 부른다.
+        """
+        self._followup_armed = True
+        self._followup_armed_at = time.time() if now is None else now
+
+    def disarm_followup(self) -> None:
+        self._followup_armed = False
 
     # ---------------------------------------------------------------- mute
     def set_muted(self, muted: bool, now: Optional[float] = None,
@@ -85,11 +107,24 @@ class WakewordMonitor:
         if muted:
             self._muted = True
             self._muted_until = now + failsafe_sec
-        else:
-            self._muted = False
-            self._ring.clear()
-            self.gate_a.reset()
-            self.gate_b.reset()
+            # TTS 는 문장마다 상태를 깜빡인다(문장 사이 감시 공백을 줄이는 설계).
+            # 여러 문장짜리 질문이면 첫 문장 끝에 열린 재청취가 다음 문장 재생과
+            # 겹친다. 그 창은 접고 예약을 되살려, "마지막 문장 끝"에 다시 열리게
+            # 한다. (질문 시각 기준의 타임아웃은 유지 — armed_at 은 갱신 안 함)
+            if self._state == "listen" and self._listen_is_followup:
+                self._state = "idle"
+                self._collect = []
+                self._followup_armed = True
+            return
+
+        self._muted = False
+        self._ring.clear()
+        self.gate_a.reset()
+        self.gate_b.reset()
+        if self._followup_armed:
+            self._followup_armed = False
+            if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
+                self._open_listen(followup=True)
 
     def _is_muted(self, now: float) -> bool:
         if self._muted and now >= self._muted_until:   # fail-safe 타임아웃
@@ -132,14 +167,20 @@ class WakewordMonitor:
         if self.gate_a.feed(float(scores["a"]), now):
             self.gate_b.reset()
             self._on_wake()
-            self._state = "listen"
-            self._collect = []
-            self._listen_started_speech = False
-            self._listen_silence = 0.0
+            self._open_listen(followup=False)
             return "wake"
         return None
 
     # ---------------------------------------------------------------- 내부
+    def _open_listen(self, followup: bool) -> None:
+        """청취 창을 연다. followup 이면 웨이크워드 없이(질문 답변용) 연 것이라
+        인사(on_wake)를 하지 않는다 — 로봇이 방금 질문을 마쳤기 때문이다."""
+        self._state = "listen"
+        self._collect = []
+        self._listen_started_speech = False
+        self._listen_silence = 0.0
+        self._listen_is_followup = followup
+
     def _enter_postroll(self) -> None:
         self._state = "postroll"
         self._collect = []

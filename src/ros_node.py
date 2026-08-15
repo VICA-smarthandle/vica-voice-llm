@@ -26,7 +26,7 @@ import rclpy
 from langchain_core.messages import AIMessage, HumanMessage
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
@@ -65,6 +65,10 @@ class LlmIntentNode(Node):
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
+        # 질문("~할까요?", 되묻기)을 말할 때 true — 웨이크워드 노드가 그 질문 TTS 가
+        # 끝나는 순간 재청취 창을 열어, 사용자가 "비카야" 재호출 없이 "응"으로
+        # 답할 수 있게 한다.
+        self._listen_pub = self.create_publisher(Bool, "/vica/listen_request", 10)
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
 
@@ -121,6 +125,10 @@ class LlmIntentNode(Node):
         request = request_for_intent(intent)
         if request:
             self._tts_pub.publish(String(data=request))
+
+        # 3-2) 지금 한 말이 질문이면(목적지 확인·되묻기) 답을 들을 준비를 시킨다.
+        if intent.need_confirm or intent.intent == "clarify":
+            self._listen_pub.publish(Bool(data=True))
         self.get_logger().info(
             f"입력='{text}' -> intent={intent.intent} "
             f"matched={intent.matched_destination_id} safety={intent.safety_flag}"
