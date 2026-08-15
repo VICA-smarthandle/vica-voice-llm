@@ -21,12 +21,24 @@ from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
 
-# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 전환). 기본은 Ollama Cloud 이며
-# Jetson 온디바이스에서도 이 클라우드 모델을 주 모델로 사용한다.
-#   기본(클라우드):  OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
-#   (선택) 로컬:     OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
+# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 전환). 기본은 Ollama Cloud 다.
+#   기본(ollama 클라우드): OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
+#   (선택) ollama 로컬:    OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (키 불필요)
+#   (선택) openai:         VICA_LLM_PROVIDER=openai  VICA_OPENAI_MODEL=gpt-5.4-mini  OPENAI_API_KEY=...
+#
+# 모델 변수는 백엔드별로 분리한다 — VICA_LLM_MODEL 은 ollama 전용이다. 하나를
+# 겸용하면 .env 의 ollama 태그(gemma4:cloud)가 openai 로 넘어가 404 가 난다
+# (2026-08-15 스모크에서 실제 발생).
+#
+# openai 경로 도입 근거 (2026-08-15 젯슨 실측, logs/llm_bench.jsonl): gpt-5.4-mini
+# 지연 중앙값 0.92초·최대 1.86초로 gemma4:cloud(0.95초, 꼬리 7.95초)보다 꼬리가
+# 짧고, 판정 18/18, strict json_schema 구조화 출력 완전 준수, 발화당 ~1.9k/40 토큰.
+PROVIDER = os.environ.get("VICA_LLM_PROVIDER", "ollama")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
-DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
+if PROVIDER == "openai":
+    DEFAULT_MODEL = os.environ.get("VICA_OPENAI_MODEL", "gpt-5.4-mini")
+else:
+    DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
 
 
 class _IntentDraft(BaseModel):
@@ -136,7 +148,22 @@ def _pending_confirm_destination(
 
 
 def _get_structured_llm(model: str):
-    """구조화 출력(_IntentDraft) LLM 을 만든다. (클라우드=키 필요 / 로컬=키 불필요)"""
+    """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다."""
+    if PROVIDER == "openai":
+        # 지연 import — ollama 만 쓰는 환경에 openai 패키지를 요구하지 않는다.
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=model,
+            temperature=0,
+            # 로봇 대화에서 무한 대기는 곧 침묵이다. 실측 꼬리(1.86초)의 여유
+            # 배수에서 끊고, 실패는 parse_intent 의 LLM_UNAVAILABLE 폴백이 받는다.
+            timeout=15,
+            max_retries=1,
+        )
+        # strict=True: 스키마를 서버가 문법 수준에서 강제한다 (실측 준수 18/18).
+        return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
+
     api_key = os.environ.get("OLLAMA_API_KEY", "")
     kwargs = {
         "model": model,
