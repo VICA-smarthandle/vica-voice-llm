@@ -43,7 +43,11 @@ class DestinationData(BaseModel):
 
 
 # intent 종류와 안전 플래그는 정해진 값만 허용한다 (오타/임의값 방지).
-VicaIntentType = Literal["navigate", "question", "clarify", "unknown"]
+# cancel/pause/resume 은 '실행'이 아니라 '제안'이다 — 코드가 확인 질문("네")을
+# 검증한 뒤에만 need_confirm=False 로 내려가고, 실제 실행은 Mission Manager 의
+# MissionCommand 서비스(관리자 앱과 같은 경로)가 상태를 보고 최종 판정한다.
+# 즉시 정지(멈춰·정지)는 여기 없다 — 긴급어 필터가 LLM 이전에 처리한다.
+VicaIntentType = Literal["navigate", "question", "clarify", "unknown", "cancel", "pause", "resume"]
 SafetyFlag = Literal["normal", "emergency"]
 
 
