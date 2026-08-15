@@ -10,7 +10,7 @@ from src.langchain_intent_parser import _finalize, _IntentDraft, parse_intent
 from src.replies import (
     CANCEL_CONFIRM,
     COMMAND_DECLINED,
-    PAUSE_CONFIRM,
+    PAUSE_ACK,
     RESUME_CONFIRM,
 )
 from src.schema import DestinationData
@@ -37,10 +37,10 @@ class TestCancelRule:
 
 
 class TestCommandConfirmFlow:
-    def test_yes_after_pause_question_confirms(self):
-        history = [HumanMessage("잠깐 쉬었다 가자"), AIMessage(PAUSE_CONFIRM)]
+    def test_yes_after_cancel_question_confirms(self):
+        history = [HumanMessage("취소해줘"), AIMessage(CANCEL_CONFIRM)]
         result = parse_intent("네", [DEST], history=history)
-        assert result.intent == "pause"
+        assert result.intent == "cancel"
         assert result.need_confirm is False
 
     def test_no_after_cancel_question_continues(self):
@@ -64,7 +64,6 @@ class TestFinalizeCommandGate:
     def test_llm_command_proposal_always_asks(self):
         for intent, phrase in (
             ("cancel", CANCEL_CONFIRM),
-            ("pause", PAUSE_CONFIRM),
             ("resume", RESUME_CONFIRM),
         ):
             result = _finalize(self._draft(intent), [DEST])
@@ -72,11 +71,26 @@ class TestFinalizeCommandGate:
             assert result.reply == phrase, intent
 
     def test_reconfirm_via_llm_when_command_pending(self):
-        result = _finalize(self._draft("pause"), [DEST], pending_command="pause")
+        result = _finalize(self._draft("resume"), [DEST], pending_command="resume")
         assert result.need_confirm is False
 
     def test_other_command_while_pending_still_asks(self):
-        # "잠시 멈출까요?" 대기 중에 취소 제안이 오면 취소를 새로 되묻는다.
-        result = _finalize(self._draft("cancel"), [DEST], pending_command="pause")
+        # "다시 출발할까요?" 대기 중에 취소 제안이 오면 취소를 새로 되묻는다.
+        result = _finalize(self._draft("cancel"), [DEST], pending_command="resume")
         assert result.need_confirm is True
         assert result.reply == CANCEL_CONFIRM
+
+
+class TestPauseImmediate:
+    """pause 는 서는 방향이라 되묻지 않는다 (2026-08-15 현장 시험 결정)."""
+
+    def test_bare_pause_word_requests_immediately(self):
+        result = parse_intent("잠깐만", [DEST], history=[])
+        assert result.intent == "pause"
+        assert result.need_confirm is False
+        assert result.reply == PAUSE_ACK
+
+    def test_llm_pause_proposal_needs_no_confirm(self):
+        result = _finalize(_IntentDraft(intent="pause", reply=""), [DEST])
+        assert result.need_confirm is False
+        assert result.reply == PAUSE_ACK

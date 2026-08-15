@@ -22,7 +22,7 @@ from .replies import (
     COMMAND_DECLINED,
     CONFIRM_DECLINED,
     LLM_UNAVAILABLE,
-    PAUSE_CONFIRM,
+    PAUSE_ACK,
     RESUME_CONFIRM,
     RETRY_PROMPT,
 )
@@ -162,16 +162,17 @@ def _pending_confirm_destination(
 
 
 # 제어 확인 문구 -> intent. 로봇의 직전 발화가 이 중 하나면 "네" 한마디로 확정된다.
+# pause 는 여기 없다 — 서는 방향은 되묻지 않고 즉시 요청한다 (replies.PAUSE_ACK).
 _COMMAND_CONFIRMS = {
     CANCEL_CONFIRM: "cancel",
-    PAUSE_CONFIRM: "pause",
     RESUME_CONFIRM: "resume",
 }
 
-# LLM 없이 잡는 명백한 취소 발화 (normalize_short_reply 적용 후 비교).
+# LLM 없이 잡는 명백한 취소·일시정지 발화 (normalize_short_reply 적용 후 비교).
 # 긴급어 필터와 같은 원칙 — 결정적 명령의 감지는 룰이 빠르고 확실하다.
-# 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 cancel 로 분류한다.
+# 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 분류한다.
 _CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
+_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 
 # 제어가 확정됐을 때의 reply. 실행이 아니라 요청이다 — MissionCommand 서비스
 # 호출은 ROS 노드, 수락/거절 판정은 Mission Manager 몫이며 이 문구는 로그용이다.
@@ -272,10 +273,13 @@ def parse_intent(
                 need_confirm=False,
             )
 
-    # 명백한 취소 발화는 LLM 없이 확인 질문으로 직행한다 (0초, 오판 없음).
+    # 명백한 취소·일시정지 발화는 LLM 없이 직행한다 (0초, 오판 없음).
     # 목적지·제어 확인 대기 중이면 위 블록들이 먼저 처리하므로 여기 오지 않는다.
-    if _normalize_short_reply(user_text) in _CANCEL_WORDS:
+    word = _normalize_short_reply(user_text)
+    if word in _CANCEL_WORDS:
         return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
+    if word in _PAUSE_WORDS:
+        return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
 
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
@@ -346,16 +350,20 @@ def _finalize(
             result.need_confirm = True
 
     if draft.intent in ("cancel", "pause", "resume"):
-        if pending_command == draft.intent:
+        if draft.intent == "pause":
+            # 서는 방향은 되묻지 않는다 — 오분류해도 잠시 서는 것뿐(안전한 실패).
+            # 감속 정지 실행과 수락/거절 판정은 Mission Manager 몫이다.
+            result.reply = PAUSE_ACK
+            result.need_confirm = False
+        elif pending_command == draft.intent:
             # 방금 이 제어를 물었고 사용자가 말로 다시 수락했다 ("응, 취소해 줘").
             result.reply = _COMMAND_REQUESTED
             result.need_confirm = False
         else:
-            # 제어는 반드시 되묻는다 — LLM 제안만으로는 실행되지 않는다
-            # (is_confirmation 게이팅과 같은 원칙).
+            # 버리는 쪽(cancel)과 움직이는 쪽(resume)은 반드시 되묻는다 —
+            # LLM 제안만으로는 실행되지 않는다 (is_confirmation 게이팅과 같은 원칙).
             result.reply = {
                 "cancel": CANCEL_CONFIRM,
-                "pause": PAUSE_CONFIRM,
                 "resume": RESUME_CONFIRM,
             }[draft.intent]
             result.need_confirm = True
