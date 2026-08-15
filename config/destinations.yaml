@@ -87,7 +87,7 @@ destinations:
     owner: ""
     authorization: "public"
     is_approachable: false
-    unavailable_reason: "현재 로봇이 접근할 수 없는 목적지입니다."
+    unavailable_reason: "현재 로봇이 접근할 수 없는 목적지입니다. 현재 식당 공사중입니다. 공사는 2026년 9월 30일까지입니다."
     pose:
       frame_id: "map"
       x: 0.0
