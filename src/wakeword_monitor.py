@@ -247,6 +247,11 @@ class WakewordMonitor:
 
             self._predict = _predict
         if self._transcribe is None:
+            # stt 모듈을 먼저 거친다 — import 부수효과 두 가지가 필요하다:
+            # .env 로드(VICA_STT_* 반영)와 Jetson CUDA libctranslate2 선적재.
+            # 이것 없이 faster_whisper 를 직접 import 하면 Jetson 에서
+            # so 미발견·int8 거부로 감시 스레드가 죽는다 (2026-08-16 실기).
+            from . import stt  # noqa: F401
             from faster_whisper import WhisperModel
 
             size = os.environ.get("VICA_VERIFY_STT_MODEL", "medium")

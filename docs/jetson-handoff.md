@@ -81,6 +81,14 @@ git clone https://github.com/VICA-smarthandle/vica-wakeword.git   # 문서·DSP 
   `docs/jetson-setup.md`(기존 Jetson 구축 절차)를 따르고, 추가로:
   `openwakeword==0.6.0`, `onnxruntime==1.23.2`(aarch64 cp310 마지막 버전 — 핀 필수),
   `psutil`(계측용).
+  - openwakeword 는 import 만 해도 `scipy`·`scikit-learn`(부속 `joblib`·
+    `threadpoolctl` 포함)을 요구한다. onnxruntime-gpu 를 지키려고 `--no-deps` 로
+    깔았다면 이 넷도 `--no-deps` 로 함께 설치한다 (2026-08-16 Jetson 실기).
+  - 전처리 모델(멜스펙트로그램·임베딩)은 패키지에 없다. 최초 1회:
+    `.venv/bin/python -c "import openwakeword.utils as u; u.download_models()"`
+  - whisper 캐시가 있어도 로드 시 버전 질의가 무한 대기할 수 있다(실측 27분).
+    이 장비 `.env` 에 `HF_HUB_OFFLINE=1` 을 둔 이유다 — 새 모델을 받아야 할 때만
+    잠시 지운다.
 - 모델은 `models/` 에 커밋돼 있다(자립형 215KB×2). **학습 산출 원본은 가중치가
   사이드카(.onnx.data)에 분리돼 조용히 깨진다** — 새 모델을 받을 땐 반드시
   vica-wakeword 의 `consolidate_onnx.py` 를 거친 파일인지 확인.
