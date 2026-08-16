@@ -29,7 +29,7 @@ from std_msgs.msg import Bool, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
-from .cue_logic import GUIDANCE_END_EVENTS, GreetingState
+from .cue_logic import GUIDANCE_END_EVENTS, GreetingState, parse_goal_event
 from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
@@ -121,7 +121,16 @@ class WakewordNode(Node):
 
     def _on_goal_event(self, msg: String) -> None:
         # 도착·취소·실패 = 안내 한 건이 끝났다. 다음 사용자에게 다시 인사한다.
-        if (msg.data or "").strip() in GUIDANCE_END_EVENTS:
+        event = parse_goal_event(msg.data)
+        if event is None:
+            self.get_logger().warn(
+                "/vica_goal_event 파싱 실패 — 안내 종료 후 인사가 되살아나지 "
+                f"않습니다. JSON 에 event 키가 필요합니다. "
+                f"payload={(msg.data or '')[:120]!r}",
+                throttle_duration_sec=5.0,
+            )
+            return
+        if event in GUIDANCE_END_EVENTS:
             self._greeting.on_guidance_ended()
 
     def _on_listen_request(self, msg: Bool) -> None:

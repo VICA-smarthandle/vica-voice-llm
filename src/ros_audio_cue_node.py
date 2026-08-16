@@ -33,6 +33,7 @@ from .cue_logic import (
     GUIDANCE_ARRIVED_EVENT,
     GUIDANCE_END_EVENTS,
     TurnAnnouncer,
+    parse_goal_event,
 )
 from .replies import TURN_LEFT
 from .tts_queue import RESPONSE, build_request
@@ -66,7 +67,16 @@ class AudioCueNode(Node):
         self.get_logger().info(f"🔀 회전 안내: {text} (seq={msg.sequence_id})")
 
     def _on_goal_event(self, msg: String) -> None:
-        event = (msg.data or "").strip()
+        event = parse_goal_event(msg.data)
+        if event is None:
+            # payload 형식이 어긋나면 도착음이 조용히 사라진다. 단서를 남긴다
+            # (핸들 노드가 2026-07-29 실기에서 겪은 함정과 같다).
+            self.get_logger().warn(
+                "/vica_goal_event 파싱 실패 — 도착음·회전 리셋이 동작하지 않습니다. "
+                f"JSON 에 event 키가 필요합니다. payload={(msg.data or '')[:120]!r}",
+                throttle_duration_sec=5.0,
+            )
+            return
         if event == GUIDANCE_ARRIVED_EVENT:
             # 도착 안내 멘트는 Mission Manager 가 말한다. 여기서는 그 앞에 음만
             # 붙여 "이제 안내가 나온다" 를 알린다.
