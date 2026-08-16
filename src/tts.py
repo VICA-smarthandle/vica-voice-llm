@@ -23,7 +23,7 @@ supertonic.loader.DEFAULT_ONNX_PROVIDERS = ["CUDAExecutionProvider", "CPUExecuti
 class VicaTTS:
     """한국어 음성 합성기. 모델은 생성 시 한 번만 로드한다."""
 
-    def __init__(self, model: str = "supertonic-3", voice: str = "F2", lang: str = "ko"):
+    def __init__(self, model: str = "supertonic-3", voice: str = "F5", lang: str = "ko"):
         self._tts = supertonic.TTS(model=model, auto_download=True)
         self._style = self._tts.get_voice_style(voice)
         self.lang = lang
