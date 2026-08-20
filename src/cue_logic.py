@@ -3,7 +3,6 @@
 두 가지를 정한다.
 
 1. 회전 신호를 받았을 때 무엇을 말할지 (TurnAnnouncer)
-2. 호출에 "네?" 로 답할지, 짧은 음으로 답할지 (GreetingState)
 
 소리를 내는 것은 audio_cue.py, 토픽을 다루는 것은 ros_audio_cue_node.py 다.
 여기는 "언제 무엇을" 만 정한다.
@@ -31,11 +30,6 @@ PHASE_CANCELED = 4
 # 정본은 vica_ros2_ws 의 mission_manager_node._publish_goal_event 다.
 GUIDANCE_END_EVENTS = frozenset({"goal_succeeded", "goal_canceled", "goal_failed"})
 GUIDANCE_ARRIVED_EVENT = "goal_succeeded"
-
-# 대화가 끊겼다고 보는 시간. src/history.py 의 DEFAULT_IDLE_RESET_SEC 와 같은 값이며,
-# 같은 뜻으로 쓴다 — "이전 사용자는 떠났다". 인사 주기를 따로 정한 것이 아니다.
-DEFAULT_IDLE_RESET_SEC = 180.0
-
 
 def parse_goal_event(payload: str) -> Optional[str]:
     """/vica_goal_event JSON 에서 event 문자열만 꺼낸다.
@@ -101,39 +95,3 @@ class TurnAnnouncer:
     def reset(self) -> None:
         """안내가 끝나면 호출한다. 다음 안내의 첫 회전을 놓치지 않기 위해서다."""
         self._last_sequence = None
-
-
-class GreetingState:
-    """호출에 "네?" 로 답할지 정한다 — 안내 한 건마다 첫 호출에만.
-
-    공용 로봇이라 사용자가 계속 바뀐다. 짧은 음만으로는 처음 쓰는 사용자가 무슨
-    뜻인지 모르므로, 안내 한 건의 첫 호출에는 말로 답한다 (2026-08-05 결정).
-
-    "부르고 아무 말도 하지 않은 것"은 인사로 치지 않는다. 잘못 부르고 떠난
-    사람 뒤에 온 다음 사용자가 인사를 못 받는 것을 막는다.
-    """
-
-    def __init__(self, idle_reset_sec: float = DEFAULT_IDLE_RESET_SEC) -> None:
-        self.idle_reset_sec = idle_reset_sec
-        self._greeted = False
-        self._last_activity: Optional[float] = None
-
-    def on_wake(self, now: float) -> bool:
-        """호출을 받았다. True 면 "네?", False 면 짧은 음."""
-        if (
-            self._last_activity is not None
-            and now - self._last_activity >= self.idle_reset_sec
-        ):
-            # 대화가 끊겼다 = 이전 사용자는 떠났다. history.py 와 같은 판정이다.
-            self._greeted = False
-        self._last_activity = now
-        return not self._greeted
-
-    def on_user_spoke(self, now: float) -> None:
-        """호출 뒤 실제로 발화가 이어졌다. 이때 비로소 인사가 성립한다."""
-        self._last_activity = now
-        self._greeted = True
-
-    def on_guidance_ended(self) -> None:
-        """도착·취소·실패. 다음 사용자를 위해 인사를 되살린다."""
-        self._greeted = False

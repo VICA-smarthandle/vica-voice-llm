@@ -11,7 +11,6 @@ from src.cue_logic import (
     PHASE_COMPLETE,
     PHASE_NOW,
     PHASE_PREPARE,
-    GreetingState,
     TurnAnnouncer,
     parse_goal_event,
 )
@@ -115,54 +114,3 @@ def test_parse_goal_event_returns_none_for_malformed_payloads():
 def test_parse_goal_event_passes_through_any_event_name():
     """goal_sent 같은 무관 이벤트의 필터링은 호출자 몫이다."""
     assert parse_goal_event('{"event": "goal_sent"}') == "goal_sent"
-
-
-# ---- 첫 호출 인사 --------------------------------------------------------------
-
-
-def test_first_wake_greets():
-    g = GreetingState()
-    assert g.on_wake(0.0) is True
-
-
-def test_second_wake_in_same_guidance_does_not_greet():
-    g = GreetingState()
-    assert g.on_wake(0.0) is True
-    g.on_user_spoke(1.0)              # 발화가 이어져 인사가 성립
-    assert g.on_wake(5.0) is False
-
-
-def test_wake_without_speech_does_not_count_as_greeting():
-    """잘못 부르고 떠난 사람 뒤의 다음 사용자도 인사를 받아야 한다."""
-    g = GreetingState()
-    assert g.on_wake(0.0) is True     # A 가 부르고
-    # A 가 아무 말 없이 떠남 (on_user_spoke 없음)
-    assert g.on_wake(5.0) is True     # B 가 불렀다 — 다시 인사
-
-
-def test_guidance_end_restores_greeting():
-    g = GreetingState()
-    g.on_wake(0.0)
-    g.on_user_spoke(1.0)
-    assert g.on_wake(2.0) is False
-    g.on_guidance_ended()             # 도착·취소·실패
-    assert g.on_wake(3.0) is True     # 다음 사용자
-
-
-def test_long_silence_restores_greeting():
-    """안내가 시작되지 않은 채 방치된 경우의 안전망 (대화 끊김 판정)."""
-    g = GreetingState(idle_reset_sec=180.0)
-    g.on_wake(0.0)
-    g.on_user_spoke(1.0)
-    assert g.on_wake(100.0) is False   # 아직 같은 대화
-    assert g.on_wake(300.0) is True    # 3분 넘게 조용했다 = 떠났다
-
-
-def test_activity_extends_the_session():
-    """대화가 이어지는 동안에는 끊김 판정이 걸리지 않는다."""
-    g = GreetingState(idle_reset_sec=180.0)
-    g.on_wake(0.0)
-    g.on_user_spoke(1.0)
-    for t in (100.0, 200.0, 300.0):    # 100초 간격으로 계속 대화
-        assert g.on_wake(t) is False
-        g.on_user_spoke(t + 1.0)

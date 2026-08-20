@@ -19,7 +19,6 @@ HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import rclpy
@@ -29,7 +28,6 @@ from std_msgs.msg import Bool, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
-from .cue_logic import GUIDANCE_END_EVENTS, GreetingState, parse_goal_event
 from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
@@ -50,14 +48,14 @@ class WakewordNode(Node):
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
-        self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
         # 질문을 말한 노드(LLM node, Mission Manager)가 true 를 보내면, 그 질문
         # TTS 가 끝나는 순간 웨이크워드 없이 청취 창을 연다. "안내를 취소할까요?"
         # 에 "아니요" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
         self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
 
-        # 안내 한 건의 첫 호출에만 말로 답한다. 이후는 짧은 음.
-        self._greeting = GreetingState()
+        # 호출에는 항상 "네?"로 답한다. 짧은 신호음만으로는 언제 말해야
+        # 하는지 알 수 없다는 로봇팀 실사용 피드백(2026-08-20)으로, 첫 호출만
+        # 인사하던 GreetingState 를 없앴다. 효과음은 참고용일 뿐이다.
         self._greeting_wav = self._load_greeting_wav()
 
         self._monitor = WakewordMonitor(
@@ -77,26 +75,20 @@ class WakewordNode(Node):
             f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})")
 
     def _on_user_text(self, text: str) -> None:
-        # 부르고 실제로 말이 이어졌을 때만 인사가 성립한다. 잘못 부르고 떠난
-        # 사람 뒤에 온 다음 사용자가 인사를 못 받는 것을 막는다.
-        self._greeting.on_user_spoke(time.time())
         msg = String()
         msg.data = text
         self._pub_text.publish(msg)
         self.get_logger().info(f"🗣️ 호출 발화 -> /vica/user_text: {text!r}")
 
     def _on_wake(self) -> None:
-        if self._greeting.on_wake(time.time()):
-            self._greet()
-        else:
-            audio_cue.play(audio_cue.wake_ack())
+        self._greet()
         msg = String()
         msg.data = "wake"
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
     def _greet(self) -> None:
-        """안내 한 건의 첫 호출. 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
+        """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
         if self._greeting_wav is not None:
             audio_cue.play(*self._greeting_wav)
             return
@@ -118,20 +110,6 @@ class WakewordNode(Node):
         except Exception as exc:
             self.get_logger().warn(f"인사 음성을 읽지 못해 TTS 로 대체한다: {exc}")
             return None
-
-    def _on_goal_event(self, msg: String) -> None:
-        # 도착·취소·실패 = 안내 한 건이 끝났다. 다음 사용자에게 다시 인사한다.
-        event = parse_goal_event(msg.data)
-        if event is None:
-            self.get_logger().warn(
-                "/vica_goal_event 파싱 실패 — 안내 종료 후 인사가 되살아나지 "
-                f"않습니다. JSON 에 event 키가 필요합니다. "
-                f"payload={(msg.data or '')[:120]!r}",
-                throttle_duration_sec=5.0,
-            )
-            return
-        if event in GUIDANCE_END_EVENTS:
-            self._greeting.on_guidance_ended()
 
     def _on_listen_request(self, msg: Bool) -> None:
         if msg.data:
