@@ -39,6 +39,9 @@ Code(또는 새 작업자)를 위한 것**이다. 이전 세션의 맥락 없이
 
 ## 1. 확정된 구조와 결정 (바꾸려면 사용자 승인)
 
+마이크는 **reSpeaker USB 4-Mic Array v3.0** (XVF3000, USB 2886:0018, 6ch —
+ch0=DSP 처리음)이다. v2.0 아님. 상위 제품 XVF3800(빔 2개·빔별 VAD)은 별개다.
+
 ```
 reSpeaker ch0 (80ms 프레임, 상시)
   → openWakeWord 모델 A·B 동시 (전처리 공유, models/ 의 자립형 ONNX)
