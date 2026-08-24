@@ -33,6 +33,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from .schema import EmergencyEvent
+from .stt_guard import accept_segments, is_hallucination
 from .wakeword_gate import FrameGate, match_emergency_transcript
 
 SAMPLE_RATE = 16000
@@ -45,6 +46,28 @@ SPEECH_RMS = 0.01               # 발화 판정 RMS (EmergencyMonitor 게이트�
 # 재청취(arm_followup) 예약의 유효 시간. 질문 TTS 가 유실돼 mute 해제가 안 오면
 # 예약이 남아, 한참 뒤 무관한 안내가 끝난 순간 마이크가 열리는 오동작을 막는다.
 FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
+# 질문 재생 중 이만큼 연속 발화 프레임(0.32초)이 보이면 사용자가 답을 시작한
+# 것으로 보고 끼어들기(barge-in)로 처리한다. 짧은 소음(문 닫는 소리 등)은
+# 연속 조건에서 걸러진다. AEC 배선(set_speaking) 모드에서만 동작한다.
+BARGE_IN_FRAMES = 4
+
+
+def capture_stats(audio: np.ndarray) -> dict:
+    """청취 창 수음 품질 요약 — "수음이 나쁘다"를 감이 아니라 숫자로 만든다.
+
+    rms(평균 음량), peak(최고점), clip_ratio(포화 샘플 비율, |x|≥0.99).
+    개선(마이크 위치·거리 안내 등)의 전후 비교 기준이 된다. DSP 파라미터는
+    동결(D7)이므로 여기 숫자가 나빠도 AGC/NS 를 바꾸는 게 아니라 DSP 밖에서
+    해결한다 (vica-wakeword/docs/respeaker-dsp-config.md).
+    """
+    x = audio.astype(np.float32) / 32768.0
+    if x.size == 0:
+        return {"rms": 0.0, "peak": 0.0, "clip_ratio": 0.0}
+    return {
+        "rms": float(np.sqrt(np.mean(x ** 2))),
+        "peak": float(np.max(np.abs(x))),
+        "clip_ratio": float(np.mean(np.abs(x) >= 0.99)),
+    }
 
 
 class WakewordMonitor:
@@ -55,6 +78,7 @@ class WakewordMonitor:
         on_emergency: Callable[[EmergencyEvent], None],
         on_user_text: Callable[[str], None],
         on_wake: Optional[Callable[[], None]] = None,
+        on_barge_in: Optional[Callable[[], None]] = None,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         gate_a: float = 0.6,
@@ -65,6 +89,10 @@ class WakewordMonitor:
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
         self._on_wake = on_wake or (lambda: None)
+        # 질문 재생 중 사용자가 답을 시작했을 때 (TTS 를 끊으라는 신호용)
+        self._on_barge_in = on_barge_in or (lambda: None)
+        self._speaking = False
+        self._barge_streak = 0
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
         self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트
 
@@ -84,6 +112,8 @@ class WakewordMonitor:
         # 사용자가 "응" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
         self._followup_armed = False
         self._followup_armed_at = 0.0
+        # 마지막 청취 창의 수음 품질 (노드가 로그로 남긴다)
+        self.last_listen_stats: Optional[dict] = None
 
     # ---------------------------------------------------------------- 재청취
     def arm_followup(self, now: Optional[float] = None) -> None:
@@ -131,6 +161,30 @@ class WakewordMonitor:
             self.set_muted(False, now)
         return self._muted
 
+    def set_speaking(self, speaking: bool, now: Optional[float] = None) -> None:
+        """AEC 배선 후의 TTS 경계 알림 — set_muted 의 대체이며 귀를 닫지 않는다.
+
+        AEC 가 자기 목소리를 마이크 입력(ch0)에서 빼 주므로 재생 중에도 감시를
+        계속한다. 로봇이 말하는 도중의 "멈춰"·"비카야"가 그대로 들린다.
+        남는 일은 재청취 예약 관리뿐이다: 문장 재생이 시작되면 열려 있던 재청취
+        창을 접고 예약을 되살리고(여러 문장짜리 질문), 재생이 끝나면 예약된
+        창을 연다. 버퍼·관문은 비우지 않는다 — 잔향은 AEC 몫이고, 비우면 긴급
+        검증이 참조할 직전 오디오가 사라진다.
+        """
+        now = time.time() if now is None else now
+        self._speaking = speaking
+        self._barge_streak = 0
+        if speaking:
+            if self._state == "listen" and self._listen_is_followup:
+                self._state = "idle"
+                self._collect = []
+                self._followup_armed = True
+            return
+        if self._followup_armed:
+            self._followup_armed = False
+            if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
+                self._open_listen(followup=True)
+
     # ---------------------------------------------------------------- 핵심 로직
     def process_frame(self, frame: np.ndarray, now: Optional[float] = None) -> Optional[str]:
         """int16 80ms 프레임 하나를 처리한다. 일어난 일을 문자열로 돌려준다
@@ -169,6 +223,27 @@ class WakewordMonitor:
             self._on_wake()
             self._open_listen(followup=False)
             return "wake"
+
+        # 질문 재생 중 barge-in: 로봇이 질문을 말하는 도중(재청취 예약 상태)
+        # 사용자가 답을 시작하면, TTS 를 끊고(콜백) 즉시 듣는다. 긴급(모델 B)과
+        # 호출(모델 A)이 위에서 항상 먼저다. 예약 없는 일반 안내에는 끼어들기가
+        # 없다 — 복도 소음마다 로봇이 말을 삼키면 안 되기 때문이다.
+        if (
+            self._speaking
+            and self._followup_armed
+            and now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC
+        ):
+            rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+            self._barge_streak = self._barge_streak + 1 if rms >= SPEECH_RMS else 0
+            if self._barge_streak >= BARGE_IN_FRAMES:
+                self._barge_streak = 0
+                self._followup_armed = False
+                self._on_barge_in()
+                self._open_listen(followup=True)
+                # 말머리를 버리지 않는다 — 감지에 쓴 직전 프레임부터 수집한다.
+                self._collect = list(self._ring)[-BARGE_IN_FRAMES:]
+                self._listen_started_speech = True
+                return "barge_in"
         return None
 
     # ---------------------------------------------------------------- 내부
@@ -216,12 +291,15 @@ class WakewordMonitor:
             return None
 
         audio = np.concatenate(self._collect)
+        self.last_listen_stats = capture_stats(audio)
         self._state = "idle"
         self._collect = []
         if not self._listen_started_speech:
             return "wake_silent"    # 오탐이었음 — 조용히 복귀 (기록은 노드 몫)
         text = self._transcribe(audio).strip()
-        if not text:
+        # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
+        # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe 안에 있다).
+        if not text or is_hallucination(text):
             return "wake_silent"
         self._on_user_text(text)
         return "user_text"
@@ -263,7 +341,8 @@ class WakewordMonitor:
             def _transcribe(audio: np.ndarray) -> str:
                 segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
                                         language="ko", beam_size=5)
-                return "".join(s.text for s in segs).strip()
+                # 신뢰도 필터(stt_guard 2겹): 무음을 받아 지어낸 조각을 버린다
+                return accept_segments(segs)
 
             self._transcribe = _transcribe
 

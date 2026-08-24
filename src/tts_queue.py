@@ -151,6 +151,22 @@ class TtsQueue:
         with self._lock:
             self._items.clear()
 
+    def drop_pending(self, keep_emergency: bool = True) -> tuple[str, ...]:
+        """대기 중 발화를 비운다 (barge-in — 사용자가 말을 시작했다).
+
+        기본으로 긴급 발화는 남긴다 — 안전 안내가 끼어들기에 지워지면 안 된다.
+        버린 발화를 돌려준다 — 호출자가 로그로 남긴다 (push 와 같은 규칙).
+        """
+        with self._lock:
+            dropped = tuple(
+                i.text for i in self._items
+                if not (keep_emergency and i.priority == EMERGENCY)
+            )
+            self._items = [
+                i for i in self._items if keep_emergency and i.priority == EMERGENCY
+            ]
+            return dropped
+
     # -- 내부 --------------------------------------------------------------
 
     def _sort(self) -> None:

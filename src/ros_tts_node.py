@@ -4,6 +4,9 @@
         Mission Manager 의 안내 멘트(안내 시작·도착·거부 사유 등)와 LLM 응답이
         모두 이 하나의 입구로 들어온다. 이 노드는 무엇을 말할지 판단하지 않고,
         들어온 순서와 우선순위대로 재생만 한다.
+      /vica/tts_stop    (std_msgs/Empty) - barge-in: 하던 말 즉시 중단 +
+        대기 중 비긴급 발화 폐기. 웨이크워드 노드가 재생 중 호출·긴급·질문
+        답변을 감지했을 때 보낸다. 긴급 발화는 큐에 남는다.
 발행: /vica/tts_state   (std_msgs/Bool) - 재생 중 여부
 
 /vica/tts_state 를 두는 이유:
@@ -29,7 +32,7 @@ import time
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Empty, String
 
 from .tts import VicaTTS
 from .tts_queue import TtsQueue, parse_request
@@ -56,6 +59,7 @@ class TtsNode(Node):
         self._publish_state(False)  # 시작 상태를 명시적으로 알린다
 
         self.create_subscription(String, "/vica/tts_request", self._on_request, 10)
+        self.create_subscription(Empty, "/vica/tts_stop", self._on_stop, 10)
 
         self._worker = threading.Thread(target=self._playback_loop, daemon=True)
         self._worker.start()
@@ -91,6 +95,19 @@ class TtsNode(Node):
             self.get_logger().warn(f"긴급 발화로 선점: {text}")
         else:
             self.get_logger().info(f"발화 대기[{priority}]: {text}")
+
+    def _on_stop(self, _msg: Empty) -> None:
+        """barge-in — 사용자가 말을 시작했으니 하던 말을 즉시 끊는다.
+
+        일반 대기 발화도 함께 버린다: 대화가 시작된 뒤에 옛 안내가 이어지면
+        사용자가 현재 상태를 오해한다 (큐의 신선도 원칙과 동일). 긴급은 남긴다.
+        """
+        dropped = self._queue.drop_pending(keep_emergency=True)
+        self._preempt.set()
+        self._tts.stop()
+        for lost in dropped:
+            self.get_logger().warn(f"발화 폐기(barge-in): {lost}")
+        self.get_logger().info("barge-in — 재생 중단")
 
     # -- 재생 ----------------------------------------------------------------
 
