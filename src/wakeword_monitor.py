@@ -53,10 +53,15 @@ BARGE_IN_FRAMES = 4
 # 발화 판정은 절대 RMS 가 아니라 "잔여 에코 대비 몇 배"다. AEC 수렴 전에는
 # 로봇 자기 목소리의 잔여(실측 rms ~0.06)가 고정 문턱(0.01)을 넘어, 질문 재생
 # 0.3초 만에 스스로 barge-in 하는 것이 ROS 종단 시험에서 재현됐다(2026-08-24).
-# 재생 중 잔여 수준을 이동평균으로 학습하고 그 3배를 넘는 소리만 사람으로
-# 인정한다. 놓쳐도 질문 종료 시 재청취 창이 열리므로(안전망) 보수적으로 간다.
+# 재생 중 잔여 수준을 학습하고 그 3배를 넘는 소리만 사람으로 인정한다.
+# 놓쳐도 질문 종료 시 재청취 창이 열리므로(안전망) 보수적으로 간다.
 BARGE_IN_OVER_ECHO = 3.0
 ECHO_EMA_ALPHA = 0.2
+# 기준선은 "실제로 소리가 나는 프레임"에서만, 이 개수(0.64초)만큼 모아 만든다.
+# TTS 는 문장 합성 동안(~0.3초) 무음이라, 무음을 기준선으로 삼으면 재생이
+# 시작되는 에코 자체가 '3배'를 넘어 자책골이 난다 (2026-08-24 ROS 재시험에서
+# 사용자 증언으로 확인된 회귀 — 텔레메트리만으로는 사람과 구분되지 않았다).
+BARGE_BASELINE_FRAMES = 8
 
 
 def capture_stats(audio: np.ndarray) -> dict:
@@ -86,6 +91,8 @@ class WakewordMonitor:
         on_user_text: Callable[[str], None],
         on_wake: Optional[Callable[[], None]] = None,
         on_barge_in: Optional[Callable[[], None]] = None,
+        on_reject: Optional[Callable[[str], None]] = None,
+        voice_barge_in: bool = True,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         gate_a: float = 0.6,
@@ -98,9 +105,14 @@ class WakewordMonitor:
         self._on_wake = on_wake or (lambda: None)
         # 질문 재생 중 사용자가 답을 시작했을 때 (TTS 를 끊으라는 신호용)
         self._on_barge_in = on_barge_in or (lambda: None)
+        # 긴급 관문이 발동했으나 STT 기각된 사건. 반드시 기록돼야 한다 —
+        # 이 로그가 없어서 "멈춰가 씹혔는데 흔적이 없는" 관측 공백이 생겼다.
+        self._on_reject = on_reject or (lambda text: None)
+        self._voice_barge_in = voice_barge_in
         self._speaking = False
         self._barge_streak = 0
         self._echo_ema: Optional[float] = None  # 재생 중 잔여 에코 기준선
+        self._echo_baseline_n = 0               # 기준선에 쓴 프레임 수
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
         self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트
 
@@ -183,6 +195,7 @@ class WakewordMonitor:
         self._speaking = speaking
         self._barge_streak = 0
         self._echo_ema = None   # 문장마다 잔여 수준이 다르다 — 새로 잰다
+        self._echo_baseline_n = 0
         if speaking:
             if self._state == "listen" and self._listen_is_followup:
                 self._state = "idle"
@@ -238,14 +251,19 @@ class WakewordMonitor:
         # 호출(모델 A)이 위에서 항상 먼저다. 예약 없는 일반 안내에는 끼어들기가
         # 없다 — 복도 소음마다 로봇이 말을 삼키면 안 되기 때문이다.
         if (
-            self._speaking
+            self._voice_barge_in
+            and self._speaking
             and self._followup_armed
             and now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC
         ):
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
-            if self._echo_ema is None:
-                # 첫 프레임은 기준선 표본이다 — 판정에 쓰지 않는다.
-                self._echo_ema = rms
+            # 기준선은 "실제 재생음이 들리는 프레임"에서만 만든다. 합성 지연의
+            # 무음이 기준선이 되면 에코 시작이 '사람'으로 보인다 (자책골 회귀).
+            if self._echo_baseline_n < BARGE_BASELINE_FRAMES:
+                if rms >= SPEECH_RMS:
+                    self._echo_ema = rms if self._echo_ema is None else max(
+                        self._echo_ema, rms)
+                    self._echo_baseline_n += 1
                 return None
             if rms < max(SPEECH_RMS, BARGE_IN_OVER_ECHO * self._echo_ema):
                 self._barge_streak = 0
@@ -289,6 +307,7 @@ class WakewordMonitor:
         self._collect = []
         keyword = match_emergency_transcript(text)
         if keyword is None:
+            self._on_reject(text)
             return "reject"
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
         self._on_emergency(event)

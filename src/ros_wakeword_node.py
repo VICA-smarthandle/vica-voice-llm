@@ -68,20 +68,29 @@ class WakewordNode(Node):
         # 말하는 도중의 "멈춰"가 들린다. 문제가 보이면 값 하나로 원복한다.
         self._mute_during_tts = os.environ.get(
             "VICA_TTS_MUTE", "on").strip().lower() not in ("off", "0", "false")
+        # 질문 재생 중 "아무 말" 끼어들기(RMS 기반). 자기 잔여 에코 자책골이
+        # ROS 실기에서 반복 확인돼(2026-08-24) 검증 전까지 기본 꺼짐이다.
+        # 꺼져 있어도 질문이 끝나면 재청취 창이 열리므로 답은 들린다 —
+        # 잃는 것은 '질문 도중' 반응뿐이다. 호출·긴급 barge-in 은 별개로 동작.
+        self._voice_barge_in = os.environ.get(
+            "VICA_BARGE_IN_VOICE", "off").strip().lower() in ("on", "1", "true")
 
         self._monitor = WakewordMonitor(
             on_emergency=self._on_emergency,
             on_user_text=self._on_user_text,
             on_wake=self._on_wake,
             on_barge_in=self._on_barge_in,
+            on_reject=self._on_reject,
+            voice_barge_in=self._voice_barge_in,
         )
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._thread = threading.Thread(target=self._monitor.run, daemon=True)
         self._thread.start()
         mode = "뮤트" if self._mute_during_tts else "감시 유지(AEC)"
+        barge = "켜짐" if self._voice_barge_in else "꺼짐"
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
-            f"TTS 중 {mode})")
+            f"TTS 중 {mode} | 음성 barge-in {barge})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
         # 긴급이 확정되면 로봇부터 입을 다문다 — 정지 안내(긴급 발화)는
@@ -119,6 +128,14 @@ class WakewordNode(Node):
         """질문 재생 중 사용자가 답을 시작했다 — 하던 말을 끊고 듣는다."""
         self._stop_pub.publish(Empty())
         self.get_logger().info("답변 barge-in — 질문 재생 중단, 청취 시작")
+
+    def _on_reject(self, text: str) -> None:
+        """긴급 관문은 발동했으나 STT 정확 매칭에서 기각된 사건.
+
+        반드시 남긴다 — "멈춰"가 씹혔을 때 관문을 못 넘은 것인지, 넘고
+        기각된 것인지 이 로그 없이는 사후에 가릴 수 없다 (2026-08-24 실기).
+        """
+        self.get_logger().warn(f"긴급 관문 발동 → STT 기각 (전사: {text!r})")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""

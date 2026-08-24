@@ -10,6 +10,7 @@ import numpy as np
 
 from src.tts_queue import EMERGENCY, NARRATION, RESPONSE, TtsQueue
 from src.wakeword_monitor import (
+    BARGE_BASELINE_FRAMES,
     BARGE_IN_FRAMES,
     FOLLOWUP_ARM_TIMEOUT_SEC,
     POST_ROLL_FRAMES,
@@ -66,7 +67,7 @@ def test_barge_in_cuts_question_and_hears_full_answer():
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)         # 질문 재생 중
 
-    run_frames(m, 3, ECHO, t0=0.2)        # 잔여 에코 — 기준선 학습
+    run_frames(m, BARGE_BASELINE_FRAMES, ECHO, t0=0.2)   # 재생음 — 기준선 학습
     results = run_frames(m, BARGE_IN_FRAMES, USER, t0=0.5)  # 사람이 답 시작
     assert results[-1] == "barge_in"
     assert stops == [1]
@@ -113,7 +114,7 @@ def test_short_noise_does_not_barge_in():
 
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    run_frames(m, 3, ECHO, t0=0.2)                      # 기준선
+    run_frames(m, BARGE_BASELINE_FRAMES, ECHO, t0=0.2)  # 기준선
     run_frames(m, BARGE_IN_FRAMES - 1, USER, t0=0.5)    # 3프레임 소음
     run_frames(m, 1, ECHO, t0=0.8)                      # 끊김 → streak 리셋
     results = run_frames(m, BARGE_IN_FRAMES - 1, USER, t0=0.9)
@@ -137,6 +138,48 @@ def test_steady_echo_alone_does_not_barge_in():
     assert "barge_in" not in results
 
 
+def test_synthesis_gap_silence_does_not_poison_baseline():
+    """TTS 는 '말하기 시작' 신호 뒤 합성 동안(~0.3초) 무음이다. 이 무음이
+    기준선이 되면 재생이 시작되는 에코 자체가 '기준선의 3배'를 넘어 사람으로
+    보인다 — ROS 재시험에서 사용자 증언으로 확인된 두 번째 자책골의 회귀
+    방지 (2026-08-24). 기준선은 실제 재생음에서만 만들어져야 한다."""
+    fake = Fake()
+    events, texts, stops = [], [], []
+    m = make(fake, events, texts, stops)
+
+    m.arm_followup(now=0.0)
+    m.set_speaking(True, now=0.1)
+    run_frames(m, 6, QUIET, t0=0.2)             # 합성 지연 — 무음
+    results = run_frames(m, 30, ECHO, t0=0.7)   # 재생 시작 — 에코 지속
+    assert stops == []
+    assert "barge_in" not in results
+
+
+def test_voice_barge_in_off_by_default_flag():
+    """voice_barge_in=False 면 사람 크기의 소리에도 끼어들기가 없어야 한다
+    (검증 전 기본 꺼짐 강등 — 안전망인 재청취 창은 그대로 동작)."""
+    fake = Fake(text="응")
+    events, texts, stops = [], [], []
+    m = WakewordMonitor(
+        on_emergency=events.append,
+        on_user_text=texts.append,
+        on_barge_in=lambda: stops.append(1),
+        voice_barge_in=False,
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+    )
+    m.arm_followup(now=0.0)
+    m.set_speaking(True, now=0.1)
+    run_frames(m, BARGE_BASELINE_FRAMES, ECHO, t0=0.2)
+    results = run_frames(m, 10, USER, t0=1.0)
+    assert stops == [] and "barge_in" not in results
+
+    m.set_speaking(False, now=2.0)               # 질문 끝 → 안전망 창은 연다
+    run_frames(m, 5, USER, t0=2.1)
+    run_frames(m, 11, QUIET, t0=2.5)
+    assert texts == ["응"]
+
+
 def test_soft_answer_falls_back_to_followup_window():
     """기준선 3배에 못 미치는 작은 답은 barge-in 을 안 내지만, 질문이 끝나면
     재청취 창(안전망)이 열려 결국 들린다 — 보수적 판정이 안전한 이유."""
@@ -146,7 +189,7 @@ def test_soft_answer_falls_back_to_followup_window():
 
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    run_frames(m, 3, ECHO, t0=0.2)
+    run_frames(m, BARGE_BASELINE_FRAMES, ECHO, t0=0.2)
     soft = np.full(1280, 2000, dtype=np.int16)   # 에코의 2배 — 3배 미만
     results = run_frames(m, 6, soft, t0=0.5)
     assert stops == [] and "barge_in" not in results
@@ -194,7 +237,7 @@ def test_barge_in_consumes_reservation():
 
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    run_frames(m, 3, ECHO, t0=0.2)                      # 기준선
+    run_frames(m, BARGE_BASELINE_FRAMES, ECHO, t0=0.2)  # 기준선
     run_frames(m, BARGE_IN_FRAMES, USER, t0=0.5)        # barge_in → listen
     run_frames(m, 3, USER, t0=0.9)
     run_frames(m, 11, QUIET, t0=1.2)                    # user_text 로 닫힘
