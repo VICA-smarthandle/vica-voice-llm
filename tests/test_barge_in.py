@@ -18,6 +18,10 @@ from src.wakeword_monitor import (
 
 LOUD = np.full(1280, 3000, dtype=np.int16)
 QUIET = np.zeros(1280, dtype=np.int16)
+# barge-in 판정은 "잔여 에코 대비 배수"다. ECHO 는 AEC 수렴 전 잔여 수준
+# (rms ≈ 0.03, ROS 종단 실측 0.057 근처), USER 는 그 10배짜리 사람 목소리.
+ECHO = np.full(1280, 1000, dtype=np.int16)
+USER = np.full(1280, 10000, dtype=np.int16)
 
 
 class Fake:
@@ -62,13 +66,14 @@ def test_barge_in_cuts_question_and_hears_full_answer():
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)         # 질문 재생 중
 
-    results = run_frames(m, BARGE_IN_FRAMES, LOUD, t0=0.2)
+    run_frames(m, 3, ECHO, t0=0.2)        # 잔여 에코 — 기준선 학습
+    results = run_frames(m, BARGE_IN_FRAMES, USER, t0=0.5)  # 사람이 답 시작
     assert results[-1] == "barge_in"
     assert stops == [1]
 
     # 이어지는 답변 3프레임 + 침묵 11프레임 → 말끝 감지로 전사
-    run_frames(m, 3, LOUD, t0=0.6)
-    results = run_frames(m, 11, QUIET, t0=0.9)
+    run_frames(m, 3, USER, t0=0.9)
+    results = run_frames(m, 11, QUIET, t0=1.2)
     assert results[-1] == "user_text"
     assert texts == ["네 화장실이요"]
     # 감지에 쓴 말머리(BARGE_IN_FRAMES)가 전사 오디오에 포함돼야 한다
@@ -108,11 +113,49 @@ def test_short_noise_does_not_barge_in():
 
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    run_frames(m, BARGE_IN_FRAMES - 1, LOUD, t0=0.2)   # 3프레임 소음
-    run_frames(m, 1, QUIET, t0=0.5)                     # 끊김 → streak 리셋
-    results = run_frames(m, BARGE_IN_FRAMES - 1, LOUD, t0=0.6)
+    run_frames(m, 3, ECHO, t0=0.2)                      # 기준선
+    run_frames(m, BARGE_IN_FRAMES - 1, USER, t0=0.5)    # 3프레임 소음
+    run_frames(m, 1, ECHO, t0=0.8)                      # 끊김 → streak 리셋
+    results = run_frames(m, BARGE_IN_FRAMES - 1, USER, t0=0.9)
     assert stops == []
     assert "barge_in" not in results
+
+
+def test_steady_echo_alone_does_not_barge_in():
+    """자기 잔여 에코만으로 질문이 끊기면 안 된다 — ROS 종단 시험에서 질문
+    재생 0.3초 만에 자기 목소리 잔여(rms 0.057)로 스스로 barge-in 한 회귀의
+    재발 방지 (2026-08-24). 잔여는 일정하거나 서서히 줄므로 '기준선 대비
+    배수' 조건을 절대 못 넘는다."""
+    fake = Fake()
+    events, texts, stops = [], [], []
+    m = make(fake, events, texts, stops)
+
+    m.arm_followup(now=0.0)
+    m.set_speaking(True, now=0.1)
+    results = run_frames(m, 30, ECHO, t0=0.2)   # 2.4초 내내 잔여 에코
+    assert stops == []
+    assert "barge_in" not in results
+
+
+def test_soft_answer_falls_back_to_followup_window():
+    """기준선 3배에 못 미치는 작은 답은 barge-in 을 안 내지만, 질문이 끝나면
+    재청취 창(안전망)이 열려 결국 들린다 — 보수적 판정이 안전한 이유."""
+    fake = Fake(text="응")
+    events, texts, stops = [], [], []
+    m = make(fake, events, texts, stops)
+
+    m.arm_followup(now=0.0)
+    m.set_speaking(True, now=0.1)
+    run_frames(m, 3, ECHO, t0=0.2)
+    soft = np.full(1280, 2000, dtype=np.int16)   # 에코의 2배 — 3배 미만
+    results = run_frames(m, 6, soft, t0=0.5)
+    assert stops == [] and "barge_in" not in results
+
+    m.set_speaking(False, now=1.2)               # 질문 끝 → 안전망 창
+    run_frames(m, 5, USER, t0=1.3)
+    results = run_frames(m, 11, QUIET, t0=1.7)
+    assert results[-1] == "user_text"
+    assert texts == ["응"]
 
 
 def test_emergency_beats_barge_in_during_question():
@@ -151,13 +194,14 @@ def test_barge_in_consumes_reservation():
 
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    run_frames(m, BARGE_IN_FRAMES, LOUD, t0=0.2)        # barge_in → listen
-    run_frames(m, 3, LOUD, t0=0.6)
-    run_frames(m, 11, QUIET, t0=0.9)                    # user_text 로 닫힘
+    run_frames(m, 3, ECHO, t0=0.2)                      # 기준선
+    run_frames(m, BARGE_IN_FRAMES, USER, t0=0.5)        # barge_in → listen
+    run_frames(m, 3, USER, t0=0.9)
+    run_frames(m, 11, QUIET, t0=1.2)                    # user_text 로 닫힘
     assert texts == ["응"]
 
     m.set_speaking(False, now=2.5)                      # 끊긴 TTS 의 종료 신호
-    run_frames(m, 5, LOUD, t0=2.6)
+    run_frames(m, 5, USER, t0=2.6)
     run_frames(m, 11, QUIET, t0=3.1)
     assert texts == ["응"]                              # 두 번째 전사가 없다
 

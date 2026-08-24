@@ -50,6 +50,13 @@ FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
 # 것으로 보고 끼어들기(barge-in)로 처리한다. 짧은 소음(문 닫는 소리 등)은
 # 연속 조건에서 걸러진다. AEC 배선(set_speaking) 모드에서만 동작한다.
 BARGE_IN_FRAMES = 4
+# 발화 판정은 절대 RMS 가 아니라 "잔여 에코 대비 몇 배"다. AEC 수렴 전에는
+# 로봇 자기 목소리의 잔여(실측 rms ~0.06)가 고정 문턱(0.01)을 넘어, 질문 재생
+# 0.3초 만에 스스로 barge-in 하는 것이 ROS 종단 시험에서 재현됐다(2026-08-24).
+# 재생 중 잔여 수준을 이동평균으로 학습하고 그 3배를 넘는 소리만 사람으로
+# 인정한다. 놓쳐도 질문 종료 시 재청취 창이 열리므로(안전망) 보수적으로 간다.
+BARGE_IN_OVER_ECHO = 3.0
+ECHO_EMA_ALPHA = 0.2
 
 
 def capture_stats(audio: np.ndarray) -> dict:
@@ -93,6 +100,7 @@ class WakewordMonitor:
         self._on_barge_in = on_barge_in or (lambda: None)
         self._speaking = False
         self._barge_streak = 0
+        self._echo_ema: Optional[float] = None  # 재생 중 잔여 에코 기준선
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
         self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트
 
@@ -174,6 +182,7 @@ class WakewordMonitor:
         now = time.time() if now is None else now
         self._speaking = speaking
         self._barge_streak = 0
+        self._echo_ema = None   # 문장마다 잔여 수준이 다르다 — 새로 잰다
         if speaking:
             if self._state == "listen" and self._listen_is_followup:
                 self._state = "idle"
@@ -234,7 +243,19 @@ class WakewordMonitor:
             and now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC
         ):
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
-            self._barge_streak = self._barge_streak + 1 if rms >= SPEECH_RMS else 0
+            if self._echo_ema is None:
+                # 첫 프레임은 기준선 표본이다 — 판정에 쓰지 않는다.
+                self._echo_ema = rms
+                return None
+            if rms < max(SPEECH_RMS, BARGE_IN_OVER_ECHO * self._echo_ema):
+                self._barge_streak = 0
+                # 사람으로 판정되지 않은 프레임만 기준선에 반영한다 —
+                # 사용자 목소리가 기준선을 끌어올리면 안 된다.
+                self._echo_ema = (
+                    (1 - ECHO_EMA_ALPHA) * self._echo_ema + ECHO_EMA_ALPHA * rms
+                )
+                return None
+            self._barge_streak += 1
             if self._barge_streak >= BARGE_IN_FRAMES:
                 self._barge_streak = 0
                 self._followup_armed = False
