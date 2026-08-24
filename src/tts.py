@@ -41,15 +41,18 @@ class VicaTTS:
         self._tts.save_audio(wav, str(path))
 
     def speak(self, text: str) -> bool:
-        """합성 후 스피커로 재생한다. 오디오 장치가 없으면 False 를 돌려준다."""
+        """합성 후 스피커로 재생한다. 오디오 장치가 없으면 False 를 돌려준다.
+
+        재생은 audio_out(단일 출구)을 거친다 — reSpeaker 재생 경로로 나가야
+        AEC 가 자기 목소리를 마이크 입력에서 뺄 수 있다.
+        """
         if not text:
             return False
         wav, sample_rate = self._synthesize(text)
         try:
-            import sounddevice as sd
+            from . import audio_out
 
-            sd.play(wav, samplerate=sample_rate)
-            sd.wait()
+            audio_out.play(wav, sample_rate, blocking=True)
             return True
         except Exception as exc:
             # 헤드리스/오디오 장치 없음 등 -> 텍스트 흐름은 막지 않되, 원인은 알린다.
@@ -61,11 +64,8 @@ class VicaTTS:
     def stop(self) -> None:
         """재생 중인 소리를 즉시 끊는다 (긴급 발화 선점용).
 
-        다른 스레드에서 불러도 된다. speak() 안의 sd.wait() 가 곧바로 돌아온다.
+        다른 스레드에서 불러도 된다. speak() 안의 재생 대기가 곧바로 돌아온다.
         """
-        try:
-            import sounddevice as sd
+        from . import audio_out
 
-            sd.stop()
-        except Exception:
-            pass  # 오디오 장치가 없으면 끊을 것도 없다
+        audio_out.stop()

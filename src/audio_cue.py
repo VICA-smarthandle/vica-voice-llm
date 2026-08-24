@@ -77,9 +77,9 @@ def play(wave: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bool:
     if wave is None or len(wave) == 0:
         return False
     try:
-        import sounddevice as sd
+        from . import audio_out
 
-        sd.play(wave, sample_rate)
+        audio_out.play(wave, sample_rate)
         return True
     except Exception:
         return False
