@@ -59,9 +59,18 @@ def main() -> None:
 
     samples: list[dict] = []
     stop = threading.Event()
+    # 스트림을 여닫는 순간에는 폴링을 멈춘다 — 열기/닫기는 USB 제어 채널(EP0)
+    # 을 쓰는데 우리 레지스터 읽기도 같은 채널이라, 겹치면 장치가 스트림 열기를
+    # 거부한다(Device unavailable 실측 2026-08-24). 스트리밍 중에는 EP0 이
+    # 한가해 폴링과 공존한다 (Seeed 튜닝 도구가 녹음 중 도는 것과 같은 원리).
+    poll_gate = threading.Event()
+    poll_gate.set()
 
     def poll() -> None:
         while not stop.is_set():
+            poll_gate.wait(timeout=0.5)
+            if not poll_gate.is_set():
+                continue
             samples.append({
                 "t": time.time(),
                 "vad": dsp.voice_activity(),
@@ -72,13 +81,40 @@ def main() -> None:
     poller = threading.Thread(target=poll, daemon=True)
     poller.start()
 
-    def speak_for(seconds: float) -> None:
-        t_end = time.time() + seconds
+    import numpy as np
+    import sounddevice as sd
+
+    dev_index, dev_rate, dev_channels = audio_out.output_device()
+
+    def phase_wave(seconds: float) -> np.ndarray:
+        parts, total = [], 0
         i = 0
-        while time.time() < t_end:
+        while total < int(seconds * dev_rate):
             wav, rate = clips[i % len(clips)]
             i += 1
-            audio_out.play(wav, rate, blocking=True)
+            out = audio_out.prepare(wav, rate, dev_rate, dev_channels)
+            parts.append(out)
+            total += len(out)
+        return np.concatenate(parts)[: int(seconds * dev_rate)]
+
+    def play_wave(wave: np.ndarray) -> None:
+        """구간당 스트림을 한 번만 열고, 여닫는 동안 폴링을 멈춘다."""
+        poll_gate.clear()
+        time.sleep(0.1)
+        stream = sd.OutputStream(samplerate=dev_rate, device=dev_index,
+                                 channels=wave.shape[1], dtype="float32")
+        stream.start()
+        poll_gate.set()
+        for i in range(0, len(wave), 1600):
+            stream.write(np.ascontiguousarray(wave[i:i + 1600]))
+        poll_gate.clear()
+        time.sleep(0.1)
+        stream.stop()
+        stream.close()
+        poll_gate.set()
+
+    def speak_for(seconds: float) -> None:
+        play_wave(phase_wave(seconds))
 
     print(f"\nA구간 {PHASE_A_SEC:.0f}초 — 조용히 계세요")
     a0 = time.time()
@@ -89,7 +125,9 @@ def main() -> None:
     speak_for(PHASE_BC_SEC)
     b1 = time.time()
 
-    audio_out.play(audio_cue.arrived(), audio_cue.SAMPLE_RATE)  # 구간 전환 알림음
+    beep = audio_out.prepare(audio_cue.arrived(), audio_cue.SAMPLE_RATE,
+                             dev_rate, dev_channels)
+    play_wave(beep)   # 구간 전환 알림음
     time.sleep(1.0)
     print(f"C구간 {PHASE_BC_SEC:.0f}초 — 삑 소리 후 로봇이 말하는 동안 아무 말이나 계속 하세요")
     c0 = time.time()

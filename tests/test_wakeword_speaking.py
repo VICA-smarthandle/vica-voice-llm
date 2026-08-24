@@ -41,16 +41,16 @@ def make(fake: Fake, events: list, texts: list, wakes: list):
     )
 
 
-def run_frames(m, n, frame=QUIET, t0=0.0):
+def run_frames(m, n, frame=QUIET, t0=0.0, vad=None):
     out = []
     for i in range(n):
-        out.append(m.process_frame(frame, now=t0 + i * 0.08))
+        out.append(m.process_frame(frame, now=t0 + i * 0.08, vad=vad))
     return out
 
 
 def speak_answer(m, t0: float):
-    """발화 5프레임 + 침묵 0.88초(11프레임) — 말끝 감지로 청취가 닫힌다."""
-    run_frames(m, 5, LOUD, t0=t0)
+    """발화 5프레임(칩 판정 True) + 침묵 — 말끝 감지로 청취가 닫힌다."""
+    run_frames(m, 5, LOUD, t0=t0, vad=True)
     return run_frames(m, 11, QUIET, t0=t0 + 5 * 0.08)
 
 

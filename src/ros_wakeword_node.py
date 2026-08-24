@@ -68,12 +68,18 @@ class WakewordNode(Node):
         # 말하는 도중의 "멈춰"가 들린다. 문제가 보이면 값 하나로 원복한다.
         self._mute_during_tts = os.environ.get(
             "VICA_TTS_MUTE", "on").strip().lower() not in ("off", "0", "false")
-        # 질문 재생 중 "아무 말" 끼어들기(RMS 기반). 자기 잔여 에코 자책골이
-        # ROS 실기에서 반복 확인돼(2026-08-24) 검증 전까지 기본 꺼짐이다.
-        # 꺼져 있어도 질문이 끝나면 재청취 창이 열리므로 답은 들린다 —
-        # 잃는 것은 '질문 도중' 반응뿐이다. 호출·긴급 barge-in 은 별개로 동작.
+        # 질문 재생 중 "아무 말" 끼어들기. 칩 발화 판정(자기 메아리 면역,
+        # vad_probe 실측 0%)과 사용자 방향("비카야" 잠금 또는 장착 보정
+        # 부채꼴)의 이중 증거가 있을 때만 발동하고, 방향을 모르면 스스로
+        # 잠들므로 기본 켬이다. 문제가 보이면 VICA_BARGE_IN_VOICE=off.
         self._voice_barge_in = os.environ.get(
-            "VICA_BARGE_IN_VOICE", "off").strip().lower() in ("on", "1", "true")
+            "VICA_BARGE_IN_VOICE", "on").strip().lower() not in ("off", "0", "false")
+        # 사용자 방향 부채꼴 (barge-in 전용 — 긴급어에는 방향 조건 없음).
+        # 실기 장착 시 사용자(핸들) 방향을 실측해 넣는다 (tools/doa_probe).
+        doa_center = os.environ.get("VICA_USER_DOA_CENTER", "").strip()
+        self._user_doa_center = float(doa_center) if doa_center else None
+        self._user_doa_width = float(
+            os.environ.get("VICA_USER_DOA_WIDTH", "45") or 45)
 
         self._monitor = WakewordMonitor(
             on_emergency=self._on_emergency,
@@ -82,6 +88,8 @@ class WakewordNode(Node):
             on_barge_in=self._on_barge_in,
             on_reject=self._on_reject,
             voice_barge_in=self._voice_barge_in,
+            user_doa_center=self._user_doa_center,
+            user_doa_width=self._user_doa_width,
         )
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._thread = threading.Thread(target=self._monitor.run, daemon=True)

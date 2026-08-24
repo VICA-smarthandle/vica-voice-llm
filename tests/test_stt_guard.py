@@ -71,11 +71,12 @@ def test_hallucinated_listen_window_closes_quietly():
         predict=lambda f: {"a": 0.0, "b": 0.0},
         transcribe=lambda a: "시청해 주셔서 감사합니다.",
     )
-    m._open_listen(followup=False)
+    m._open_listen(followup=False, now=0.0)
 
     results = []
     for i in range(5):
-        results.append(m.process_frame(LOUD, now=i * 0.08))     # 소음이 문지기 통과
+        # 칩이 발화로 오판한 소음 (사람 말 유사음 등)
+        results.append(m.process_frame(LOUD, now=i * 0.08, vad=True))
     for i in range(11):
         results.append(m.process_frame(QUIET, now=0.4 + i * 0.08))
 
@@ -96,9 +97,9 @@ def test_listen_prefers_guarded_transcribe_but_emergency_uses_raw():
     )
     m._transcribe_listen = lambda a: "화장실 가자"  # 필터판 (대화용)
 
-    m._open_listen(followup=False)
+    m._open_listen(followup=False, now=0.0)
     for i in range(5):
-        m.process_frame(LOUD, now=i * 0.08)
+        m.process_frame(LOUD, now=i * 0.08, vad=True)
     for i in range(11):
         m.process_frame(QUIET, now=0.4 + i * 0.08)
     assert texts == ["화장실 가자"]           # 대화 경로가 필터판을 썼다

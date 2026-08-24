@@ -9,7 +9,8 @@ XVF-3000 의 AEC 는 "자기가 재생한 소리"만 참조로 알고 마이크 
 - 최고점(peak)을 -3dBFS 로 정규화한다. reSpeaker 재생부에는 ALSA 볼륨
   조절이 없어(믹서 컨트롤 0개) 이 정규화가 유일한 볼륨 수단이다. 클리핑은
   AEC 성능을 떨어뜨리므로 0dBFS 까지 올리지 않는다.
-- reSpeaker 가 없으면(개발 PC) 기본 장치로 폴백한다 — 정규화만 적용.
+- reSpeaker 는 항상 있다 — 없으면 폴백 없이 실패한다 (다른 장치로 소리만
+  나가고 AEC 가 조용히 깨지는 것이 더 위험하다).
 
 순수 변환(정규화·리샘플·스테레오 확장)은 소리 장치 없이 시험된다.
 
@@ -136,9 +137,42 @@ def output_device() -> Optional[tuple[int, int, int]]:
 
 def reset_device_cache() -> None:
     """장치를 꽂거나 뺀 뒤 재탐색이 필요할 때 (그리고 시험용)."""
-    global _device_cache, _device_searched
+    global _device_cache, _device_searched, _out_stream, _out_key
     _device_cache = None
     _device_searched = False
+    if _out_stream is not None:
+        try:
+            _out_stream.close()
+        except Exception:
+            pass
+        _out_stream = None
+        _out_key = None
+
+
+# 블로킹 재생용 상시 출력 스트림. 발화마다 스트림을 여닫으면 열기 순간의
+# USB 제어 트래픽이 칩 상태 폴링(barge-in VAD 조회)과 충돌해 장치가 열기를
+# 거부할 수 있다 (2026-08-24 실측: Device unavailable). 한 번 열어 유지한다.
+_out_stream = None
+_out_key: Optional[tuple] = None
+
+
+def _persistent_stream(index: Optional[int], rate: int, channels: int):
+    global _out_stream, _out_key
+    import sounddevice as sd
+
+    key = (index, rate, channels)
+    if _out_stream is not None and _out_key == key:
+        return _out_stream
+    if _out_stream is not None:
+        try:
+            _out_stream.close()
+        except Exception:
+            pass
+    _out_stream = sd.OutputStream(samplerate=rate, device=index,
+                                  channels=channels, dtype="float32")
+    _out_stream.start()
+    _out_key = key
+    return _out_stream
 
 
 # ---------------------------------------------------------------- 재생
@@ -158,11 +192,12 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
 
     device = output_device()
     if device is None:
-        index, out_rate = None, int(rate)
-        out = normalize_peak(wave)
-    else:
-        index, out_rate, channels = device
-        out = prepare(wave, rate, out_rate, channels)
+        # 다른 장치로 조용히 폴백하지 않는다 — 소리는 나는데 AEC 참조가
+        # 깨진 채 도는 것이 가장 위험하다 (정책: docs/respeaker-v3-capabilities.md).
+        raise RuntimeError(
+            "reSpeaker 재생 장치를 찾을 수 없다 (연결 또는 VICA_TTS_DEVICE 확인)")
+    index, out_rate, channels = device
+    out = prepare(wave, rate, out_rate, channels)
 
     if not blocking:
         sd.play(out, out_rate, device=index)
@@ -171,12 +206,11 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
     if out.ndim == 1:
         out = out.reshape(-1, 1)
     _stop_flag.clear()
-    with sd.OutputStream(samplerate=out_rate, device=index,
-                         channels=out.shape[1], dtype="float32") as stream:
-        for i in range(0, len(out), CHUNK):
-            if _stop_flag.is_set():
-                break
-            stream.write(np.ascontiguousarray(out[i:i + CHUNK]))
+    stream = _persistent_stream(index, out_rate, out.shape[1])
+    for i in range(0, len(out), CHUNK):
+        if _stop_flag.is_set():
+            break
+        stream.write(np.ascontiguousarray(out[i:i + CHUNK]))
 
 
 def stop() -> None:

@@ -41,10 +41,10 @@ def make(fake: Fake, events: list, texts: list, wakes: list):
     )
 
 
-def run_frames(m, n, frame=QUIET, t0=0.0):
+def run_frames(m, n, frame=QUIET, t0=0.0, vad=None):
     out = []
     for i in range(n):
-        out.append(m.process_frame(frame, now=t0 + i * 0.08))
+        out.append(m.process_frame(frame, now=t0 + i * 0.08, vad=vad))
     return out
 
 
@@ -81,7 +81,7 @@ def test_single_spike_no_stt_call():
 
 
 def test_wake_then_user_text():
-    # A 2연속 → wake(응답음) → 발화 → 0.8초 침묵 → 전사 → on_user_text
+    # A 2연속 → wake(응답음) → 발화(칩 판정) → 침묵 → 전사 → on_user_text
     speech_frames = 5
     silence_frames = 12          # 12×80ms ≈ 0.96초 > 0.8초
     fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 어디야")
@@ -89,7 +89,7 @@ def test_wake_then_user_text():
     m = make(fake, events, texts, wakes)
     assert run_frames(m, 2, LOUD)[-1] == "wake"
     assert wakes == [1]
-    run_frames(m, speech_frames, LOUD, t0=1.0)          # 사용자 발화
+    run_frames(m, speech_frames, LOUD, t0=1.0, vad=True)  # 사용자 발화
     results = run_frames(m, silence_frames, QUIET, t0=2.0)  # 침묵 → 종료
     assert "user_text" in results
     assert texts == ["화장실 어디야"]

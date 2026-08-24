@@ -11,8 +11,8 @@ from __future__ import annotations
 import numpy as np
 
 from src.wakeword_monitor import (
+    CONFIRM_WINDOW_SEC,
     FOLLOWUP_ARM_TIMEOUT_SEC,
-    LISTEN_MAX_SEC,
     POST_ROLL_FRAMES,
     WakewordMonitor,
 )
@@ -44,16 +44,16 @@ def make(fake: Fake, events: list, texts: list, wakes: list):
     )
 
 
-def run_frames(m, n, frame=QUIET, t0=0.0):
+def run_frames(m, n, frame=QUIET, t0=0.0, vad=None):
     out = []
     for i in range(n):
-        out.append(m.process_frame(frame, now=t0 + i * 0.08))
+        out.append(m.process_frame(frame, now=t0 + i * 0.08, vad=vad))
     return out
 
 
 def speak_answer(m, t0: float):
-    """발화 5프레임 + 침묵 0.88초(11프레임) — 말끝 감지로 청취가 닫힌다."""
-    run_frames(m, 5, LOUD, t0=t0)
+    """발화 5프레임(칩 판정 True) + 침묵 — 말끝 감지로 청취가 닫힌다."""
+    run_frames(m, 5, LOUD, t0=t0, vad=True)
     return run_frames(m, 11, QUIET, t0=t0 + 5 * 0.08)
 
 
@@ -162,8 +162,8 @@ def test_silent_followup_returns_quietly():
     m.set_muted(True, now=0.1)
     m.set_muted(False, now=1.0)
 
-    frames = int(LISTEN_MAX_SEC / 0.08) + 2
+    frames = int(CONFIRM_WINDOW_SEC / 0.08) + 2
     results = run_frames(m, frames, QUIET, t0=1.0)
-    assert "wake_silent" in results      # 상한(6초)에서 닫혔다
+    assert "wake_silent" in results      # 확인 창 상한(30초)에서 닫혔다
     assert "user_text" not in results
     assert texts == []

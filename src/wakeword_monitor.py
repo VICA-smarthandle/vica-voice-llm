@@ -40,28 +40,40 @@ SAMPLE_RATE = 16000
 FRAME = 1280                    # 80ms — openWakeWord 계약
 RING_FRAMES = 31                # 검증에 쓰는 직전 오디오 ≈ 2.5초
 POST_ROLL_FRAMES = 4            # 긴급 발동 후 말끝 보존 0.32초
-LISTEN_MAX_SEC = 6.0            # 호출 후 청취 창 상한
-LISTEN_SILENCE_END_SEC = 0.8    # 발화 시작 후 이만큼 조용하면 청취 종료
-SPEECH_RMS = 0.01               # 발화 판정 RMS (EmergencyMonitor 게이트와 동일)
+# 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
+# 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
+LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
+LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
+# 질문(재청취) 창은 시나리오 6.4의 확인 대기 30초와 일치시킨다 — 미션이
+# 30초를 기다린다고 약속하는데 귀가 6초만 열려 있으면 안 된다.
+CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
+# 발화 시작 전 보존할 말머리 여유(0.48초) — 긴 확인 창이 침묵 덩어리로
+# whisper 에 통째로 가는 것을 막는다.
+PREROLL_FRAMES = 6
+SPEECH_RMS = 0.01               # barge-in 의 "소리는 나야 한다" 건전성 바닥
 # 재청취(arm_followup) 예약의 유효 시간. 질문 TTS 가 유실돼 mute 해제가 안 오면
 # 예약이 남아, 한참 뒤 무관한 안내가 끝난 순간 마이크가 열리는 오동작을 막는다.
 FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
-# 질문 재생 중 이만큼 연속 발화 프레임(0.32초)이 보이면 사용자가 답을 시작한
-# 것으로 보고 끼어들기(barge-in)로 처리한다. 짧은 소음(문 닫는 소리 등)은
-# 연속 조건에서 걸러진다. AEC 배선(set_speaking) 모드에서만 동작한다.
-BARGE_IN_FRAMES = 4
-# 발화 판정은 절대 RMS 가 아니라 "잔여 에코 대비 몇 배"다. AEC 수렴 전에는
-# 로봇 자기 목소리의 잔여(실측 rms ~0.06)가 고정 문턱(0.01)을 넘어, 질문 재생
-# 0.3초 만에 스스로 barge-in 하는 것이 ROS 종단 시험에서 재현됐다(2026-08-24).
-# 재생 중 잔여 수준을 학습하고 그 3배를 넘는 소리만 사람으로 인정한다.
-# 놓쳐도 질문 종료 시 재청취 창이 열리므로(안전망) 보수적으로 간다.
-BARGE_IN_OVER_ECHO = 3.0
-ECHO_EMA_ALPHA = 0.2
-# 기준선은 "실제로 소리가 나는 프레임"에서만, 이 개수(0.64초)만큼 모아 만든다.
-# TTS 는 문장 합성 동안(~0.3초) 무음이라, 무음을 기준선으로 삼으면 재생이
-# 시작되는 에코 자체가 '3배'를 넘어 자책골이 난다 (2026-08-24 ROS 재시험에서
-# 사용자 증언으로 확인된 회귀 — 텔레메트리만으로는 사람과 구분되지 않았다).
-BARGE_BASELINE_FRAMES = 8
+# 음성 barge-in 판정 (재설계 2026-08-24): RMS 는 자기 잔여 에코와 사람을 못
+# 가린다는 것이 두 번 실측돼 폐기했다. 대신 칩(XVF-3000)의 SPEECHDETECTED 를
+# 쓴다 — AEC 후단에서 계산되므로 로봇 자신의 재생음에는 반응하지 않는다
+# (tools/vad_probe 실측: 로봇 단독 재생 중 0.0%, 사용자 발화 중 47.6%).
+# 발화 리듬상 절반쯤 켜지므로 "최근 창의 과반"으로 판정한다. 값은 노드가
+# 프레임마다 vad 인자로 넣어 주고, 없으면(None) 음성 barge-in 은 잠든다.
+BARGE_VAD_WINDOW = 10      # 최근 프레임 수 (0.8초)
+BARGE_VAD_MIN_HITS = 5     # 그중 발화 판정 최소 개수
+# "비카야" 순간에 잠근 사용자 방향의 허용 폭과 유효 시간 (사용자 제안
+# 2026-08-24): 웨이크워드 순간은 로봇이 대개 조용해 방향이 깨끗하고(단일
+# 화자 퍼짐 ±2~4° 실측), 사용자가 어디 서 있든 보정 없이 맞는다. 고정
+# 부채꼴은 이중 발화 때 방향이 로봇 스피커 쪽으로 섞여 뚫렸다(217° 실측)
+# — 잠금 폭을 그 섞임(중심에서 19°)보다 좁게 둔다.
+USER_DOA_LOCK_WIDTH = 15.0
+USER_DOA_LOCK_TTL_SEC = 120.0
+
+
+def _angle_diff(a: float, b: float) -> float:
+    """두 방위각의 최단 차이 (0~180°). 0/359 경계를 올바로 다룬다."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
 # TTS 재생 중(AEC 모드)의 긴급 관문. 실측(2026-08-24, 외침 10회 프로토콜):
 # 실패 주원인은 STT 기각이 아니라 관문 미달(4/10, 근접 0.27 포함)이었다.
 # 로봇 자기 목소리의 모델 B 점수는 0.00 수준(함정 시험)이라 완화해도 자가
@@ -98,6 +110,8 @@ class WakewordMonitor:
         on_barge_in: Optional[Callable[[], None]] = None,
         on_reject: Optional[Callable[[str], None]] = None,
         voice_barge_in: bool = True,
+        user_doa_center: Optional[float] = None,
+        user_doa_width: float = 45.0,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         gate_a: float = 0.6,
@@ -114,10 +128,18 @@ class WakewordMonitor:
         # 이 로그가 없어서 "멈춰가 씹혔는데 흔적이 없는" 관측 공백이 생겼다.
         self._on_reject = on_reject or (lambda text: None)
         self._voice_barge_in = voice_barge_in
+        # 사용자 방향 부채꼴 (도). 설정되면 그 방향의 발화만 대답으로 인정한다 —
+        # 칩 VAD 는 화자를 못 가려 옆사람 대화가 질문을 끊었다(2026-08-24 실측).
+        # DOA 실측: 나란히 앉은 두 화자도 평균 23° 차·퍼짐 ±2~7° 로 갈라졌다.
+        # ⚠️ 긴급어에는 방향 조건을 절대 쓰지 않는다 — 행인의 "멈춰"도 정지 대상.
+        self._user_doa_center = user_doa_center
+        self._user_doa_width = user_doa_width
+        # "비카야" 순간에 잠근 이번 대화의 사용자 방향 (고정 부채꼴보다 우선)
+        self._locked_doa: Optional[float] = None
+        self._locked_doa_at = 0.0
         self._speaking = False
-        self._barge_streak = 0
-        self._echo_ema: Optional[float] = None  # 재생 중 잔여 에코 기준선
-        self._echo_baseline_n = 0               # 기준선에 쓴 프레임 수
+        # 칩 발화 판정의 최근 창 (질문 재생 중에만 쌓인다)
+        self._vad_window: deque[bool] = deque(maxlen=BARGE_VAD_WINDOW)
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
         self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트 (긴급 검증용)
         # 대화 청취용 전사 — 신뢰도 필터(stt_guard)가 걸린 판. 긴급 검증에는
@@ -135,6 +157,7 @@ class WakewordMonitor:
         self._listen_started_speech = False
         self._listen_silence = 0.0
         self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
+        self._listen_opened_at = 0.0
         self._muted_until = 0.0
         self._muted = False
         # 재청취 예약: 로봇이 질문을 말하는 중("~할까요?")이면 노드가 걸어 두고,
@@ -144,6 +167,20 @@ class WakewordMonitor:
         self._followup_armed_at = 0.0
         # 마지막 청취 창의 수음 품질 (노드가 로그로 남긴다)
         self.last_listen_stats: Optional[dict] = None
+
+    # ---------------------------------------------------------------- 방향 잠금
+    def lock_user_direction(self, doa: Optional[float],
+                            now: Optional[float] = None) -> None:
+        """"비카야"가 들린 방향을 이번 대화의 사용자 방향으로 잠근다.
+
+        노드가 wake 직후 칩의 DOAANGLE 을 읽어 넣는다. 잠금이 살아 있는 동안
+        음성 barge-in 은 이 방향 ±USER_DOA_LOCK_WIDTH 의 발화만 대답으로
+        인정한다. 긴급어에는 방향 조건이 없다 — 불변.
+        """
+        if doa is None:
+            return
+        self._locked_doa = float(doa)
+        self._locked_doa_at = time.time() if now is None else now
 
     # ---------------------------------------------------------------- 재청취
     def arm_followup(self, now: Optional[float] = None) -> None:
@@ -184,7 +221,7 @@ class WakewordMonitor:
         if self._followup_armed:
             self._followup_armed = False
             if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
-                self._open_listen(followup=True)
+                self._open_listen(followup=True, now=now)
 
     def _is_muted(self, now: float) -> bool:
         if self._muted and now >= self._muted_until:   # fail-safe 타임아웃
@@ -203,9 +240,7 @@ class WakewordMonitor:
         """
         now = time.time() if now is None else now
         self._speaking = speaking
-        self._barge_streak = 0
-        self._echo_ema = None   # 문장마다 잔여 수준이 다르다 — 새로 잰다
-        self._echo_baseline_n = 0
+        self._vad_window.clear()
         # 재생 중에는 긴급 관문을 완화한다 — 로봇 목소리·AEC 잔여에 섞인
         # 외침은 점수가 깎인다(실측 근접 미달 0.27). 검증은 그대로 거친다.
         self.gate_b.threshold = GATE_B_SPEAKING if speaking else self._gate_b_base
@@ -218,12 +253,18 @@ class WakewordMonitor:
         if self._followup_armed:
             self._followup_armed = False
             if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
-                self._open_listen(followup=True)
+                self._open_listen(followup=True, now=now)
 
     # ---------------------------------------------------------------- 핵심 로직
-    def process_frame(self, frame: np.ndarray, now: Optional[float] = None) -> Optional[str]:
+    def process_frame(self, frame: np.ndarray, now: Optional[float] = None,
+                      vad: Optional[bool] = None,
+                      doa: Optional[float] = None) -> Optional[str]:
         """int16 80ms 프레임 하나를 처리한다. 일어난 일을 문자열로 돌려준다
-        (emergency / reject / wake / user_text / wake_silent / None) — 시험용.
+        (emergency / reject / wake / user_text / wake_silent / barge_in / None).
+
+        vad: 칩(XVF-3000)의 발화 판정(SPEECHDETECTED). 질문 재생 중 음성
+        barge-in 판정에만 쓴다. None = 하드웨어 없음/미조회 — 판정 안 함.
+        doa: 칩의 소리 방향(도). 사용자 부채꼴이 설정된 경우 대답 인정 조건.
         """
         now = time.time() if now is None else now
         self._ring.append(frame)
@@ -247,7 +288,7 @@ class WakewordMonitor:
             if fire_b:
                 self._enter_postroll()
                 return None
-            return self._listen_step(frame, now)
+            return self._listen_step(frame, now, vad)
 
         # idle
         if fire_b:
@@ -256,57 +297,67 @@ class WakewordMonitor:
         if self.gate_a.feed(float(scores["a"]), now):
             self.gate_b.reset()
             self._on_wake()
-            self._open_listen(followup=False)
+            self._open_listen(followup=False, now=now)
             return "wake"
 
         # 질문 재생 중 barge-in: 로봇이 질문을 말하는 도중(재청취 예약 상태)
         # 사용자가 답을 시작하면, TTS 를 끊고(콜백) 즉시 듣는다. 긴급(모델 B)과
         # 호출(모델 A)이 위에서 항상 먼저다. 예약 없는 일반 안내에는 끼어들기가
-        # 없다 — 복도 소음마다 로봇이 말을 삼키면 안 되기 때문이다.
+        # 없다. 판정은 칩의 발화 판정(vad) 창 과반 — RMS 는 자기 에코와 사람을
+        # 못 가려 폐기했다(2026-08-24 자책골 2회 실측 + vad_probe 근거).
         if (
             self._voice_barge_in
             and self._speaking
             and self._followup_armed
+            and vad is not None
             and now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC
         ):
+            # 방향 관문: 사용자 방향 밖(옆사람·행인)의 발화는 대답이 아니다.
+            # 1순위 — "비카야" 순간에 잠근 방향(신선할 때), 2순위 — 장착 보정
+            # 부채꼴(핸들 방향, 시나리오상 사용자는 항상 핸들에 있다).
+            # 시나리오 6.1: 모든 대화는 "비카야"로만 시작하므로 정상 흐름에서는
+            # 질문 시점에 항상 잠금이 있다. 방향을 모르거나(None) 못 읽었으면
+            # 증거 부족 — 발동하지 않는다 (기본 켬이 안전한 이유).
+            center: Optional[float] = None
+            width = self._user_doa_width
+            if (self._locked_doa is not None
+                    and now - self._locked_doa_at <= USER_DOA_LOCK_TTL_SEC):
+                center, width = self._locked_doa, USER_DOA_LOCK_WIDTH
+            elif self._user_doa_center is not None:
+                center = self._user_doa_center
+            hit = (
+                bool(vad)
+                and center is not None
+                and doa is not None
+                and _angle_diff(float(doa), center) <= width
+            )
+            self._vad_window.append(hit)
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
-            # 기준선은 "실제 재생음이 들리는 프레임"에서만 만든다. 합성 지연의
-            # 무음이 기준선이 되면 에코 시작이 '사람'으로 보인다 (자책골 회귀).
-            if self._echo_baseline_n < BARGE_BASELINE_FRAMES:
-                if rms >= SPEECH_RMS:
-                    self._echo_ema = rms if self._echo_ema is None else max(
-                        self._echo_ema, rms)
-                    self._echo_baseline_n += 1
-                return None
-            if rms < max(SPEECH_RMS, BARGE_IN_OVER_ECHO * self._echo_ema):
-                self._barge_streak = 0
-                # 사람으로 판정되지 않은 프레임만 기준선에 반영한다 —
-                # 사용자 목소리가 기준선을 끌어올리면 안 된다.
-                self._echo_ema = (
-                    (1 - ECHO_EMA_ALPHA) * self._echo_ema + ECHO_EMA_ALPHA * rms
-                )
-                return None
-            self._barge_streak += 1
-            if self._barge_streak >= BARGE_IN_FRAMES:
-                self._barge_streak = 0
+            if (
+                len(self._vad_window) == BARGE_VAD_WINDOW
+                and sum(self._vad_window) >= BARGE_VAD_MIN_HITS
+                and rms >= SPEECH_RMS      # 최소한 소리는 나야 한다 (건전성 바닥)
+            ):
+                self._vad_window.clear()
                 self._followup_armed = False
                 self._on_barge_in()
-                self._open_listen(followup=True)
-                # 말머리를 버리지 않는다 — 감지에 쓴 직전 프레임부터 수집한다.
-                self._collect = list(self._ring)[-BARGE_IN_FRAMES:]
+                self._open_listen(followup=True, now=now)
+                # 말머리를 버리지 않는다 — 판정 창만큼 직전 프레임부터 수집한다.
+                self._collect = list(self._ring)[-BARGE_VAD_WINDOW:]
                 self._listen_started_speech = True
                 return "barge_in"
         return None
 
     # ---------------------------------------------------------------- 내부
-    def _open_listen(self, followup: bool) -> None:
+    def _open_listen(self, followup: bool, now: float) -> None:
         """청취 창을 연다. followup 이면 웨이크워드 없이(질문 답변용) 연 것이라
-        인사(on_wake)를 하지 않는다 — 로봇이 방금 질문을 마쳤기 때문이다."""
+        인사(on_wake)를 하지 않고, 창 길이도 확인 대기(30초)를 따른다."""
         self._state = "listen"
         self._collect = []
         self._listen_started_speech = False
         self._listen_silence = 0.0
         self._listen_is_followup = followup
+        self._listen_opened_at = now
 
     def _enter_postroll(self) -> None:
         self._state = "postroll"
@@ -326,17 +377,29 @@ class WakewordMonitor:
         self._on_emergency(event)
         return "emergency"
 
-    def _listen_step(self, frame: np.ndarray, now: float) -> Optional[str]:
+    def _listen_step(self, frame: np.ndarray, now: float,
+                     vad: Optional[bool]) -> Optional[str]:
+        """청취 창 한 프레임. 발화 시작·끝은 칩의 발화 판정(vad)으로 잰다.
+
+        소리 크기(RMS) 판정은 폐기했다 — 약한 어미("...주세요")를 침묵으로
+        오인해 자르고, 배경 소음에는 반대로 안 닫혔다. vad 는 노드가 청취 중
+        매 프레임 칩(SPEECHDETECTED)에서 읽어 넣는다. None = 이번 프레임 발화
+        증거 없음 (장치가 없으면 애초에 기동이 실패한다 — 폴백 없음).
+        """
         self._collect.append(frame)
-        rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
-        if rms >= SPEECH_RMS:
+        if vad:
             self._listen_started_speech = True
             self._listen_silence = 0.0
         elif self._listen_started_speech:
             self._listen_silence += FRAME / SAMPLE_RATE
+        else:
+            # 발화 시작 전에는 말머리 여유분만 남긴다 — 30초 확인 창이
+            # 침묵 덩어리로 whisper 에 통째로 가는 것을 막는다.
+            del self._collect[:-PREROLL_FRAMES]
 
+        max_sec = CONFIRM_WINDOW_SEC if self._listen_is_followup else LISTEN_MAX_SEC
         done = (
-            len(self._collect) * FRAME / SAMPLE_RATE >= LISTEN_MAX_SEC
+            now - self._listen_opened_at >= max_sec
             or (self._listen_started_speech
                 and self._listen_silence >= LISTEN_SILENCE_END_SEC)
         )
@@ -415,10 +478,25 @@ class WakewordMonitor:
         import sounddevice as sd
 
         self._load_real()
+        # 칩 발화 판정(SPEECHDETECTED) 리더. 질문 재생 중에만 조회한다 —
+        # USB 제어 채널 트래픽을 최소화하기 위해서다 (스트림 열기와 겹치면
+        # 장치가 열기를 거부하는 것이 실측됨, tools/vad_probe 참조).
+        from .dsp_state import DspState
+
+        dsp = DspState()
+        if not dsp.available:
+            raise SystemExit(
+                "reSpeaker 상태 레지스터(VAD·DOA)를 읽을 수 없다 — udev 규칙을 "
+                "확인하라. 다른 방식으로 폴백하지 않는다 "
+                "(정책: docs/respeaker-v3-capabilities.md)")
         device = next((i for i, d in enumerate(sd.query_devices())
                        if "respeaker" in d["name"].lower()
                        and d["max_input_channels"] >= 6), None)
-        channels = 6 if device is not None else 1   # reSpeaker 없으면 기본 마이크
+        if device is None:
+            raise SystemExit(
+                "reSpeaker 6채널 입력을 찾을 수 없다 — 다른 마이크로 폴백하지 "
+                "않는다 (정책: docs/respeaker-v3-capabilities.md)")
+        channels = 6
 
         q: queue.Queue[np.ndarray] = queue.Queue()
 
@@ -431,7 +509,21 @@ class WakewordMonitor:
                                channels=channels, dtype="int16",
                                device=device, callback=cb):
             while True:
-                self.process_frame(q.get())
+                frame = q.get()
+                vad = doa = None
+                if self._state == "listen":
+                    # 청취 중: 발화 시작/끝 판정용
+                    vad = dsp.speech_detected()
+                elif (self._voice_barge_in and self._speaking
+                        and self._followup_armed):
+                    # 질문 재생 중: barge-in 판정용 (+방향)
+                    vad = dsp.speech_detected()
+                    if vad:
+                        doa = dsp.doa_angle()
+                r = self.process_frame(frame, vad=vad, doa=doa)
+                if r == "wake":
+                    # "비카야"가 온 방향을 이번 대화의 사용자 방향으로 잠근다
+                    self.lock_user_direction(dsp.doa_angle())
 
 
 def _demo() -> None:
