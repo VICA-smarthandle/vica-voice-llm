@@ -85,7 +85,10 @@ class VicaSTT:
         segments, _info = self._model.transcribe(
             source, language=self.language, beam_size=1
         )
-        return "".join(seg.text for seg in segments).strip()
+        # 신뢰도 필터: 무음·잡음에서 지어낸 조각(유령 전사)을 버린다.
+        from .stt_guard import accept_segments
+
+        return accept_segments(segments)
 
     def record_until_enter(self) -> np.ndarray:
         """엔터를 누를 때까지 마이크로 녹음해 1차원 float32 파형을 돌려준다."""
