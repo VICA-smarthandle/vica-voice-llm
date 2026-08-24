@@ -9,6 +9,7 @@ import numpy as np
 
 from src.wakeword_monitor import (
     FOLLOWUP_ARM_TIMEOUT_SEC,
+    GATE_B_SPEAKING,
     POST_ROLL_FRAMES,
     WakewordMonitor,
 )
@@ -137,6 +138,45 @@ def test_no_arm_means_no_listening_after_tts():
 
     speak_answer(m, t0=1.0)
     assert texts == []
+
+
+def test_gate_b_relaxed_only_while_speaking():
+    """긴급 관문은 재생 중에만 완화(0.35)되고 끝나면 원값으로 복원돼야 한다.
+
+    근거: 외침 10회 실측에서 실패 주원인이 관문 미달(근접 0.27 포함)이었다.
+    """
+    m = make(Fake(), [], [], [])
+    base = m.gate_b.threshold
+    assert GATE_B_SPEAKING < base
+
+    m.set_speaking(True, now=0.0)
+    assert m.gate_b.threshold == GATE_B_SPEAKING
+    m.set_speaking(False, now=1.0)
+    assert m.gate_b.threshold == base
+
+
+def test_emergency_fires_at_relaxed_gate_during_speech():
+    """재생 중에는 0.4점짜리 외침(평시엔 미달)도 관문을 넘어야 한다 —
+    단, whisper 정확 매칭 검증은 그대로 거친다."""
+    fake = Fake(scores=[(0, 0.4), (0, 0.4)], text="멈춰")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+
+    m.set_speaking(True, now=0.0)
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=0.1)
+    assert results[-1] == "emergency"
+    assert len(events) == 1
+
+
+def test_gate_unrelaxed_when_silent_same_score_does_nothing():
+    """같은 0.4점이라도 로봇이 조용할 때는 평시 관문(0.5)이 그대로다."""
+    fake = Fake(scores=[(0, 0.4), (0, 0.4)], text="멈춰")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=0.1)
+    assert "emergency" not in results
+    assert events == []
 
 
 def test_ring_buffer_survives_tts_boundary():

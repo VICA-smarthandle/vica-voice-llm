@@ -83,6 +83,33 @@ def test_hallucinated_listen_window_closes_quietly():
     assert texts == []
 
 
+def test_listen_prefers_guarded_transcribe_but_emergency_uses_raw():
+    """전사 경로 분리: 대화 청취는 필터판(_transcribe_listen), 긴급 검증은
+    무필터판(_transcribe)을 써야 한다 — 작은 외침 보존이 우선이다
+    (외침 10회 실측에서 빈 전사 기각 1건)."""
+    texts, events = [], []
+    m = WakewordMonitor(
+        on_emergency=events.append,
+        on_user_text=texts.append,
+        predict=lambda f: {"a": 0.0, "b": 0.0},
+        transcribe=lambda a: "멈춰",          # 무필터판 (긴급 검증용)
+    )
+    m._transcribe_listen = lambda a: "화장실 가자"  # 필터판 (대화용)
+
+    m._open_listen(followup=False)
+    for i in range(5):
+        m.process_frame(LOUD, now=i * 0.08)
+    for i in range(11):
+        m.process_frame(QUIET, now=0.4 + i * 0.08)
+    assert texts == ["화장실 가자"]           # 대화 경로가 필터판을 썼다
+
+    m._enter_postroll()
+    for i in range(4):
+        m.process_frame(LOUD, now=2.0 + i * 0.08)
+    assert len(events) == 1                   # 긴급 경로는 무필터판("멈춰")
+    assert events[0].keyword == "멈춰"
+
+
 # ---------------------------------------------------------------- 수음 계측
 def test_capture_stats_numbers():
     from src.wakeword_monitor import capture_stats

@@ -62,6 +62,11 @@ ECHO_EMA_ALPHA = 0.2
 # 시작되는 에코 자체가 '3배'를 넘어 자책골이 난다 (2026-08-24 ROS 재시험에서
 # 사용자 증언으로 확인된 회귀 — 텔레메트리만으로는 사람과 구분되지 않았다).
 BARGE_BASELINE_FRAMES = 8
+# TTS 재생 중(AEC 모드)의 긴급 관문. 실측(2026-08-24, 외침 10회 프로토콜):
+# 실패 주원인은 STT 기각이 아니라 관문 미달(4/10, 근접 0.27 포함)이었다.
+# 로봇 자기 목소리의 모델 B 점수는 0.00 수준(함정 시험)이라 완화해도 자가
+# 발동 위험이 낮고, whisper 정확 매칭이 2차 방어로 그대로 있다.
+GATE_B_SPEAKING = 0.35
 
 
 def capture_stats(audio: np.ndarray) -> dict:
@@ -114,10 +119,15 @@ class WakewordMonitor:
         self._echo_ema: Optional[float] = None  # 재생 중 잔여 에코 기준선
         self._echo_baseline_n = 0               # 기준선에 쓴 프레임 수
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
-        self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트
+        self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트 (긴급 검증용)
+        # 대화 청취용 전사 — 신뢰도 필터(stt_guard)가 걸린 판. 긴급 검증에는
+        # 필터를 걸지 않는다: 작은 외침의 조각을 지울 위험이 실측됐고(외침 10회
+        # 프로토콜에서 빈 전사 기각 1건), 유령은 정확 매칭이 이미 막는다.
+        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
         self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
+        self._gate_b_base = gate_b   # set_speaking 이 재생 중 완화/복원한다
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
@@ -196,6 +206,9 @@ class WakewordMonitor:
         self._barge_streak = 0
         self._echo_ema = None   # 문장마다 잔여 수준이 다르다 — 새로 잰다
         self._echo_baseline_n = 0
+        # 재생 중에는 긴급 관문을 완화한다 — 로봇 목소리·AEC 잔여에 섞인
+        # 외침은 점수가 깎인다(실측 근접 미달 0.27). 검증은 그대로 거친다.
+        self.gate_b.threshold = GATE_B_SPEAKING if speaking else self._gate_b_base
         if speaking:
             if self._state == "listen" and self._listen_is_followup:
                 self._state = "idle"
@@ -336,9 +349,10 @@ class WakewordMonitor:
         self._collect = []
         if not self._listen_started_speech:
             return "wake_silent"    # 오탐이었음 — 조용히 복귀 (기록은 노드 몫)
-        text = self._transcribe(audio).strip()
+        transcribe = self._transcribe_listen or self._transcribe
+        text = transcribe(audio).strip()
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
-        # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe 안에 있다).
+        # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):
             return "wake_silent"
         self._on_user_text(text)
@@ -379,12 +393,20 @@ class WakewordMonitor:
             wm = WhisperModel(size, device=device, compute_type=compute)
 
             def _transcribe(audio: np.ndarray) -> str:
+                # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
+                # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
                 segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
                                         language="ko", beam_size=5)
-                # 신뢰도 필터(stt_guard 2겹): 무음을 받아 지어낸 조각을 버린다
+                return "".join(s.text for s in segs).strip()
+
+            def _transcribe_listen(audio: np.ndarray) -> str:
+                # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
+                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                        language="ko", beam_size=5)
                 return accept_segments(segs)
 
             self._transcribe = _transcribe
+            self._transcribe_listen = _transcribe_listen
 
     def run(self) -> None:
         """reSpeaker ch0 상시 감시 루프 (blocking). Ctrl+C 로 종료."""
