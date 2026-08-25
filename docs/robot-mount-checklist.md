@@ -40,7 +40,11 @@ AEC 뮤트 제거·barge-in·VAD 말끝·방향 잠금 포함. 근거 실측: `d
 
 - [ ] `vica-wakeword: .venv/bin/python -m recorder.dsp_dump --check` — DSP 동결 확인
 - [ ] `HF_HUB_OFFLINE=1 .venv/bin/python -u -m tools.aec_probe` —
-      참조(ch5) 흐름 + 수렴 ≥ 6dB (개발 실측 +19.4dB). 볼륨은 원음 peak < 0.9.
+      참조(ch5) 흐름 + 수렴 ≥ 6dB (개발 실측 +19.4dB).
+- [ ] **재생 레벨은 피크 -3 dBFS 로 맞춘다** (2026-08-25 사용자 결정).
+      이보다 낮으면 현장에서 소리가 너무 작다. 상한은 peak < 0.9(-0.9 dBFS) —
+      넘기면 클리핑으로 AEC 수렴이 깨진다. 즉 허용 창은 -3 ~ -0.9 dBFS 이고
+      기준값은 -3 dBFS 다.
 
 ## 4. DOA 장착 보정 (사용자가 핸들 잡은 자세로)
 
