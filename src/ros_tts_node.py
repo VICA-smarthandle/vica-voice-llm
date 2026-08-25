@@ -8,6 +8,11 @@
         대기 중 비긴급 발화 폐기. 웨이크워드 노드가 재생 중 호출·긴급·질문
         답변을 감지했을 때 보낸다. 긴급 발화는 큐에 남는다.
 발행: /vica/tts_state   (std_msgs/Bool) - 재생 중 여부
+      /vica/tts_done    (std_msgs/String) - 한 발화를 끊기지 않고 끝까지
+        재생했을 때 그 문장을 그대로 발행한다. Mission 이 접근 질문의 응답
+        대기(8초)를 "재생 종료 시점"부터 세는 근거다(on_approach_question_spoken).
+        barge-in·선점으로 끊긴 발화는 발행하지 않는다 — 질문이 끝까지
+        전달되지 않았는데 시계가 도는 것을 막는다.
 
 /vica/tts_state 를 두는 이유:
     긴급어 상시 감시(ros_emergency_node)는 마이크를 계속 열어 두므로 스피커로 나간
@@ -34,6 +39,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, String
 
+from .ment_cache import MentCache
 from .tts import VicaTTS
 from .tts_queue import TtsQueue, parse_request
 from .tts_text import split_sentences
@@ -51,11 +57,18 @@ class TtsNode(Node):
         super().__init__("vica_tts_node")
         self.get_logger().info("TTS 모델 로드 중...")
         self._tts = VicaTTS()
+        # 고정 멘트는 합성 대신 구워 둔 녹음을 즉시 재생한다 (ment_cache 정본).
+        self._ments = MentCache()
+        if self._ments.missing:
+            self.get_logger().warn(
+                f"녹음 없는 고정 멘트(합성 폴백): {', '.join(self._ments.missing)}"
+                " — scripts/make_cue_wavs.py 로 굽는다")
         self._queue = TtsQueue()
         self._preempt = threading.Event()
         self._running = True
 
         self._state_pub = self.create_publisher(Bool, "/vica/tts_state", 10)
+        self._done_pub = self.create_publisher(String, "/vica/tts_done", 10)
         self._publish_state(False)  # 시작 상태를 명시적으로 알린다
 
         self.create_subscription(String, "/vica/tts_request", self._on_request, 10)
@@ -126,13 +139,33 @@ class TtsNode(Node):
             # 이전 선점 신호는 여기서 소비한다 — 새 발화까지 끊기면 안 된다.
             self._preempt.clear()
             self.get_logger().info(f"재생[{item.priority}]: {item.text}")
-            self._speak(item.text)
+            completed = self._speak(item.text)
+            if completed:
+                done = String()
+                done.data = item.text
+                self._done_pub.publish(done)
 
-    def _speak(self, text: str) -> None:
-        """문장 단위로 끊어 재생하고, 재생 구간마다 감시 억제 신호를 켜고 끈다."""
+    def _speak(self, text: str) -> bool:
+        """재생하고, 끊기지 않고 끝까지 갔으면 True 를 돌려준다.
+
+        고정 멘트(캐시 적중)는 합성 없이 통짜로 재생한다 — 문장 사이 감시
+        열기가 없어지지만, 표준 배선(AEC 감시 유지)에서는 재생 중에도 감시가
+        계속되므로 공백이 아니다. 캐시에 없으면 기존 문장 단위 합성 경로다.
+        """
+        cached = self._ments.lookup(text)
+        if cached is not None:
+            wav, rate = cached
+            self._publish_state(True)
+            try:
+                self._tts.play_audio(wav, rate)
+            finally:
+                time.sleep(TAIL_SEC)
+                self._publish_state(False)
+            return not self._preempt.is_set()
+
         for chunk in split_sentences(text):
             if self._preempt.is_set():
-                break
+                return False
             self._publish_state(True)
             try:
                 self._tts.speak(chunk)
@@ -140,6 +173,7 @@ class TtsNode(Node):
                 # 재생이 실패해도 감시는 반드시 다시 열어야 한다.
                 time.sleep(TAIL_SEC)
                 self._publish_state(False)
+        return not self._preempt.is_set()
 
     def shutdown(self) -> None:
         self._running = False

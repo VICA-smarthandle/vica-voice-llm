@@ -19,25 +19,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
-# 파일 이름 -> 합성할 문구. replies.py 의 상수를 그대로 쓴다(문구가 갈라지지 않게).
-TARGETS = {
-    "wake_greeting.wav": "WAKE_GREETING",
-    "approach_question.wav": "APPROACH_QUESTION",
-    "approach_onboarding.wav": "APPROACH_ONBOARDING",
-}
+# 파일 이름 -> 문구. 정본은 src/ment_cache.py 의 CACHED_MENTS 하나다 —
+# ros_tts_node 가 같은 표로 재생하므로 여기서 따로 정의하면 캐시가 빗나간다.
 
 
 def main() -> int:
     import soundfile as sf
 
-    from src import replies
+    from src.ment_cache import CACHED_MENTS
     from src.tts import VicaTTS
 
     ASSETS.mkdir(exist_ok=True)
     tts = VicaTTS()
 
-    for filename, const_name in TARGETS.items():
-        text = getattr(replies, const_name)
+    for filename, text in CACHED_MENTS.items():
         wav, sample_rate = tts._synthesize(text)
         out = ASSETS / filename
         sf.write(str(out), wav, sample_rate)
