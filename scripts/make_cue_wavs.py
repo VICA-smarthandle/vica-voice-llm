@@ -20,7 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
 # 파일 이름 -> 합성할 문구. replies.py 의 상수를 그대로 쓴다(문구가 갈라지지 않게).
-TARGETS = {"wake_greeting.wav": "WAKE_GREETING"}
+TARGETS = {
+    "wake_greeting.wav": "WAKE_GREETING",
+    "approach_question.wav": "APPROACH_QUESTION",
+    "approach_onboarding.wav": "APPROACH_ONBOARDING",
+}
 
 
 def main() -> int:
