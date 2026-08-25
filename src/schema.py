@@ -47,7 +47,13 @@ class DestinationData(BaseModel):
 # 검증한 뒤에만 need_confirm=False 로 내려가고, 실제 실행은 Mission Manager 의
 # MissionCommand 서비스(관리자 앱과 같은 경로)가 상태를 보고 최종 판정한다.
 # 즉시 정지(멈춰·정지)는 여기 없다 — 긴급어 필터가 LLM 이전에 처리한다.
-VicaIntentType = Literal["navigate", "question", "clarify", "unknown", "cancel", "pause", "resume"]
+VicaIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    # 로봇이 직전에 던진 질문에 대한 짧은 답 (2026-08-25, 사람 접근 인수).
+    # 어느 질문의 답인지는 담지 않는다 — Mission 이 상태로 판정한다.
+    # 계약 정본: vica_ros2_ws vica_interfaces/msg/VicaIntent.msg 의 affirm/deny 절.
+    "affirm", "deny",
+]
 SafetyFlag = Literal["normal", "emergency"]
 
 

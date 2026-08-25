@@ -57,7 +57,7 @@ class _IntentDraft(BaseModel):
     """
 
     intent: VicaIntentType = Field(
-        description="navigate / question / clarify / unknown / cancel / pause / resume 중 하나"
+        description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny 중 하나"
     )
     destination_candidate: Optional[str] = Field(
         default=None,
@@ -116,14 +116,17 @@ def _build_system_prompt(
 - cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
 - pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
 - resume: 멈춘 안내를 다시 시작하려 함 ("다시 가자", "출발해").
+- affirm / deny: 로봇이 직전에 던진 안내 제안 질문("안내가 필요하신가요?" 등)에
+  대한 수락/거절 ("어… 부탁드려요"->affirm, "괜찮아요, 됐어요"->deny).
+  목적지 확인 질문의 답이 아니라, 안내 자체를 받겠냐는 제안에 대한 답일 때만.
 
 [목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
-- navigate(destination_candidate 포함)·cancel·pause·resume 으로 분류하면 reply 는
-  빈 문자열로 둬라. 확인 질문은 시스템이 만든다.
+- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny 로 분류하면
+  reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
 - 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
@@ -281,6 +284,16 @@ def parse_intent(
     if word in _PAUSE_WORDS:
         return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
 
+    # 확인 대기가 없는 짧은 긍/부정은 affirm/deny 로 발행한다 (0초, LLM 없이).
+    # 어느 질문의 답인지는 판정하지 않는다 — 상태를 가진 Mission 이 소비하거나
+    # 무시한다 (계약: VicaIntent.msg affirm/deny 절, "아무 때나 보내도 안전").
+    # reply 는 빈 문자열 — 수락/거절 발화는 Mission 몫이라 채우면 두 번 말한다.
+    # '취소'는 NEGATIVES 에도 있으나 위 _CANCEL_WORDS 직행이 먼저 잡는다.
+    if word in _AFFIRMATIVES:
+        return VicaIntent(intent="affirm", confidence=1.0, reply="", need_confirm=False)
+    if word in _NEGATIVES:
+        return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
+
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:
@@ -324,6 +337,13 @@ def _finalize(
         need_confirm=False,
         safety_flag="normal",
     )
+
+    if draft.intent in ("affirm", "deny"):
+        # LLM 이 reply 를 채워도 비운다 — 수락/거절 발화는 Mission 몫 (계약).
+        result.reply = ""
+        result.matched_destination_id = ""
+        result.need_confirm = False
+        return result
 
     if draft.intent == "navigate":
         matched = match_destination(draft.destination_candidate, list(destinations))
