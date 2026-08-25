@@ -62,12 +62,14 @@ class WakewordNode(Node):
         # 인사하던 GreetingState 를 없앴다. 효과음은 참고용일 뿐이다.
         self._greeting_wav = self._load_greeting_wav()
 
-        # TTS 재생 중 마이크 처리. 기본은 뮤트(자기 목소리 오탐 방지).
-        # AEC 배선 환경(TTS 가 reSpeaker 재생 경로로 나가는 기기)에서는
-        # VICA_TTS_MUTE=off 로 두면 재생 중에도 감시가 계속된다 — 로봇이
-        # 말하는 도중의 "멈춰"가 들린다. 문제가 보이면 값 하나로 원복한다.
+        # TTS 재생 중 마이크 처리. 기본은 감시 유지(AEC) — 로봇의 표준 배선이
+        # "reSpeaker USB 연결 + 스피커는 reSpeaker 출력에 물림"으로 확정되어
+        # (2026-08-25 사용자 결정) 칩이 자기 목소리를 지워 준다. 로봇이 말하는
+        # 도중의 "멈춰"가 들린다. 스피커가 reSpeaker 를 거치지 않는 예외 환경
+        # 에서만 VICA_TTS_MUTE=on 으로 옛 뮤트 방식으로 되돌린다 (자기 소리
+        # 오탐 방지). 판정 기준: robot-mount-checklist.md 의 자가 웨이크 0회.
         self._mute_during_tts = os.environ.get(
-            "VICA_TTS_MUTE", "on").strip().lower() not in ("off", "0", "false")
+            "VICA_TTS_MUTE", "off").strip().lower() not in ("off", "0", "false")
         # 질문 재생 중 "아무 말" 끼어들기. 칩 발화 판정(자기 메아리 면역,
         # vad_probe 실측 0%)과 사용자 방향("비카야" 잠금 또는 장착 보정
         # 부채꼴)의 이중 증거가 있을 때만 발동하고, 방향을 모르면 스스로

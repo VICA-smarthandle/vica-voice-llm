@@ -1,8 +1,8 @@
 # 비카 로봇 마이크 장착 절차서 (reSpeaker v3.0)
 
 작성: 2026-08-25. 대상: 주행용 로봇 젯슨 (개발 젯슨 J4012 아님).
-전제 브랜치: `vica-voice-llm` `feat/aec-audio-out` (AEC 뮤트 제거·barge-in·
-VAD 말끝·방향 잠금 포함. 근거 실측: `devlog/2026-08-24-AEC뮤트제거-barge-in-TONY0043.md`).
+전제 브랜치: `vica-voice-llm` **dev** (`feat/aec-audio-out` 은 2026-08-25 dev 머지됨.
+AEC 뮤트 제거·barge-in·VAD 말끝·방향 잠금 포함. 근거 실측: `devlog/2026-08-24-AEC뮤트제거-barge-in-TONY0043.md`).
 
 ⚠️ **로봇에서는 음성 긴급어가 진짜 E-stop 입니다.** 시험 중 "멈춰"를 말하면
 중앙 래치가 걸려 관리자 앱 reset 이 필요해집니다. **6단계 전까지는
@@ -51,7 +51,8 @@ VAD 말끝·방향 잠금 포함. 근거 실측: `devlog/2026-08-24-AEC뮤트제
 
 ## 5. 기능 검증 (음성 노드만, 각 시험은 안내 → "시작" 신호로)
 
-`ros_tts_node` + `ros_wakeword_node`(`VICA_TTS_MUTE=off`)만 기동. 순서:
+`ros_tts_node` + `ros_wakeword_node` 만 기동. (감시 유지(AEC)가 기본값이다 —
+2026-08-25 표준 배선 확정. 예외 환경만 `VICA_TTS_MUTE=on`.) 순서:
 
 | # | 시험 | 통과 기준 |
 | --- | --- | --- |
