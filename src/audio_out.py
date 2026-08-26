@@ -100,6 +100,30 @@ def prepare(wave: np.ndarray, rate: int,
     return out
 
 
+# ---------------------------------------------------------------- ALSA 잡음기
+#
+# ALSA C 라이브러리는 파이썬 로깅을 거치지 않고 stderr 에 직접 뿌린다
+# ("ALSA lib pcm.c: underrun occurred" 등). pulse 경유 재생은 조각 쓰기
+# 사이마다 이 메시지가 나와 터미널을 덮는다(2026-08-26 실기). 재생 자체에는
+# 무해한 알림이라 핸들러를 비워 끈다 — 진짜 재생 실패는 예외로 따로 잡힌다.
+_alsa_handler_ref = None  # ctypes 콜백이 GC 되면 세그폴트 — 참조를 붙잡아 둔다
+
+
+def _silence_alsa_errors() -> None:
+    global _alsa_handler_ref
+    try:
+        from ctypes import CDLL, CFUNCTYPE, c_char_p, c_int
+
+        handler_type = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+        _alsa_handler_ref = handler_type(lambda *_args: None)
+        CDLL("libasound.so.2").snd_lib_error_set_handler(_alsa_handler_ref)
+    except Exception:
+        pass  # 못 꺼도 동작에는 지장 없다 — 시끄러울 뿐
+
+
+_silence_alsa_errors()
+
+
 # ---------------------------------------------------------------- 장치 탐색
 def _find_device() -> Optional[tuple[int, int, int]]:
     import sounddevice as sd
