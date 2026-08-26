@@ -51,47 +51,96 @@ def parse_goal_event(payload: str) -> Optional[str]:
 
 
 class TurnAnnouncer:
-    """회전 신호를 발화 문구로 바꾼다. 같은 회전은 한 번만 말한다.
+    """회전 신호를 발화 문구로 바꾼다 — 신중 모드 (2026-08-26 실기 재설계).
 
-    안전 직결 안내라 축약하지 않는다 — 매번 같은 문장을 말해야 사용자가 매번
-    같은 판단을 할 수 있다 (2026-08-05 사용자 결정).
+    실주행에서 잔 보정 흔들림마다 "우회전할게요"가 나와 부정확한 정보가
+    쌓였다. 두 게이트를 거친 회전만 말한다:
+
+    1. 지속 확인: NOW 신호 후 hold_sec 동안 COMPLETE 가 오지 않아야 발화.
+       잔 보정은 금방 끝나므로 여기서 걸러진다.
+    2. 도착 근접 억제: 잔여거리(신선한 값)가 near_goal_m 이하면 침묵 —
+       도착 정렬 회전이 도착 멘트를 밀어내지 않게 한다.
+
+    문구를 축약하지 않는 원칙(2026-08-05)은 유지한다. 안전 직결 안내라
+    말할 때는 매번 같은 문장이다.
     """
 
-    def __init__(self) -> None:
-        self._last_sequence: Optional[int] = None
+    def __init__(
+        self,
+        hold_sec: float = 0.8,
+        near_goal_m: float = 5.0,
+        distance_fresh_sec: float = 3.0,
+    ) -> None:
+        self.hold_sec = hold_sec
+        self.near_goal_m = near_goal_m
+        self.distance_fresh_sec = distance_fresh_sec
+        self._announced: set = set()          # 소진된 회차 (발화·억제·조기종료)
+        self._pending: Optional[tuple] = None  # (sequence_id, text, armed_at)
+        self._distance: Optional[float] = None
+        self._distance_at: Optional[float] = None
+
+    def set_distance(self, meters: Optional[float], now: float) -> None:
+        """Nav2 잔여거리 갱신 (노드가 action feedback 토픽에서 먹인다)."""
+        if meters is None or meters <= 0.0:
+            return
+        self._distance = float(meters)
+        self._distance_at = now
+
+    def _near_goal(self, now: float) -> bool:
+        if self._distance is None or self._distance_at is None:
+            return False
+        if now - self._distance_at > self.distance_fresh_sec:
+            return False  # 낡은 값으로는 침묵하지 않는다 — 모르는 것과 같다
+        return self._distance <= self.near_goal_m
 
     def on_turn(
         self,
         direction: int,
         phase: int,
         sequence_id: int,
+        now: float,
         source_stale: bool = False,
-    ) -> Optional[str]:
-        """말할 문구를 돌려준다. 말하지 않을 상황이면 None.
-
-        sequence_id 는 회전 진입마다 증가한다(TurnGuide.msg). 같은 회전 안에서
-        신호가 여러 번 와도 첫 번째만 말한다.
-        """
+    ) -> None:
+        """회전 신호를 먹인다. 발화 여부는 poll() 이 정한다."""
         if source_stale:
-            # /odom 미수신·stale. direction 이 판단 불가라는 뜻이므로 말하지 않는다.
-            return None
+            # /odom 미수신 — 방향 판단 불가. 회차는 소진하지 않는다.
+            return
+        if phase in (PHASE_COMPLETE, PHASE_CANCELED):
+            # hold 안에 끝난 회전 = 잔 보정. 침묵하고 회차를 소진한다 —
+            # 같은 회차의 늦은 NOW 신호가 되살아나면 안 된다.
+            if self._pending is not None and self._pending[0] == sequence_id:
+                self._pending = None
+                self._announced.add(sequence_id)
+            return
         if phase != PHASE_NOW:
-            # PREPARE 는 2단계(경로 예고) 몫이고 1단계는 발행하지 않는다.
-            # COMPLETE/CANCELED 는 끝났다는 뜻이라 안내할 것이 없다.
-            return None
-        if sequence_id == self._last_sequence:
-            return None
+            return  # PREPARE 는 2단계(경로 예고) 몫이다
+        if sequence_id in self._announced:
+            return
+        if self._pending is not None and self._pending[0] == sequence_id:
+            return  # 이미 대기 중 — armed_at 을 되돌리지 않는다
 
         if direction == DIRECTION_LEFT:
             text = TURN_LEFT
         elif direction == DIRECTION_RIGHT:
             text = TURN_RIGHT
         else:
-            return None
+            return
+        self._pending = (sequence_id, text, now)
 
-        self._last_sequence = sequence_id
+    def poll(self, now: float) -> Optional[str]:
+        """말할 때가 됐으면 문구를 돌려준다 (회차당 최대 한 번)."""
+        if self._pending is None:
+            return None
+        sequence_id, text, armed_at = self._pending
+        if now - armed_at < self.hold_sec:
+            return None
+        self._pending = None
+        self._announced.add(sequence_id)
+        if self._near_goal(now):
+            return None  # 도착 근접 — 이 회전은 말하지 않고 소진한다
         return text
 
     def reset(self) -> None:
         """안내가 끝나면 호출한다. 다음 안내의 첫 회전을 놓치지 않기 위해서다."""
-        self._last_sequence = None
+        self._announced = set()
+        self._pending = None

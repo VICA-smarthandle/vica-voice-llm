@@ -2,7 +2,11 @@
 
 구독: /vica/turn_guide   (vica_interfaces/TurnGuide) — 회전 감지
       /vica_goal_event   (std_msgs/String)          — 안내 시작·끝
+      /navigate_to_pose/_action/feedback            — 잔여거리 (도착 근접 억제)
 발행: /vica/tts_request  (std_msgs/String)          — 회전 안내 문구
+
+신중 모드(2026-08-26): 신호를 받아도 0.8초 회전이 지속될 때만, 그리고 잔여
+거리 5 m 초과일 때만 말한다 — 잔 보정 흔들림과 도착 정렬 회전을 걸러낸다.
 
 회전 안내는 **음 + 말** 이다. 음이 주의를 끌고 말이 뜻을 전한다. 음만으로는 처음
 쓰는 사용자가 무슨 뜻인지 모르고, 말만으로는 앞부분을 놓친다.
@@ -21,10 +25,13 @@
 """
 from __future__ import annotations
 
+import time
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
+from nav2_msgs.action import NavigateToPose
 from vica_interfaces.msg import TurnGuide
 
 from . import audio_cue
@@ -46,25 +53,39 @@ class AudioCueNode(Node):
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         self.create_subscription(TurnGuide, "/vica/turn_guide", self._on_turn, 10)
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
+        # 잔여거리 — Nav2 가 주행 내내 발행하는 피드백을 구독만 한다 (ros2 무변경).
+        self.create_subscription(
+            NavigateToPose.Impl.FeedbackMessage,
+            "/navigate_to_pose/_action/feedback",
+            self._on_nav_feedback, 10)
+        # 발화 판정은 타이머가 한다 — "0.8초 지속" 확인은 신호가 아니라 시간이 정한다.
+        self.create_timer(0.1, self._poll_turn)
         self.get_logger().info(
             "VICA 청각 안내 시작 (구독: /vica/turn_guide, /vica_goal_event)")
 
     def _on_turn(self, msg: TurnGuide) -> None:
-        text = self._announcer.on_turn(
+        self._announcer.on_turn(
             direction=msg.direction,
             phase=msg.phase,
             sequence_id=msg.sequence_id,
+            now=time.time(),
             source_stale=msg.source_stale,
         )
+
+    def _on_nav_feedback(self, msg) -> None:
+        self._announcer.set_distance(
+            float(msg.feedback.distance_remaining), time.time())
+
+    def _poll_turn(self) -> None:
+        text = self._announcer.poll(time.time())
         if text is None:
             return
-
         # 음이 먼저 — 말이 시작되기 전에 귀를 연다.
         audio_cue.play(
             audio_cue.turn_left() if text == TURN_LEFT else audio_cue.turn_right()
         )
         self._tts_pub.publish(String(data=build_request(RESPONSE, text)))
-        self.get_logger().info(f"🔀 회전 안내: {text} (seq={msg.sequence_id})")
+        self.get_logger().info(f"🔀 회전 안내: {text}")
 
     def _on_goal_event(self, msg: String) -> None:
         event = parse_goal_event(msg.data)

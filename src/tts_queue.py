@@ -19,6 +19,12 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+# 유통기한 (2026-08-26 실기: 밀린 말이 뒤늦게 나와 소음이 됐다).
+# 회전 멘트는 지나가면 무의미, 거리류 narration 도 상황이 변하면 무의미하다.
+# 확인 질문·답변·긴급은 상태 결정적 정보라 낡아도 말한다.
+TURN_TTL_SEC = 3.0
+NARRATION_TTL_SEC = 6.0
+
 EMERGENCY = "emergency"
 RESPONSE = "response"
 NARRATION = "narration"
@@ -107,6 +113,7 @@ class TtsQueue:
         self._items: list[Utterance] = []
         self._seq = 0
         self._recent: dict[str, float] = {}  # 최근 발화 텍스트 -> 시각
+        self._expired: list[str] = []        # 유통기한으로 버린 발화 (로그용)
         self._lock = threading.Lock()
 
     def __len__(self) -> int:
@@ -141,11 +148,39 @@ class TtsQueue:
             self._sort()
             return PushResult(accepted=True, dropped=self._trim())
 
-    def pop(self) -> Optional[Utterance]:
+    def pop(self, now: Optional[float] = None) -> Optional[Utterance]:
+        import time as _time
+
+        now = _time.time() if now is None else now
         with self._lock:
+            self._prune_expired(now)
             if not self._items:
                 return None
             return self._items.pop(0)
+
+    def take_expired(self) -> list[str]:
+        """유통기한으로 버린 발화 목록을 꺼낸다 — 호출자가 로그로 남긴다."""
+        with self._lock:
+            out, self._expired = self._expired, []
+            return out
+
+    def _prune_expired(self, now: float) -> None:
+        from .replies import TURN_LEFT, TURN_RIGHT
+
+        def alive(item: Utterance) -> bool:
+            age = now - item.queued_at
+            if item.text in (TURN_LEFT, TURN_RIGHT):
+                return age <= TURN_TTL_SEC
+            if item.priority == NARRATION:
+                return age <= NARRATION_TTL_SEC
+            return True  # emergency·일반 response 는 낡아도 말한다
+
+        kept, dropped = [], []
+        for item in self._items:
+            (kept if alive(item) else dropped).append(item)
+        if dropped:
+            self._items = kept
+            self._expired.extend(i.text for i in dropped)
 
     def clear(self) -> None:
         with self._lock:

@@ -48,8 +48,8 @@ def test_higher_priority_goes_first():
     queue.push(NARRATION, "안내입니다", now=0.0)
     queue.push(RESPONSE, "대답입니다", now=0.1)
 
-    assert queue.pop().text == "대답입니다"
-    assert queue.pop().text == "안내입니다"
+    assert queue.pop(now=0.0).text == "대답입니다"
+    assert queue.pop(now=0.0).text == "안내입니다"
 
 
 def test_same_priority_keeps_order():
@@ -58,11 +58,11 @@ def test_same_priority_keeps_order():
     queue.push(NARRATION, "둘째", now=0.1)
     queue.push(NARRATION, "셋째", now=0.2)
 
-    assert [queue.pop().text for _ in range(3)] == ["첫째", "둘째", "셋째"]
+    assert [queue.pop(now=0.0).text for _ in range(3)] == ["첫째", "둘째", "셋째"]
 
 
 def test_pop_empty_returns_none():
-    assert TtsQueue().pop() is None
+    assert TtsQueue().pop(now=0.0) is None
 
 
 # ---- 긴급 발화 선점 ----------------------------------------------------------
@@ -76,8 +76,8 @@ def test_emergency_preempts_and_flushes():
     result = queue.push(EMERGENCY, "안전을 위해 멈추겠습니다.", now=0.2)
     assert result.accepted and result.preempt
 
-    assert queue.pop().text == "안전을 위해 멈추겠습니다."
-    assert queue.pop() is None  # 대기 중이던 일반 발화는 밀려났다
+    assert queue.pop(now=0.0).text == "안전을 위해 멈추겠습니다."
+    assert queue.pop(now=0.0) is None  # 대기 중이던 일반 발화는 밀려났다
 
 
 def test_emergency_keeps_other_emergency():
@@ -86,7 +86,7 @@ def test_emergency_keeps_other_emergency():
     queue.push(EMERGENCY, "첫 경고", now=0.0)
     queue.push(EMERGENCY, "둘째 경고", now=0.1)
 
-    assert [queue.pop().text for _ in range(2)] == ["첫 경고", "둘째 경고"]
+    assert [queue.pop(now=0.0).text for _ in range(2)] == ["첫 경고", "둘째 경고"]
 
 
 def test_normal_push_does_not_preempt():
@@ -126,7 +126,7 @@ def test_overflow_drops_oldest_narration():
     for index in range(5):
         queue.push(NARRATION, f"안내 {index}", now=float(index))
 
-    assert [queue.pop().text for _ in range(3)] == ["안내 2", "안내 3", "안내 4"]
+    assert [queue.pop(now=0.0).text for _ in range(3)] == ["안내 2", "안내 3", "안내 4"]
 
 
 def test_overflow_keeps_higher_priority():
@@ -136,7 +136,7 @@ def test_overflow_keeps_higher_priority():
     queue.push(NARRATION, "안내 1", now=1.0)
     queue.push(NARRATION, "안내 2", now=2.0)
 
-    assert [queue.pop().text for _ in range(2)] == ["대답입니다", "안내 2"]
+    assert [queue.pop(now=0.0).text for _ in range(2)] == ["대답입니다", "안내 2"]
 
 
 def test_overflow_reports_what_was_dropped():
@@ -174,7 +174,7 @@ def test_unknown_priority_falls_back_to_narration():
     queue = TtsQueue()
     queue.push("이상한값", "문장", now=0.0)
     queue.push(RESPONSE, "대답", now=0.1)
-    assert queue.pop().text == "대답"  # 문장이 narration 으로 내려갔다
+    assert queue.pop(now=0.0).text == "대답"  # 문장이 narration 으로 내려갔다
 
 
 # ---- 발화 주체 분리 ----------------------------------------------------------
@@ -226,3 +226,43 @@ def test_build_request_round_trips():
 
 def test_build_request_unknown_priority_falls_back():
     assert build_request("이상한값", "문장") == "narration:문장"
+
+
+# ---- 유통기한 (2026-08-26 실기: 밀린 말이 뒤늦게 나오는 문제) -------------------
+
+
+def test_turn_ment_expires_in_queue():
+    """회전 멘트는 3초 지나면 재생하지 않는다 — 회전이 끝난 뒤엔 소음이다."""
+    from src.replies import TURN_LEFT
+    q = TtsQueue()
+    q.push(RESPONSE, TURN_LEFT, now=0.0)
+    assert q.pop(now=4.0) is None
+    assert TURN_LEFT in q.take_expired()
+
+
+def test_fresh_turn_ment_plays():
+    from src.replies import TURN_RIGHT
+    q = TtsQueue()
+    q.push(RESPONSE, TURN_RIGHT, now=0.0)
+    item = q.pop(now=1.0)
+    assert item is not None and item.text == TURN_RIGHT
+
+
+def test_narration_expires_after_six_seconds():
+    q = TtsQueue()
+    q.push(NARRATION, "목적지까지 약 3미터 남았습니다.", now=0.0)
+    assert q.pop(now=7.0) is None
+
+
+def test_non_turn_response_never_expires():
+    """확인 질문·답변은 낡아도 재생한다 — 상태 결정적 정보다."""
+    q = TtsQueue()
+    q.push(RESPONSE, "안내를 취소할까요?", now=0.0)
+    item = q.pop(now=60.0)
+    assert item is not None
+
+
+def test_emergency_never_expires():
+    q = TtsQueue()
+    q.push(EMERGENCY, "안전을 위해 멈추겠습니다.", now=0.0)
+    assert q.pop(now=60.0) is not None

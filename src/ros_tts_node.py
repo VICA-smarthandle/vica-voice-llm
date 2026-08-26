@@ -132,6 +132,9 @@ class TtsNode(Node):
     def _playback_loop(self) -> None:
         while self._running:
             item = self._queue.pop()
+            for stale in self._queue.take_expired():
+                # 낡아서 버린 말도 반드시 남긴다 — 조용히 사라지면 추적 불가.
+                self.get_logger().info(f"발화 만료 폐기: {stale}")
             if item is None:
                 time.sleep(IDLE_POLL_SEC)
                 continue
