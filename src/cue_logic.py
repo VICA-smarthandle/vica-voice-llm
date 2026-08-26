@@ -56,7 +56,8 @@ class TurnAnnouncer:
     실주행에서 잔 보정 흔들림마다 "우회전할게요"가 나와 부정확한 정보가
     쌓였다. 두 게이트를 거친 회전만 말한다:
 
-    1. 지속 확인: NOW 신호 후 hold_sec 동안 COMPLETE 가 오지 않아야 발화.
+    1. 지속 확인: NOW 신호 후 hold_sec(기본 1.5초 — 0.8은 실주행에서 아직
+       수다스러웠다, 2026-08-26) 동안 COMPLETE 가 오지 않아야 발화.
        잔 보정은 금방 끝나므로 여기서 걸러진다.
     2. 도착 근접 억제: 잔여거리(신선한 값)가 near_goal_m 이하면 침묵 —
        도착 정렬 회전이 도착 멘트를 밀어내지 않게 한다.
@@ -67,7 +68,7 @@ class TurnAnnouncer:
 
     def __init__(
         self,
-        hold_sec: float = 0.8,
+        hold_sec: float = 1.5,
         near_goal_m: float = 5.0,
         distance_fresh_sec: float = 3.0,
     ) -> None:
