@@ -96,3 +96,52 @@ def test_prepare_default_device_only_normalizes():
     out = audio_out.prepare(wave, 44100, device_rate=None, device_channels=1)
     assert out.shape == wave.shape
     assert np.max(np.abs(out)) == pytest.approx(MINUS_3DBFS, rel=1e-4)
+
+
+# ---- 장치 선택: 무조건 reSpeaker ---------------------------------------------
+#
+# 이 로봇의 소리 출구는 reSpeaker 하나뿐이다 (2026-08-26 사용자 확정).
+# 노드가 켜질 때 pulse 기본 출력을 reSpeaker 로 강제(+음소거 해제)하고,
+# 직통 장치가 목록에서 사라져도(마이크 감시가 카드를 잡는 8/12 함정) pulse
+# 경유로 같은 곳에 낸다. reSpeaker 가 아예 없으면 폴백 없이 실패한다.
+
+
+class _FakeSd:
+    def __init__(self, devices):
+        self._devices = devices
+
+    def query_devices(self):
+        return self._devices
+
+
+RESPEAKER_OUT = {"name": "ReSpeaker 4 Mic Array: USB Audio (hw:2,0)",
+                 "max_output_channels": 2, "default_samplerate": 16000.0}
+PULSE_OUT = {"name": "pulse", "max_output_channels": 32, "default_samplerate": 44100.0}
+HDMI_OUT = {"name": "hdmi", "max_output_channels": 2, "default_samplerate": 44100.0}
+
+
+def _with_devices(monkeypatch, devices, routed):
+    import sys
+    monkeypatch.setitem(sys.modules, "sounddevice", _FakeSd(devices))
+    monkeypatch.setattr(audio_out, "_ensure_respeaker_route", lambda: routed)
+    monkeypatch.delenv("VICA_TTS_DEVICE", raising=False)
+
+
+def test_direct_respeaker_output_wins(monkeypatch):
+    _with_devices(monkeypatch, [HDMI_OUT, RESPEAKER_OUT, PULSE_OUT], routed=True)
+    assert audio_out._find_device() == (1, 16000, 2)
+
+
+def test_hidden_direct_goes_through_pulse(monkeypatch):
+    """마이크 감시가 카드를 잡으면 직통이 목록에서 사라진다(8/12 실측).
+    기본 출력이 reSpeaker 로 강제돼 있으므로 pulse 경유 = 같은 스피커다."""
+    _with_devices(monkeypatch, [HDMI_OUT, PULSE_OUT], routed=True)
+    index, rate, ch = audio_out._find_device()
+    assert index == 1 and ch == 32
+
+
+def test_no_respeaker_at_all_refuses(monkeypatch):
+    """reSpeaker 가 시스템에 없으면(강제 실패) 다른 스피커로 새지 않는다 —
+    소리는 나는데 AEC 참조가 깨진 채 도는 것이 가장 위험하다."""
+    _with_devices(monkeypatch, [HDMI_OUT, PULSE_OUT], routed=False)
+    assert audio_out._find_device() is None

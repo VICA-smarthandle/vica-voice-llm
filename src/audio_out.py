@@ -125,6 +125,38 @@ _silence_alsa_errors()
 
 
 # ---------------------------------------------------------------- 장치 탐색
+def _ensure_respeaker_route() -> bool:
+    """pulse 기본 출력을 reSpeaker 로 강제하고 음소거를 푼다. 성공 여부 반환.
+
+    이 로봇의 소리 출구는 reSpeaker 하나뿐이다 (2026-08-26 사용자 확정).
+    재부팅·재장착마다 하던 수동 pactl 설정과 음소거 사고(2026-08-26 실기:
+    장치 재장착 후 음소거로 인식돼 TTS 전체가 무음)를 노드가 스스로 치운다.
+    """
+    try:
+        import subprocess
+
+        sinks = subprocess.run(
+            ["pactl", "list", "sinks", "short"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout
+        name = ""
+        for line in sinks.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and (
+                "seeed" in parts[1].lower() or "respeaker" in parts[1].lower()
+            ):
+                name = parts[1]
+                break
+        if not name:
+            return False
+        subprocess.run(["pactl", "set-default-sink", name], timeout=3)
+        subprocess.run(["pactl", "set-sink-mute", name, "0"], timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+
 def _find_device() -> Optional[tuple[int, int, int]]:
     import sounddevice as sd
 
@@ -141,9 +173,24 @@ def _find_device() -> Optional[tuple[int, int, int]]:
                 return i, int(d["default_samplerate"]), int(d["max_output_channels"])
         return None  # 지정했는데 못 찾음 → 기본 장치 (경고는 호출자 로그 몫)
 
+    # 출구는 무조건 reSpeaker 다. 먼저 pulse 배선을 reSpeaker 로 강제해 두고
+    # (기본 출력 지정 + 음소거 해제), 직통 장치가 보이면 직통을 쓴다.
+    routed = _ensure_respeaker_route()
+
     for i, d in enumerate(devices):
         if "respeaker" in d["name"].lower() and d["max_output_channels"] >= 1:
             return i, int(d["default_samplerate"]), int(d["max_output_channels"])
+
+    # 직통이 목록에서 사라지는 경우: 마이크 감시가 카드를 잡고 있으면 PortAudio
+    # 목록에서 카드가 통째로 빠진다 (2026-08-12 실측, 2026-08-26 로봇 재현).
+    # 위에서 기본 출력을 reSpeaker 로 강제했으므로 pulse 경유 = 같은 스피커다.
+    if routed:
+        for i, d in enumerate(devices):
+            if d["name"].strip().lower() == "pulse" and d["max_output_channels"] >= 1:
+                return i, int(d["default_samplerate"]), int(d["max_output_channels"])
+
+    # reSpeaker 가 시스템에 아예 없다 — 다른 스피커로 새지 않는다 (AEC 참조가
+    # 깨진 채 소리만 나는 것이 가장 위험하다). 호출자가 큰 소리로 실패한다.
     return None
 
 
