@@ -94,3 +94,44 @@ class TestPauseImmediate:
         result = _finalize(_IntentDraft(intent="pause", reply=""), [DEST])
         assert result.need_confirm is False
         assert result.reply == PAUSE_ACK
+
+
+# ---- resume 확언 게이트 (2026-08-26 실기: 묻면서 출발하던 결함) -----------------
+
+
+class TestResumeConfirmGate:
+    def test_resume_proposal_is_not_forwarded(self):
+        """확인 필요 딱지가 붙은 resume 제안은 미션에 보내지 않는다.
+
+        미션에는 resume 게이트가 없어 받는 즉시 재출발한다 — '다시
+        출발할까요?'를 물으면서 이미 굴러가던 결함의 뿌리다.
+        """
+        from src.schema import VicaIntent, should_forward_intent
+
+        proposal = VicaIntent(intent="resume", need_confirm=True,
+                              reply=RESUME_CONFIRM, confidence=0.9)
+        assert should_forward_intent(proposal) is False
+
+    def test_confirmed_resume_is_forwarded(self):
+        from src.schema import VicaIntent, should_forward_intent
+
+        confirmed = VicaIntent(intent="resume", need_confirm=False,
+                               reply="", confidence=1.0)
+        assert should_forward_intent(confirmed) is True
+
+    def test_cancel_proposal_still_forwarded(self):
+        """취소는 미션 안에 확인 게이트가 있다(실주행 검증 경로) — 보낸다."""
+        from src.schema import VicaIntent, should_forward_intent
+
+        proposal = VicaIntent(intent="cancel", need_confirm=True,
+                              reply=CANCEL_CONFIRM, confidence=0.9)
+        assert should_forward_intent(proposal) is True
+
+    def test_confirm_answer_reply_is_silent(self):
+        """'네' 확정의 reply 는 빈 문자열 — 결과 발화('다시 출발합니다',
+        '안내를 취소했습니다')는 미션 몫이라 채우면 두 번 말한다."""
+        history = [AIMessage(RESUME_CONFIRM)]
+        result = parse_intent("네", [DEST], history=history)
+        assert result.intent == "resume"
+        assert result.need_confirm is False
+        assert result.reply == ""

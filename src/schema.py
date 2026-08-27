@@ -96,3 +96,18 @@ class RobotState(BaseModel):
     current_floor: Optional[int] = None
     current_building: str = ""
     is_moving: bool = False
+
+
+def should_forward_intent(intent) -> bool:
+    """이 intent 를 /vica/intent 로 미션에 보낼 것인가 (ROS 무관 순수 판정).
+
+    resume 제안(need_confirm=True)만 보류한다 — 미션에는 resume 확인
+    게이트가 없어 받는 즉시 재출발하므로, "다시 출발할까요?"를 물으면서
+    이미 굴러가는 결함이 됐다(2026-08-26 실기). 질문의 답("네")은 파서의
+    확인 단축이 확정 resume(need_confirm=False)으로 만들어 그때 보낸다.
+    취소는 미션 안에 확인 게이트가 있으므로(실주행 검증 경로) 그대로 보낸다.
+    """
+    return not (
+        getattr(intent, "intent", "") == "resume"
+        and bool(getattr(intent, "need_confirm", False))
+    )

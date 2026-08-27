@@ -179,7 +179,6 @@ _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 
 # 제어가 확정됐을 때의 reply. 실행이 아니라 요청이다 — MissionCommand 서비스
 # 호출은 ROS 노드, 수락/거절 판정은 Mission Manager 몫이며 이 문구는 로그용이다.
-_COMMAND_REQUESTED = "주행 제어를 요청합니다."
 
 
 def _pending_command(history: Optional[list[BaseMessage]]) -> Optional[str]:
@@ -239,10 +238,12 @@ def parse_intent(
     if pending_command is not None:
         word = _normalize_short_reply(user_text)
         if word in _AFFIRMATIVES:
+            # reply 는 침묵 — 결과 발화("다시 출발합니다"·"안내를 취소했습니다")는
+            # 미션 몫이다. 예전 "주행 제어를 요청합니다"는 2단 발화로 어색했다.
             return VicaIntent(
                 intent=pending_command,
                 confidence=1.0,
-                reply=_COMMAND_REQUESTED,
+                reply="",
                 need_confirm=False,
             )
         if word in _NEGATIVES:
@@ -377,7 +378,8 @@ def _finalize(
             result.need_confirm = False
         elif pending_command == draft.intent:
             # 방금 이 제어를 물었고 사용자가 말로 다시 수락했다 ("응, 취소해 줘").
-            result.reply = _COMMAND_REQUESTED
+            # reply 는 침묵 — 결과 발화는 미션 몫이다 (2단 발화 방지).
+            result.reply = ""
             result.need_confirm = False
         else:
             # 버리는 쪽(cancel)과 움직이는 쪽(resume)은 반드시 되묻는다 —

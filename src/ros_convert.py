@@ -56,3 +56,4 @@ def msg_to_robot_state(msg: RobotStateMsg) -> RobotState:
         current_building=msg.current_building,
         is_moving=msg.is_moving,
     )
+

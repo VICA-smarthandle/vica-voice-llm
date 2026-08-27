@@ -36,7 +36,7 @@ from .history import ConversationHistory
 from .langchain_intent_parser import parse_intent
 from .replies import ACK_LISTENING
 from .ros_convert import intent_to_msg, msg_to_robot_state
-from .schema import RobotState, VicaIntent
+from .schema import should_forward_intent, RobotState, VicaIntent
 from .tts_queue import RESPONSE, build_request, request_for_intent
 
 
@@ -118,7 +118,11 @@ class LlmIntentNode(Node):
             )
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
-        self._intent_pub.publish(intent_to_msg(intent))
+        #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
+        if should_forward_intent(intent):
+            self._intent_pub.publish(intent_to_msg(intent))
+        else:
+            self.get_logger().info("resume 확언 대기 — 발행 보류 (질문만 나감)")
 
         # 3-1) 이 노드가 말해야 하는 응답만 TTS 로 보낸다.
         #      navigate 확정 요청은 Mission Manager 가 게이트 판단 뒤에 말한다.
