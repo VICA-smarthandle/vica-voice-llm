@@ -143,3 +143,41 @@ def test_unmute_clears_ring():
     run_frames(m, 5, LOUD, t0=0.0)
     m.set_muted(False, now=0.5)
     assert len(m._ring) == 0
+
+
+def test_listen_timing_breakdown():
+    """계측: 대기·발화·말끝판정·STT 를 분리 기록한다.
+
+    "STT 가 진짜 병목인가"를 조사하려면 청취 6초 묶음을 쪼개야 한다
+    (2026-08-28 주행 실측: 청취+STT 중앙값 6.1초, 구간 분리 불가였다).
+    """
+    import pytest
+
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="안내소로 가자")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 2, LOUD)                      # wake — 창 열림 now=0.08
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)    # 발화 1.00~1.32
+    results = run_frames(m, 12, QUIET, t0=1.4)  # 침묵 0.8초 누적 → 종료
+    assert "user_text" in results
+    t = m.last_listen_timing
+    assert t is not None
+    assert t["wait"] == pytest.approx(0.92, abs=0.01)    # 창 열림 → 말 시작
+    assert t["speech"] == pytest.approx(0.32, abs=0.01)  # 말 시작 → 말끝
+    # 말끝 → 판정: 침묵 규정치 0.8초 + 프레임 반올림 1칸(80ms) 안
+    assert 0.80 <= t["tail"] <= 0.89
+    assert t["stt"] >= 0.0                               # 가짜 STT 는 즉시
+
+
+def test_listen_timing_resets_on_new_window():
+    """새 청취 창이 열리면 직전 계측은 비워진다 — 낡은 수치 재사용 방지."""
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 60, text="안내소로 가자")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 2, LOUD)
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)
+    run_frames(m, 12, QUIET, t0=1.4)
+    assert m.last_listen_timing is not None
+    m.arm_followup(now=10.0)
+    m.set_muted(False, now=10.0)   # 예약된 재청취 창이 열린다
+    assert m.last_listen_timing is None

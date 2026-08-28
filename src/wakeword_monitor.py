@@ -167,6 +167,11 @@ class WakewordMonitor:
         self._followup_armed_at = 0.0
         # 마지막 청취 창의 수음 품질 (노드가 로그로 남긴다)
         self.last_listen_stats: Optional[dict] = None
+        # 마지막 청취 창의 구간 계측 — 대기·발화·말끝판정·STT (초).
+        # "왜 오래 걸리나"를 구간별 숫자로 만든다 (2026-08-28 주행에서
+        # 청취+STT 묶음 6.1초의 내역을 몰랐던 것이 도입 계기).
+        self.last_listen_timing: Optional[dict] = None
+        self._listen_speech_started_at = 0.0
 
     # ---------------------------------------------------------------- 방향 잠금
     def lock_user_direction(self, doa: Optional[float],
@@ -358,6 +363,8 @@ class WakewordMonitor:
         self._listen_silence = 0.0
         self._listen_is_followup = followup
         self._listen_opened_at = now
+        self._listen_speech_started_at = 0.0
+        self.last_listen_timing = None
 
     def _enter_postroll(self) -> None:
         self._state = "postroll"
@@ -388,6 +395,8 @@ class WakewordMonitor:
         """
         self._collect.append(frame)
         if vad:
+            if not self._listen_started_speech:
+                self._listen_speech_started_at = now
             self._listen_started_speech = True
             self._listen_silence = 0.0
         elif self._listen_started_speech:
@@ -413,7 +422,15 @@ class WakewordMonitor:
         if not self._listen_started_speech:
             return "wake_silent"    # 오탐이었음 — 조용히 복귀 (기록은 노드 몫)
         transcribe = self._transcribe_listen or self._transcribe
+        stt_started = time.monotonic()
         text = transcribe(audio).strip()
+        speech_end = now - self._listen_silence
+        self.last_listen_timing = {
+            "wait": self._listen_speech_started_at - self._listen_opened_at,
+            "speech": speech_end - self._listen_speech_started_at,
+            "tail": now - speech_end,
+            "stt": time.monotonic() - stt_started,
+        }
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
         # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):

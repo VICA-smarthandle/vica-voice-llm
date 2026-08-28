@@ -121,6 +121,11 @@ class WakewordNode(Node):
             self.get_logger().info(
                 f"수음 품질: rms {stats['rms']:.4f} · peak {stats['peak']:.2f}"
                 f" · clip {stats['clip_ratio']:.1%}")
+        timing = self._monitor.last_listen_timing
+        if timing:
+            self.get_logger().info(
+                "계측: 대기 {wait:.2f}s · 발화 {speech:.2f}s · "
+                "말끝판정 {tail:.2f}s · STT {stt:.2f}s".format(**timing))
 
     def _on_wake(self) -> None:
         # 로봇이 말하는 중에 부른 것이면 하던 말을 끊는다 (barge-in).
