@@ -30,6 +30,7 @@ from std_msgs.msg import Bool, Empty, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
+from .destination_loader import build_place_hint, load_destinations
 from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
@@ -83,7 +84,20 @@ class WakewordNode(Node):
         self._user_doa_width = float(
             os.environ.get("VICA_USER_DOA_WIDTH", "45") or 45)
 
+        # 장소 이름 귀띔 — 자유 명령 창의 목적지 오전사('휴게실'→'조계실') 대책.
+        # 목적지를 못 읽어도 감시는 시작해야 하므로 실패는 경고로만 남긴다.
+        try:
+            listen_hint = build_place_hint(load_destinations(os.environ.get(
+                "VICA_DESTINATIONS_YAML",
+                str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
+                    / "destinations.yaml"))))
+            self.get_logger().info(f"장소 귀띔 준비: '{listen_hint}'")
+        except Exception as exc:
+            listen_hint = None
+            self.get_logger().warning(f"장소 귀띔 생략 (목적지 로드 실패): {exc}")
+
         self._monitor = WakewordMonitor(
+            listen_hint=listen_hint,
             on_emergency=self._on_emergency,
             on_user_text=self._on_user_text,
             on_wake=self._on_wake,

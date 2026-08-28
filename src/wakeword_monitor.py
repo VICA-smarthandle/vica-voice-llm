@@ -120,6 +120,7 @@ class WakewordMonitor:
         user_doa_width: float = 45.0,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
+        listen_hint: Optional[str] = None,
         gate_a: float = 0.6,
         gate_b: float = 0.5,
         cooldown_a: float = 1.5,
@@ -152,6 +153,9 @@ class WakewordMonitor:
         self._vad_window: deque[bool] = deque(maxlen=BARGE_VAD_WINDOW)
         self._predict = predict          # frame(int16 1280) -> {"a": 점수, "b": 점수}
         self._transcribe = transcribe    # int16 오디오 -> 한국어 텍스트 (긴급 검증용)
+        # 자유 명령 창의 장소 귀띔 (destination_loader.build_place_hint 산출물).
+        # 긴급 검증 전사에는 절대 걸지 않는다 — 긴급어가 장소로 둔갑하면 안 된다.
+        self._listen_hint = (listen_hint or "").strip() or None
         # 대화 청취용 전사 — 신뢰도 필터(stt_guard)가 걸린 판. 긴급 검증에는
         # 필터를 걸지 않는다: 작은 외침의 조각을 지울 위험이 실측됐고(외침 10회
         # 프로토콜에서 빈 전사 기각 1건), 유령은 정확 매칭이 이미 막는다.
@@ -514,8 +518,10 @@ class WakewordMonitor:
 
             def _transcribe_listen(audio: np.ndarray) -> str:
                 # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
+                # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
                 segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5)
+                                        language="ko", beam_size=5,
+                                        initial_prompt=self._listen_hint)
                 return accept_segments(segs)
 
             def _transcribe_confirm(audio: np.ndarray) -> str:

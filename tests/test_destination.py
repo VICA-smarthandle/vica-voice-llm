@@ -73,3 +73,28 @@ class MatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlaceHint:
+    """장소 귀띔(STT initial_prompt) 생성 — '휴게실'→'조계실' 오전사 대책."""
+
+    def _dest(self, name, aliases=()):
+        from src.schema import DestinationData
+        return DestinationData(id=name, name=name, aliases=list(aliases))
+
+    def test_names_come_first_then_aliases_deduped(self):
+        """이름 전원 먼저 — 별칭 많은 목적지가 상한을 독식하지 못하게."""
+        from src.destination_loader import build_place_hint
+        ds = [self._dest("휴게실", ["휴게 공간", "휴게실"]),
+              self._dest("안내소", ["안내 데스크"])]
+        assert build_place_hint(ds) == "휴게실, 안내소, 휴게 공간, 안내 데스크"
+
+    def test_caps_length_for_whisper_prompt(self):
+        from src.destination_loader import build_place_hint
+        ds = [self._dest(f"장소{i}이름이길다란곳") for i in range(50)]
+        hint = build_place_hint(ds, max_chars=60)
+        assert len(hint) <= 60 and hint.startswith("장소0")
+
+    def test_empty_list_gives_empty_hint(self):
+        from src.destination_loader import build_place_hint
+        assert build_place_hint([]) == ""

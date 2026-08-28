@@ -59,3 +59,32 @@ def load_destinations(path: Path | str = DEFAULT_PATH) -> list[DestinationData]:
         for destination in _load_from_yaml(path)
         if destination.authorization == "public"
     ]
+
+
+def build_place_hint(destinations, max_chars: int = 200) -> str:
+    """장소 이름·별칭을 STT 귀띔(whisper initial_prompt)용 한 줄로 만든다.
+
+    자유 명령 창에서 목적지 오전사('휴게실'→'조계실', '안내소'→'음내소')를
+    줄인다 (2026-08-28 실측). 귀띔은 기울이기일 뿐이라 길수록 부작용이
+    커지므로 max_chars 에서 자른다 — 앞선 목적지가 우선 생존한다.
+    """
+    # 이름을 전부 먼저, 별칭은 남는 자리에 — 별칭 많은 목적지가 상한을
+    # 독식해 다른 목적지가 통째로 빠지는 일을 막는다 (실데이터에서 '입구'
+    # 소실 실측).
+    seen: set[str] = set()
+    words: list[str] = []
+    for group in ([d.name] for d in destinations), \
+                 (getattr(d, "aliases", []) for d in destinations):
+        for items in group:
+            for word in items:
+                word = word.strip()
+                if word and word not in seen:
+                    seen.add(word)
+                    words.append(word)
+    hint = ""
+    for word in words:
+        candidate = f"{hint}, {word}" if hint else word
+        if len(candidate) > max_chars:
+            break
+        hint = candidate
+    return hint
