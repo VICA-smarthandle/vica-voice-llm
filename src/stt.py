@@ -109,6 +109,19 @@ class VicaSTT:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(frames, axis=0).flatten()
 
+    def record_seconds(self, seconds: float) -> np.ndarray:
+        """정해진 시간만큼 녹음해 1차원 float32 파형을 돌려준다.
+
+        엔터가 필요 없다 — 접근 질문의 답변 창처럼 사용자가 터미널 앞에 없는
+        상황용이다(ros_stt_node 의 자동 답변 창).
+        """
+        import sounddevice as sd
+
+        frames = int(seconds * SAMPLE_RATE)
+        audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=1, dtype="float32")
+        sd.wait()
+        return audio.flatten()
+
     def listen(self) -> str:
         """녹음 후 한국어 텍스트로 변환해 돌려준다."""
         audio = self.record_until_enter()
