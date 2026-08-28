@@ -148,6 +148,17 @@ TURN_LEFT = "좌회전 할게요."
 TURN_RIGHT = "우회전 할게요."
 
 
+def expects_answer(reply: str) -> bool:
+    """이 발화가 사용자 답을 기대하는가 — 재청취 창을 열지 판정.
+
+    의도 종류(need_confirm·clarify)만 보던 옛 열쇠는 LLM 이 자유 생성한
+    질문("무엇을 도와드릴까요?", intent=unknown)을 놓쳤다 — 질문해 놓고
+    안 듣는 사건의 원인(2026-08-28). 문장 꼴로 판정한다.
+    """
+    reply = reply.strip()
+    return reply.endswith("?") or reply.endswith("말씀해 주세요.")
+
+
 def all_phrases() -> dict[str, str]:
     """이 모듈이 가진 고정 문구 전체 (검사·감수용). 문구 묶음(tuple)도 편다."""
     phrases: dict[str, str] = {}

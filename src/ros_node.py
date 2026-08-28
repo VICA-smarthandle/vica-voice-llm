@@ -36,7 +36,7 @@ from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import is_instant_utterance, parse_intent
-from .replies import ACK_LISTENING_POOL
+from .replies import ACK_LISTENING_POOL, expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .tts_queue import RESPONSE, build_request, request_for_intent
@@ -148,8 +148,11 @@ class LlmIntentNode(Node):
         if request:
             self._tts_pub.publish(String(data=request))
 
-        # 3-2) 지금 한 말이 질문이면(목적지 확인·되묻기) 답을 들을 준비를 시킨다.
-        if intent.need_confirm or intent.intent == "clarify":
+        # 3-2) 지금 한 말이 질문이면 답을 들을 준비를 시킨다. 의도 종류만
+        #      보면 LLM 이 자유 생성한 질문(unknown 등)을 놓친다 — 문장 꼴
+        #      판정(expects_answer)을 함께 쓴다 (2026-08-28).
+        if (intent.need_confirm or intent.intent == "clarify"
+                or expects_answer(intent.reply)):
             self._listen_pub.publish(Bool(data=True))
         self.get_logger().info(
             f"입력='{text}' -> intent={intent.intent} "
