@@ -153,6 +153,7 @@ class WakewordMonitor:
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
+        self._postroll_from_listen = False   # 긴급 검증이 청취 창을 가로챘는가
         self._collect: list[np.ndarray] = []   # postroll·listen 수집분
         self._listen_started_speech = False
         self._listen_silence = 0.0
@@ -291,7 +292,7 @@ class WakewordMonitor:
         if self._state == "listen":
             # 청취 중에도 긴급이 절대 우선 (명세 11절)
             if fire_b:
-                self._enter_postroll()
+                self._enter_postroll(from_listen=True)
                 return None
             return self._listen_step(frame, now, vad)
 
@@ -366,18 +367,30 @@ class WakewordMonitor:
         self._listen_speech_started_at = 0.0
         self.last_listen_timing = None
 
-    def _enter_postroll(self) -> None:
+    def _enter_postroll(self, from_listen: bool = False) -> None:
         self._state = "postroll"
         self._collect = []
         self.gate_a.reset()
+        self._postroll_from_listen = from_listen
 
     def _verify_emergency(self, now: float) -> str:
         audio = np.concatenate([*self._ring])   # 직전 ~2.5초 + 말끝
         text = self._transcribe(audio)
+        from_listen = self._postroll_from_listen
+        self._postroll_from_listen = False
         self._state = "idle"
         self._collect = []
         keyword = match_emergency_transcript(text)
         if keyword is None:
+            # 청취 창을 가로챈 오발동이면 발화를 버리지 않는다 — "화장실로
+            # 가줘"의 '가줘' 울림이 긴급 모델을 깨워 진짜 명령이 통째로
+            # 기각되던 결함(2026-08-28 실측). 창 밖(대기·TTS 중) 오발동은
+            # 전처럼 기각한다 — 그쪽 관문이 유령을 막는다.
+            text = text.strip()
+            if from_listen and text and not is_hallucination(text):
+                self.last_listen_stats = capture_stats(audio)
+                self._on_user_text(text)
+                return "user_text"
             self._on_reject(text)
             return "reject"
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)

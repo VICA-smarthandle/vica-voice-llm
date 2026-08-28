@@ -181,3 +181,43 @@ def test_listen_timing_resets_on_new_window():
     m.arm_followup(now=10.0)
     m.set_muted(False, now=10.0)   # 예약된 재청취 창이 열린다
     assert m.last_listen_timing is None
+
+
+def test_emergency_false_fire_in_listen_keeps_utterance():
+    """청취 중 긴급 게이트 오발동이 긴급어가 아니면 발화를 버리지 않는다.
+
+    실측 결함(2026-08-28): "화장실로 가줘"의 '가줘' 울림이 긴급 모델을
+    깨워 청취를 가로챘고, '현실로 가줘' 전사가 긴급어 매칭에 실패하자
+    통째로 기각됐다 — 사용자는 같은 말을 다시 해야 했다.
+    """
+    fake = Fake(
+        scores=[(0.9, 0), (0.9, 0)]          # wake
+        + [(0, 0)] * 5                        # 사용자 발화
+        + [(0, 0.9), (0, 0.9)]                # 긴급 게이트 오발동
+        + [(0, 0)] * 10,
+        text="화장실로 가줘",                  # 긴급어 아님 — 진짜 명령
+    )
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 2, LOUD)                            # wake → listen
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)          # 발화 수집
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.5, vad=True)
+    assert "user_text" in results
+    assert texts == ["화장실로 가줘"]
+    assert events == []                                # 긴급 이벤트는 없다
+
+
+def test_emergency_false_fire_in_listen_still_blocks_hallucination():
+    """청취 가로챔이라도 환각 단골 문구·빈 전사는 넘기지 않는다."""
+    fake = Fake(
+        scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 5
+        + [(0, 0.9), (0, 0.9)] + [(0, 0)] * 10,
+        text="",                               # 빈 전사
+    )
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 2, LOUD)
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.5, vad=True)
+    assert "reject" in results
+    assert texts == []
