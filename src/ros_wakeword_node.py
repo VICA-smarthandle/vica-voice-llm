@@ -31,6 +31,7 @@ from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
 from .destination_loader import build_place_hint, load_destinations
+from .dsp_state import agc_desired_from_env, apply_agc_desired_level
 from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
@@ -108,6 +109,18 @@ class WakewordNode(Node):
             user_doa_center=self._user_doa_center,
             user_doa_width=self._user_doa_width,
         )
+        # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
+        # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
+        # 전송 거부). D7 동결의 승인된 유일한 예외 (dsp_state 모듈 주석).
+        desired = agc_desired_from_env(
+            os.environ.get("VICA_MIC_AGC_DESIRED", "0.010"))
+        if desired is not None:
+            if apply_agc_desired_level(desired):
+                self.get_logger().info(f"AGC 목표 레벨 설정: {desired}")
+            else:
+                self.get_logger().warning(
+                    f"AGC 목표 레벨 설정 실패({desired}) — 공장 기본으로 감시 계속")
+
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._thread = threading.Thread(target=self._monitor.run, daemon=True)
         self._thread.start()

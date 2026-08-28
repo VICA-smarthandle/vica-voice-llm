@@ -319,3 +319,26 @@ def test_near_silence_never_reaches_stt():
     assert "wake_silent" in results
     assert texts == []
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다
+
+
+class TestAgcDesiredFromEnv:
+    """AGC 목표 레벨 환경변수 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
+
+    def test_default_string_parses(self):
+        from src.dsp_state import agc_desired_from_env
+        assert agc_desired_from_env("0.010") == 0.010
+
+    def test_off_values_skip_write(self):
+        from src.dsp_state import agc_desired_from_env
+        for raw in ("", "0", "off", "none"):
+            assert agc_desired_from_env(raw) is None
+
+    def test_garbage_skips_write(self):
+        from src.dsp_state import agc_desired_from_env
+        assert agc_desired_from_env("두배로") is None
+
+    def test_out_of_range_skips_write(self):
+        """말도 안 되는 값(음수·1 초과)은 칩에 쓰지 않는다."""
+        from src.dsp_state import agc_desired_from_env
+        assert agc_desired_from_env("-0.01") is None
+        assert agc_desired_from_env("5.0") is None
