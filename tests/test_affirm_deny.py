@@ -85,3 +85,28 @@ class TestLlmFallbackFinalize:
         result = _finalize(draft, [DEST])
         assert result.intent == "deny"
         assert result.reply == ""
+
+
+class TestInstantUtterance:
+    """접수 신호("확인할게요") 생략 판정 — 0초 지름길이면 신호가 군더더기다
+    (2026-08-28 사용자: "그래" 뒤 확인할게요는 별로)."""
+
+    @pytest.mark.parametrize("word", [
+        "네", "그래", "응", "좋아요",          # 긍정 지름길
+        "아니요", "싫어요",                    # 부정 지름길
+        "취소", "잠깐만",                      # 취소·일시정지 지름길
+        " 그래. ",                             # 문장부호·공백 무시
+    ])
+    def test_shortcut_words_are_instant(self, word):
+        from src.langchain_intent_parser import is_instant_utterance
+        assert is_instant_utterance(word) is True
+
+    @pytest.mark.parametrize("text", [
+        "화장실로 가자",                       # LLM 행 — 생각 시간 필요
+        "그래 가자",                           # 목적지 확정 문장 — LLM 행
+        "다시 가자",
+        "",
+    ])
+    def test_sentences_need_ack(self, text):
+        from src.langchain_intent_parser import is_instant_utterance
+        assert is_instant_utterance(text) is False

@@ -177,6 +177,19 @@ _COMMAND_CONFIRMS = {
 _CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
 _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 
+
+def is_instant_utterance(user_text: str) -> bool:
+    """LLM 없이 0초에 판정되는 짧은 말인가.
+
+    이런 말에는 접수 신호("확인할게요")가 군더더기다 — 진짜 답이 바로
+    뒤따르기 때문 (2026-08-28 사용자 결정). 지름길 단어 목록을 그대로
+    재사용한다 — 목록이 갈라지면 신호 생략과 실제 지름길이 어긋난다.
+    """
+    word = _normalize_short_reply(user_text)
+    return bool(word) and (
+        word in _AFFIRMATIVES or word in _NEGATIVES
+        or word in _CANCEL_WORDS or word in _PAUSE_WORDS)
+
 # 제어가 확정됐을 때의 reply. 실행이 아니라 요청이다 — MissionCommand 서비스
 # 호출은 ROS 노드, 수락/거절 판정은 Mission Manager 몫이며 이 문구는 로그용이다.
 

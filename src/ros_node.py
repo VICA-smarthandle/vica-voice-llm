@@ -34,7 +34,7 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .history import ConversationHistory
-from .langchain_intent_parser import parse_intent
+from .langchain_intent_parser import is_instant_utterance, parse_intent
 from .replies import ACK_LISTENING
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -118,9 +118,12 @@ class LlmIntentNode(Node):
         else:
             # 1-1) LLM 응답까지는 수 초가 걸린다. 그동안 침묵하면 눈으로 확인할 수
             #      없는 사용자는 로봇이 들었는지 알 수 없다. 먼저 짧게 답한다.
-            self._tts_pub.publish(
-                String(data=build_request(RESPONSE, ACK_LISTENING))
-            )
+            #      단, 지름길 즉답("그래" 등)은 진짜 답이 바로 뒤따르므로 생략
+            #      (2026-08-28 사용자 결정 — 멘트 최소주의).
+            if not is_instant_utterance(text):
+                self._tts_pub.publish(
+                    String(data=build_request(RESPONSE, ACK_LISTENING))
+                )
 
             # 2) 일반 발화는 LLM intent 파서로 해석한다 (대화 히스토리 포함 = 멀티턴).
             intent = parse_intent(
