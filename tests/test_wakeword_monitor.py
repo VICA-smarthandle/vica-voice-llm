@@ -221,3 +221,47 @@ def test_emergency_false_fire_in_listen_still_blocks_hallucination():
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.5, vad=True)
     assert "reject" in results
     assert texts == []
+
+
+def test_wake_window_timeout_fires_listen_empty():
+    """'비카야' 창이 빈손으로 닫히면 on_listen_empty 로 알린다.
+
+    실측(2026-08-28 19:03): 작은 소리로 말해 칩이 발화를 못 봤는데 로봇이
+    침묵해서, 사용자는 "아예 감지가 안 된다"고 느꼈다. 못 들었으면
+    못 들었다고 말해야 한다.
+    """
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 200, text="")
+    events, texts, wakes, empties = [], [], [], []
+    m = WakewordMonitor(
+        on_emergency=events.append,
+        on_user_text=texts.append,
+        on_wake=lambda: wakes.append(1),
+        on_listen_empty=lambda: empties.append(1),
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+    )
+    run_frames(m, 2, LOUD)
+    results = run_frames(m, 80, QUIET, t0=1.0)   # 상한 초과 — 발화 없음
+    assert "wake_silent" in results
+    assert empties == [1]
+    assert texts == []
+
+
+def test_followup_window_timeout_stays_silent():
+    """질문 답변용(followup) 창의 침묵은 알리지 않는다 — 무응답 처리는
+    상태를 가진 Mission 몫이라 여기서 말하면 두 번 말하게 된다."""
+    fake = Fake(scores=[(0, 0)] * 500, text="")
+    events, texts, wakes, empties = [], [], [], []
+    m = WakewordMonitor(
+        on_emergency=events.append,
+        on_user_text=texts.append,
+        on_wake=lambda: wakes.append(1),
+        on_listen_empty=lambda: empties.append(1),
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+    )
+    m.arm_followup(now=0.0)
+    m.set_muted(False, now=0.0)                  # 재청취 창 열림
+    results = run_frames(m, 400, QUIET, t0=0.1)  # 30초 상한 초과
+    assert "wake_silent" in results
+    assert empties == []

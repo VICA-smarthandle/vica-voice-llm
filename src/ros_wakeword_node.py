@@ -30,7 +30,7 @@ from std_msgs.msg import Bool, Empty, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
-from .replies import WAKE_GREETING
+from .replies import RETRY_PROMPT, WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
@@ -89,6 +89,7 @@ class WakewordNode(Node):
             on_wake=self._on_wake,
             on_barge_in=self._on_barge_in,
             on_reject=self._on_reject,
+            on_listen_empty=self._on_listen_empty,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             user_doa_width=self._user_doa_width,
@@ -126,6 +127,12 @@ class WakewordNode(Node):
             self.get_logger().info(
                 "계측: 대기 {wait:.2f}s · 발화 {speech:.2f}s · "
                 "말끝판정 {tail:.2f}s · STT {stt:.2f}s".format(**timing))
+
+    def _on_listen_empty(self) -> None:
+        # "비카야" 창이 빈손으로 닫힘 — 못 들었으면 못 들었다고 말한다.
+        # 침묵하면 사용자는 로봇이 죽었는지 못 들었는지 알 수 없다.
+        self._tts_pub.publish(String(data=build_request(RESPONSE, RETRY_PROMPT)))
+        self.get_logger().info("청취 창 빈손 종료 — 다시 말해달라고 안내")
 
     def _on_wake(self) -> None:
         # 로봇이 말하는 중에 부른 것이면 하던 말을 끊는다 (barge-in).

@@ -109,6 +109,7 @@ class WakewordMonitor:
         on_wake: Optional[Callable[[], None]] = None,
         on_barge_in: Optional[Callable[[], None]] = None,
         on_reject: Optional[Callable[[str], None]] = None,
+        on_listen_empty: Optional[Callable[[], None]] = None,
         voice_barge_in: bool = True,
         user_doa_center: Optional[float] = None,
         user_doa_width: float = 45.0,
@@ -127,6 +128,10 @@ class WakewordMonitor:
         # 긴급 관문이 발동했으나 STT 기각된 사건. 반드시 기록돼야 한다 —
         # 이 로그가 없어서 "멈춰가 씹혔는데 흔적이 없는" 관측 공백이 생겼다.
         self._on_reject = on_reject or (lambda text: None)
+        # "비카야" 창이 빈손으로 닫힌 사건(발화 없음·빈 전사). 침묵하면
+        # 사용자는 로봇이 죽었는지 못 들었는지 알 수 없다(2026-08-28 실측).
+        # followup(질문 답변) 창의 무응답은 Mission 몫이라 알리지 않는다.
+        self._on_listen_empty = on_listen_empty or (lambda: None)
         self._voice_barge_in = voice_barge_in
         # 사용자 방향 부채꼴 (도). 설정되면 그 방향의 발화만 대답으로 인정한다 —
         # 칩 VAD 는 화자를 못 가려 옆사람 대화가 질문을 끊었다(2026-08-24 실측).
@@ -433,7 +438,9 @@ class WakewordMonitor:
         self._state = "idle"
         self._collect = []
         if not self._listen_started_speech:
-            return "wake_silent"    # 오탐이었음 — 조용히 복귀 (기록은 노드 몫)
+            if not self._listen_is_followup:
+                self._on_listen_empty()
+            return "wake_silent"
         transcribe = self._transcribe_listen or self._transcribe
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
@@ -447,6 +454,8 @@ class WakewordMonitor:
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
         # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):
+            if not self._listen_is_followup:
+                self._on_listen_empty()
             return "wake_silent"
         self._on_user_text(text)
         return "user_text"
