@@ -30,7 +30,7 @@ from std_msgs.msg import Bool, Empty, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from . import audio_cue
-from .replies import RETRY_PROMPT, WAKE_GREETING
+from .replies import WAKE_GREETING
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
@@ -129,10 +129,10 @@ class WakewordNode(Node):
                 "말끝판정 {tail:.2f}s · STT {stt:.2f}s".format(**timing))
 
     def _on_listen_empty(self) -> None:
-        # "비카야" 창이 빈손으로 닫힘 — 못 들었으면 못 들었다고 말한다.
-        # 침묵하면 사용자는 로봇이 죽었는지 못 들었는지 알 수 없다.
-        self._tts_pub.publish(String(data=build_request(RESPONSE, RETRY_PROMPT)))
-        self.get_logger().info("청취 창 빈손 종료 — 다시 말해달라고 안내")
+        # "비카야" 창이 빈손으로 닫힘. 멘트는 하지 않는다 — 안내를 넣었다가
+        # 사용자가 뺐다(2026-08-28 "쓸데없이 멘트 늘어나는 게 제일 싫다").
+        # 로그는 남긴다: 이 흔적이 없어서 "감지가 안 되는" 조사가 어려웠다.
+        self.get_logger().info("청취 창 빈손 종료 (발화 없음/빈 전사)")
 
     def _on_wake(self) -> None:
         # 로봇이 말하는 중에 부른 것이면 하던 말을 끊는다 (barge-in).
