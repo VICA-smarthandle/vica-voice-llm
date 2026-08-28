@@ -31,15 +31,20 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
+from pathlib import Path
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, String
 
+from .destination_loader import load_destinations
 from .ment_cache import MentCache
+from .replies import ACK_LISTENING_POOL
+from .synth_cache import SynthCache
 from .tts import VicaTTS
 from .tts_queue import TtsQueue, parse_request
 from .tts_text import split_sentences
@@ -66,6 +71,12 @@ class TtsNode(Node):
         self._queue = TtsQueue()
         self._preempt = threading.Event()
         self._running = True
+        # 합성 결과 캐시 + 합성 직렬화 잠금 (워밍업 스레드와 재생 스레드가
+        # 동시에 모델을 부르지 않게). 자주 나오는 고정 문장은 기동 시 미리
+        # 합성해 첫 사용부터 0초로 만든다.
+        self._synth_cache = SynthCache()
+        self._synth_lock = threading.Lock()
+        threading.Thread(target=self._prewarm_synth, daemon=True).start()
 
         self._state_pub = self.create_publisher(Bool, "/vica/tts_state", 10)
         self._done_pub = self.create_publisher(String, "/vica/tts_done", 10)
@@ -171,12 +182,54 @@ class TtsNode(Node):
                 return False
             self._publish_state(True)
             try:
-                self._tts.speak(chunk)
+                hit = self._synth_cache.get(chunk)
+                if hit is None:
+                    with self._synth_lock:
+                        wav, rate = self._tts.synthesize(chunk)
+                    self._synth_cache.put(chunk, wav, rate)
+                    hit = (wav, rate)
+                self._tts.play_audio(*hit)
             finally:
                 # 재생이 실패해도 감시는 반드시 다시 열어야 한다.
                 time.sleep(TAIL_SEC)
                 self._publish_state(False)
         return not self._preempt.is_set()
+
+    def _prewarm_synth(self) -> None:
+        """자주 나오는 고정 문장을 미리 합성한다 (접수 멘트·확인 질문·도착 멘트).
+
+        확인 질문은 목적지별 고정 문장인데 매번 합성해 첫 응답이 늦었다
+        (2026-08-28 실측 0.9초대). 실패해도 재생 경로가 그때그때 합성한다.
+        """
+        phrases: list[str] = list(ACK_LISTENING_POOL)
+        try:
+            # 로봇 지도의 목적지 파일 — wakeword 노드의 장소 귀띔과 같은 경로
+            yaml_path = os.environ.get(
+                "VICA_DESTINATIONS_YAML",
+                str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
+                    / "destinations.yaml"))
+            for dest in load_destinations(yaml_path):
+                phrases += [dest.confirm_prompt, dest.arrival_message]
+        except Exception as exc:
+            self.get_logger().warn(f"목적지 멘트 워밍업 생략: {exc}")
+        started = time.monotonic()
+        count = 0
+        for phrase in phrases:
+            for chunk in split_sentences(phrase):
+                if not self._running:
+                    return
+                if self._ments.lookup(chunk) or self._synth_cache.get(chunk):
+                    continue
+                try:
+                    with self._synth_lock:
+                        wav, rate = self._tts.synthesize(chunk)
+                    self._synth_cache.put(chunk, wav, rate)
+                    count += 1
+                except Exception as exc:
+                    self.get_logger().warn(f"워밍업 합성 실패({chunk!r}): {exc}")
+                    return
+        self.get_logger().info(
+            f"고정 문장 워밍업 완료: {count}건, {time.monotonic() - started:.1f}초")
 
     def shutdown(self) -> None:
         self._running = False

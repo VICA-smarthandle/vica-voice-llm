@@ -35,6 +35,10 @@ class VicaTTS:
         wav, _duration = self._tts.synthesize(text, self._style, lang=self.lang)
         return np.asarray(wav).squeeze(), int(self._tts.sample_rate)
 
+    def synthesize(self, text: str) -> tuple[np.ndarray, int]:
+        """합성만 하고 재생하지 않는다 — 합성 캐시(synth_cache)용 공개 API."""
+        return self._synthesize(text)
+
     def save(self, text: str, path: str | Path) -> None:
         """합성 결과를 wav 파일로 저장한다."""
         wav, _ = self._tts.synthesize(text, self._style, lang=self.lang)
