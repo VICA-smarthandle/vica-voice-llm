@@ -22,7 +22,13 @@ EMERGENCY_REPLY = "안전을 위해 멈추겠습니다."
 # 되고, 그러면 대기열이 밀린다. 짧게 한 번 답하는 편이 낫다.
 # 문구 규칙: 호출 응답("네?")과 귀로 구분되고, 긴급어·정지/취소 단축어와 겹치지
 # 않아야 한다 — "잠시만요"는 _PAUSE_WORDS 그 자체라 탈락(2026-08-28).
-ACK_LISTENING = "확인할게요."
+# 같은 말만 반복되면 지겨워서 풀에서 무작위로 고른다 (선택은 ros_node 몫).
+ACK_LISTENING_POOL = (
+    "확인할게요.",
+    "네, 확인할게요.",
+    "찾아볼게요.",
+    "알아볼게요.",
+)
 
 # STT 가 아무 말도 알아듣지 못했을 때. 침묵으로 두면 다시 말할 시점을 못 잡는다.
 RETRY_PROMPT = "잘 듣지 못했습니다. 다시 말씀해 주세요."
@@ -140,9 +146,15 @@ TURN_RIGHT = "우회전 할게요."
 
 
 def all_phrases() -> dict[str, str]:
-    """이 모듈이 가진 고정 문구 전체 (검사·감수용)."""
-    return {
-        name: value
-        for name, value in globals().items()
-        if name.isupper() and isinstance(value, str)
-    }
+    """이 모듈이 가진 고정 문구 전체 (검사·감수용). 문구 묶음(tuple)도 편다."""
+    phrases: dict[str, str] = {}
+    for name, value in globals().items():
+        if not name.isupper():
+            continue
+        if isinstance(value, str):
+            phrases[name] = value
+        elif isinstance(value, (tuple, list)):
+            for i, item in enumerate(value):
+                if isinstance(item, str):
+                    phrases[f"{name}[{i}]"] = item
+    return phrases

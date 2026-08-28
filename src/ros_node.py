@@ -19,6 +19,7 @@ navigate 확정 요청의 결과는 Mission Manager 만 알 수 있으므로 그
 """
 from __future__ import annotations
 
+import random
 import threading
 import time
 from pathlib import Path
@@ -35,7 +36,7 @@ from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import is_instant_utterance, parse_intent
-from .replies import ACK_LISTENING
+from .replies import ACK_LISTENING_POOL
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .tts_queue import RESPONSE, build_request, request_for_intent
@@ -122,7 +123,8 @@ class LlmIntentNode(Node):
             #      (2026-08-28 사용자 결정 — 멘트 최소주의).
             if not is_instant_utterance(text):
                 self._tts_pub.publish(
-                    String(data=build_request(RESPONSE, ACK_LISTENING))
+                    String(data=build_request(
+                        RESPONSE, random.choice(ACK_LISTENING_POOL)))
                 )
 
             # 2) 일반 발화는 LLM intent 파서로 해석한다 (대화 히스토리 포함 = 멀티턴).

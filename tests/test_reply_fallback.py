@@ -46,3 +46,23 @@ class TestEmptyReplySafetyNet:
         draft = _IntentDraft(intent="question", reply="여기는 1층입니다.")
         result = _finalize(draft, [DEST])
         assert result.reply == "여기는 1층입니다."
+
+
+class TestAckPool:
+    """대기(접수) 멘트 풀 — 같은 말만 반복되면 지겹다(2026-08-28 사용자).
+
+    무작위 선택은 ros_node 몫이고, 여기서는 풀 자체의 건강만 검사한다.
+    """
+
+    def test_pool_has_variety(self):
+        from src.replies import ACK_LISTENING_POOL
+        assert len(ACK_LISTENING_POOL) >= 3
+        assert len(set(ACK_LISTENING_POOL)) == len(ACK_LISTENING_POOL)
+        assert all(p.strip() for p in ACK_LISTENING_POOL)
+
+    def test_pool_is_covered_by_emergency_scan(self):
+        """all_phrases 가 묶음을 못 펴면 긴급어 검사망에서 빠진다."""
+        from src.replies import ACK_LISTENING_POOL, all_phrases
+        collected = set(all_phrases().values())
+        for phrase in ACK_LISTENING_POOL:
+            assert phrase in collected
