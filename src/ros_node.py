@@ -19,6 +19,7 @@ navigate 확정 요청의 결과는 Mission Manager 만 알 수 있으므로 그
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -75,6 +76,18 @@ class LlmIntentNode(Node):
         self.get_logger().info(
             "VICA LLM intent node 시작 (구독: /vica/user_text, /vica/robot_state | 발행: /vica/intent)"
         )
+        # 첫 호출의 콜드스타트(연결 준비 4~6초 실측, 2026-08-28)를 사용자 대신
+        # 여기서 치른다. 실패해도(네트워크 없음 등) 노드는 그대로 간다.
+        threading.Thread(target=self._warmup_llm, daemon=True).start()
+
+    def _warmup_llm(self) -> None:
+        started = time.monotonic()
+        try:
+            parse_intent("워밍업", [], history=[])
+            self.get_logger().info(
+                f"LLM 워밍업 완료 ({time.monotonic() - started:.1f}초)")
+        except Exception as exc:
+            self.get_logger().warning(f"LLM 워밍업 실패(무시 가능): {exc}")
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """로봇 상태 메시지를 받아 최신값으로 보관한다."""
