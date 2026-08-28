@@ -40,6 +40,11 @@ SAMPLE_RATE = 16000
 FRAME = 1280                    # 80ms — openWakeWord 계약
 RING_FRAMES = 31                # 검증에 쓰는 직전 오디오 ≈ 2.5초
 POST_ROLL_FRAMES = 4            # 긴급 발동 후 말끝 보존 0.32초
+
+# 질문 답변 창의 정답 후보 귀띔 (whisper initial_prompt). 확인 질문의 답은
+# 긍정/부정/취소 몇 가지뿐이라 후보를 주면 짧은 답 오전사가 크게 준다.
+# 너무 길거나 세게 기울이면 딴말이 후보로 둔갑하니 짧게 유지할 것.
+CONFIRM_HINT = "네. 그래. 응. 좋아요. 아니요. 아니. 싫어요. 취소."
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
@@ -151,6 +156,9 @@ class WakewordMonitor:
         # 필터를 걸지 않는다: 작은 외침의 조각을 지울 위험이 실측됐고(외침 10회
         # 프로토콜에서 빈 전사 기각 1건), 유령은 정확 매칭이 이미 막는다.
         self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = None
+        # 질문 답변(followup) 창 전용 — 정답 후보를 귀띔(initial_prompt)한 판.
+        # "그래"→'굿에이' 같은 짧은 답 오전사 대책 (2026-08-28 실측).
+        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
         self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
@@ -441,7 +449,10 @@ class WakewordMonitor:
             if not self._listen_is_followup:
                 self._on_listen_empty()
             return "wake_silent"
-        transcribe = self._transcribe_listen or self._transcribe
+        if self._listen_is_followup and self._transcribe_confirm is not None:
+            transcribe = self._transcribe_confirm
+        else:
+            transcribe = self._transcribe_listen or self._transcribe
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
         speech_end = now - self._listen_silence
@@ -507,8 +518,18 @@ class WakewordMonitor:
                                         language="ko", beam_size=5)
                 return accept_segments(segs)
 
+            def _transcribe_confirm(audio: np.ndarray) -> str:
+                # 질문 답변 창 전용 — 나올 답의 후보를 귀띔해 짧은 답 인식을
+                # 살린다. 귀띔은 기울이기일 뿐 강제(화이트리스트)가 아니므로
+                # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
+                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                        language="ko", beam_size=5,
+                                        initial_prompt=CONFIRM_HINT)
+                return accept_segments(segs)
+
             self._transcribe = _transcribe
             self._transcribe_listen = _transcribe_listen
+            self._transcribe_confirm = _transcribe_confirm
 
     def run(self) -> None:
         """reSpeaker ch0 상시 감시 루프 (blocking). Ctrl+C 로 종료."""

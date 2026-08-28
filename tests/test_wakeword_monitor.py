@@ -265,3 +265,37 @@ def test_followup_window_timeout_stays_silent():
     results = run_frames(m, 400, QUIET, t0=0.1)  # 30초 상한 초과
     assert "wake_silent" in results
     assert empties == []
+
+
+def test_confirm_window_uses_hinted_transcriber():
+    """질문 답변(followup) 창은 정답 후보를 귀띔한 전사기를 쓴다.
+
+    "그래"가 '굿에이'로 전사되던 실측(2026-08-28) — 짧은 답은 후보를
+    귀띔(initial_prompt)해야 맞는다. 자유 명령 창에는 적용하지 않는다.
+    """
+    fake = Fake(scores=[(0, 0)] * 100, text="긴급전사")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    m._transcribe_listen = lambda a: "일반전사"
+    m._transcribe_confirm = lambda a: "그래"
+    m.arm_followup(now=0.0)
+    m.set_muted(False, now=0.0)                   # 재청취(followup) 창 열림
+    run_frames(m, 5, LOUD, t0=0.1, vad=True)
+    results = run_frames(m, 12, QUIET, t0=0.6)
+    assert "user_text" in results
+    assert texts == ["그래"]
+
+
+def test_wake_window_ignores_confirm_transcriber():
+    """'비카야' 자유 명령 창은 귀띔 없이 일반 전사기를 쓴다 — 귀띔이
+    자유 발화를 후보 쪽으로 왜곡하면 안 된다."""
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 60, text="긴급전사")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    m._transcribe_listen = lambda a: "화장실로 가자"
+    m._transcribe_confirm = lambda a: "그래"
+    run_frames(m, 2, LOUD)                        # wake 창
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)
+    results = run_frames(m, 12, QUIET, t0=1.4)
+    assert "user_text" in results
+    assert texts == ["화장실로 가자"]
