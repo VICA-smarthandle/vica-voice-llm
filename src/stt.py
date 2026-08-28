@@ -82,8 +82,12 @@ class VicaSTT:
         # vad_filter 는 일부러 켜지 않는다. push-to-talk 시절에는 엔터까지의 긴 무음을
         # 잘라내는 효과가 컸지만, 지금 입력은 웨이크워드가 골라낸 2~3초 클립이라
         # 잘라낼 무음이 거의 없고, 작게 말한 긴급어를 무음으로 오판해 지울 위험이 있다.
+        # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를 올려
+        # 아무 말이나 시도"하는 기본 사다리를 끄고, condition_...=False 는 앞
+        # 조각의 오류가 뒤 조각으로 번지는 것을 끊는다.
         segments, _info = self._model.transcribe(
-            source, language=self.language, beam_size=1
+            source, language=self.language, beam_size=1,
+            temperature=0.0, condition_on_previous_text=False,
         )
         # 신뢰도 필터: 무음·잡음에서 지어낸 조각(유령 전사)을 버린다.
         from .stt_guard import accept_segments

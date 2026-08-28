@@ -531,12 +531,18 @@ class WakewordMonitor:
                                         language="ko", beam_size=5)
                 return "".join(s.text for s in segs).strip()
 
+            # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를
+            # 올려 아무 말이나 시도"하는 기본 사다리를 끈다. condition_...=False
+            # 는 앞 조각의 오류가 뒤 조각으로 번지는 것을 끊는다. 긴급 검증
+            # 전사(_transcribe)에는 걸지 않는다 — 그쪽은 실기 검증된 안전 축.
             def _transcribe_listen(audio: np.ndarray) -> str:
                 # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
                 # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
                 segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
                                         language="ko", beam_size=5,
-                                        initial_prompt=self._listen_hint)
+                                        initial_prompt=self._listen_hint,
+                                        temperature=0.0,
+                                        condition_on_previous_text=False)
                 return accept_segments(segs)
 
             def _transcribe_confirm(audio: np.ndarray) -> str:
@@ -545,7 +551,9 @@ class WakewordMonitor:
                 # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
                 segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
                                         language="ko", beam_size=5,
-                                        initial_prompt=CONFIRM_HINT)
+                                        initial_prompt=CONFIRM_HINT,
+                                        temperature=0.0,
+                                        condition_on_previous_text=False)
                 return accept_segments(segs)
 
             self._transcribe = _transcribe
