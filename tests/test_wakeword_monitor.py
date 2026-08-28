@@ -299,3 +299,23 @@ def test_wake_window_ignores_confirm_transcriber():
     results = run_frames(m, 12, QUIET, t0=1.4)
     assert "user_text" in results
     assert texts == ["화장실로 가자"]
+
+
+def test_near_silence_never_reaches_stt():
+    """무음에 가까운 수음은 STT 로 보내지 않는다.
+
+    실측(2026-08-28): 순간 잡음이 VAD 를 스쳐 rms 0.0034·발화 0.00초짜리
+    무음이 whisper 에 들어갔고, 장소 귀띔이 무음 환각을 '방2'(진짜 목적지)로
+    둔갑시켜 유령 주행 명령이 됐다. 진짜 조용한 답("응" rms 0.0185·0.24초)은
+    문턱을 넘는다.
+    """
+    TINY = np.full(1280, 100, dtype=np.int16)     # rms ≈ 0.003 — 무음 수준
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 60, text="방2")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 2, LOUD)                        # wake → listen
+    run_frames(m, 1, TINY, t0=1.0, vad=True)      # 잡음이 VAD 를 한 번 스침
+    results = run_frames(m, 12, TINY, t0=1.1)
+    assert "wake_silent" in results
+    assert texts == []
+    assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다

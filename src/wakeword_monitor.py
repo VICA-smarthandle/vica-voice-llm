@@ -45,6 +45,12 @@ POST_ROLL_FRAMES = 4            # 긴급 발동 후 말끝 보존 0.32초
 # 긍정/부정/취소 몇 가지뿐이라 후보를 주면 짧은 답 오전사가 크게 준다.
 # 너무 길거나 세게 기울이면 딴말이 후보로 둔갑하니 짧게 유지할 것.
 CONFIRM_HINT = "네. 그래. 응. 좋아요. 아니요. 아니. 싫어요. 취소."
+
+# 무음 문턱 — 이보다 짧거나 작은 수음은 STT 로 보내지 않는다. 귀띔이 무음
+# 환각을 진짜 장소 이름('방2')으로 둔갑시킨 실측(2026-08-28, rms 0.0034·
+# 발화 0.00초)이 근거. 진짜 조용한 답("응" rms 0.0185·0.24초)은 통과한다.
+LISTEN_MIN_SPEECH_SEC = 0.16    # 발화 최소 길이 (2프레임)
+LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
@@ -453,13 +459,22 @@ class WakewordMonitor:
             if not self._listen_is_followup:
                 self._on_listen_empty()
             return "wake_silent"
+        # 무음 문턱: 스친 잡음·거의 무음은 STT 로 보내지 않는다 — whisper 는
+        # 무음에서 아무 말이나 지어내고, 귀띔은 그 환각을 진짜 장소 이름으로
+        # 만들어 유령 주행 명령이 된다 ('방2' 실측 2026-08-28).
+        speech_end = now - self._listen_silence
+        speech_sec = speech_end - self._listen_speech_started_at
+        if (speech_sec < LISTEN_MIN_SPEECH_SEC
+                or self.last_listen_stats["rms"] < LISTEN_MIN_RMS):
+            if not self._listen_is_followup:
+                self._on_listen_empty()
+            return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
         else:
             transcribe = self._transcribe_listen or self._transcribe
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
-        speech_end = now - self._listen_silence
         self.last_listen_timing = {
             "wait": self._listen_speech_started_at - self._listen_opened_at,
             "speech": speech_end - self._listen_speech_started_at,
