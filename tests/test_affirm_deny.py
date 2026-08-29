@@ -110,3 +110,31 @@ class TestInstantUtterance:
     def test_sentences_need_ack(self, text):
         from src.langchain_intent_parser import is_instant_utterance
         assert is_instant_utterance(text) is False
+
+
+class TestWakeWordInsideWindow:
+    """청취 창 안에서 "비카야"를 부른 경우 — LLM 없이 즉시 "네?"로 받는다.
+
+    창이 열린 동안 호출 감지기는 잠들어 있어 "비카야"가 발화로 전사돼
+    LLM 까지 갔다 왔다(2026-08-29 분석). 밖에서 부른 것과 똑같이 느껴지게
+    지름길로 답한다. reply "네?"는 ?로 끝나 재청취 창이 다시 열린다.
+    """
+
+    @pytest.mark.parametrize("word", ["비카야", "피카야", "비까야", " 비카야? "])
+    def test_bare_wake_word_gets_greeting(self, word):
+        from src.replies import WAKE_GREETING
+        result = parse_intent(word, [DEST], history=[])
+        assert result.intent == "unknown"
+        assert result.reply == WAKE_GREETING
+        assert result.need_confirm is False
+
+    def test_wake_word_plus_command_goes_to_normal_path(self):
+        """"비카야, 화장실로 가자"는 지름길이 아니다 — 명령이 우선."""
+        from src.langchain_intent_parser import _WAKE_WORDS
+        from src.handle_mode import normalize_short_reply
+        assert normalize_short_reply("비카야 화장실로 가자") not in _WAKE_WORDS
+
+    def test_wake_word_is_instant(self):
+        """접수 신호("확인할게요") 없이 바로 "네?"가 나가야 한다."""
+        from src.langchain_intent_parser import is_instant_utterance
+        assert is_instant_utterance("비카야") is True

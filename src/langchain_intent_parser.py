@@ -25,6 +25,7 @@ from .replies import (
     PAUSE_ACK,
     RESUME_CONFIRM,
     RETRY_PROMPT,
+    WAKE_GREETING,
 )
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
@@ -176,6 +177,11 @@ _COMMAND_CONFIRMS = {
 # 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 분류한다.
 _CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
 _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
+# 청취 창 안에서 부른 호출어 — 창이 열린 동안 호출 감지기는 잠들어 있어
+# "비카야"가 발화로 전사돼 들어온다. LLM 을 거치면 1초+ 우회이므로 즉시
+# "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
+# 오전사 단골('피카야' 실측 2026-08-28)도 함께 받는다.
+_WAKE_WORDS = {"비카야", "피카야", "비까야"}
 
 
 def is_instant_utterance(user_text: str) -> bool:
@@ -188,7 +194,8 @@ def is_instant_utterance(user_text: str) -> bool:
     word = _normalize_short_reply(user_text)
     return bool(word) and (
         word in _AFFIRMATIVES or word in _NEGATIVES
-        or word in _CANCEL_WORDS or word in _PAUSE_WORDS)
+        or word in _CANCEL_WORDS or word in _PAUSE_WORDS
+        or word in _WAKE_WORDS)
 
 # 제어가 확정됐을 때의 reply. 실행이 아니라 요청이다 — MissionCommand 서비스
 # 호출은 ROS 노드, 수락/거절 판정은 Mission Manager 몫이며 이 문구는 로그용이다.
@@ -293,6 +300,11 @@ def parse_intent(
     # 명백한 취소·일시정지 발화는 LLM 없이 직행한다 (0초, 오판 없음).
     # 목적지·제어 확인 대기 중이면 위 블록들이 먼저 처리하므로 여기 오지 않는다.
     word = _normalize_short_reply(user_text)
+    if word in _WAKE_WORDS:
+        # 창 안에서 부른 호출어 — "네?"는 ?로 끝나 재청취 창이 다시 열리고,
+        # 녹음 캐시(wake_greeting.wav)가 있어 0초에 재생된다.
+        return VicaIntent(intent="unknown", reply=WAKE_GREETING,
+                          need_confirm=False, confidence=1.0)
     if word in _CANCEL_WORDS:
         return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
     if word in _PAUSE_WORDS:
