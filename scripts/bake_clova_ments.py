@@ -105,6 +105,9 @@ def main() -> None:
     p_sample.add_argument("--out", default=str(ROOT / "clova_samples"))
     p_all = sub.add_parser("all", help="확정 보이스로 등록 멘트 전체 굽기")
     p_all.add_argument("--voice", required=True)
+    p_bench = sub.add_parser("bench", help="왕복 지연 측정 (실시간 후보 판정용)")
+    p_bench.add_argument("--voice", default="nara")
+    p_bench.add_argument("--repeats", type=int, default=5)
     args = ap.parse_args()
 
     cid, secret = _keys()
@@ -120,6 +123,33 @@ def main() -> None:
                 sf.write(path, to_asset(wav, rate), TARGET_RATE, subtype="PCM_16")
                 print(f"구움: {path}  ('{text[:20]}…')")
         print(f"\n시청: 재생 장치로 {out}/*.wav 를 차례로 들어볼 것")
+        return
+
+    if args.mode == "bench":
+        # CLOVA 는 스트리밍이 없어 파일 전체 수신 = 첫 소리 지연이다.
+        # 판정 기준(사전 합의): 실시간 후보 = 중앙값 <1s · 최대 <2s · 실패 0
+        # (기준선: 로컬 supertonic 0.7~0.9s).
+        import statistics
+        import time
+        cases = [("짧음", "네? 무엇을 도와드릴까요?"),
+                 ("중간", "별빛관 1층 화장실로 안내해드릴까요?"),
+                 ("김", "안녕하세요? 저는 시각장애인 안내로봇 비카입니다! "
+                        "저와 함께 목적지까지 동행해보시는건 어떠세요?")]
+        print(f"{'문장':<4} {'글자':>4} {'중앙값':>8} {'최소':>8} {'최대':>8} 실패")
+        for label, text in cases:
+            times, fails = [], 0
+            for _ in range(args.repeats):
+                t0 = time.monotonic()
+                try:
+                    synthesize(text, args.voice, cid, secret)
+                    times.append(time.monotonic() - t0)
+                except Exception:
+                    fails += 1
+            if times:
+                print(f"{label:<4} {len(text):>4} {statistics.median(times):>7.2f}s"
+                      f" {min(times):>7.2f}s {max(times):>7.2f}s {fails}")
+            else:
+                print(f"{label:<4} {len(text):>4} 전부 실패 ({fails})")
         return
 
     from src.ment_cache import ASSETS_DIR, CACHED_MENTS
