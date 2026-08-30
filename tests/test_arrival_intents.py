@@ -55,3 +55,29 @@ class TestFinalizeFinish:
         assert r.intent == "finish"
         assert r.reply == ""              # 종료 발화는 Mission 몫
         assert r.need_confirm is False
+
+
+class TestWaitTimeMerge:
+    """시간 병합: 코드가 원문의 단일 숫자를 우선, 없으면 LLM 제안 채택.
+
+    LLM 이 범위("5분에서 10분")를 상단×1.5=15 로 제안하는 것은 프롬프트
+    규칙이라 여기서 검증 못 한다(실호출 없음) — 대신 그 값이 폴백으로
+    쓰이는지, 원문 단일 숫자가 그것을 이기는지를 본다. 상한 강제는 Mission.
+    """
+
+    def test_code_single_number_wins_over_llm(self):
+        # 사용자가 "20분"이라 명확히 말함 — LLM 이 딴 값(35)을 줘도 코드가 이긴다
+        draft = _IntentDraft(intent="wait", confidence=0.9, wait_minutes=35)
+        r = _finalize(draft, [DEST], user_text="20분만 기다려")
+        assert r.wait_minutes == 20
+
+    def test_llm_value_used_when_code_cannot_parse(self):
+        # 범위 발화 — 코드는 단일 숫자를 못 뽑고, LLM 의 15(10×1.5)를 쓴다
+        draft = _IntentDraft(intent="wait", confidence=0.9, wait_minutes=15)
+        r = _finalize(draft, [DEST], user_text="한 5분에서 10분?")
+        assert r.wait_minutes == 15
+
+    def test_neither_defers_to_followup(self):
+        draft = _IntentDraft(intent="wait", confidence=0.8, wait_minutes=None)
+        r = _finalize(draft, [DEST], user_text="좀 기다려줘")
+        assert r.wait_minutes == -1       # Mission 이 "몇 분쯤?" 후속 질문

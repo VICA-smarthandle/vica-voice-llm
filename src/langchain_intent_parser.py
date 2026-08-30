@@ -69,6 +69,14 @@ class _IntentDraft(BaseModel):
         description="직전 로봇 제안('OO로 안내할까요?')에 사용자가 긍정(응/네/맞아)한 경우 true",
     )
     confidence: Optional[float] = Field(default=0.0, description="해석 확신도 0~1")
+    wait_minutes: Optional[int] = Field(
+        default=None,
+        description=(
+            "intent 가 wait 이고 사용자가 시간을 말했으면 분(minute)으로. "
+            "범위면 넉넉한 쪽(상단)에 50%를 더해 넣어라 — 예: '5분에서 10분' "
+            "이면 15. 시간을 말하지 않았으면 null. 그 외 intent 는 null."
+        ),
+    )
     reply: str = Field(
         default="",
         # navigate 의 확인 문구는 코드가 confirm_prompt 로 갈아끼우므로(_finalize),
@@ -206,6 +214,10 @@ def parse_wait_minutes(text: str):
         return None
     if "반시간" in t:
         return 30
+    # 범위 발화("5분에서 10분", "5~10분")는 코드가 물러난다 — 넉넉한 쪽×1.5
+    # 같은 센스는 LLM 이 하고, 코드는 명확한 단일 숫자만 확정한다(판정 권한).
+    if len(re.findall(r"\d+", t)) >= 2 or "에서" in t or "~" in t or "-" in t:
+        return None
     # 아라비아 숫자 우선 (분 > 시간 순으로 본다)
     m = re.search(r"(\d+)\s*분", t)
     if m:
@@ -419,12 +431,16 @@ def _finalize(
         return result
 
     if draft.intent == "wait":
-        # LLM 이 의도를 판단하고, 시간 숫자는 코드가 원문에서 뽑는다(판정 권한
-        # 원칙). "20분만 기다려"면 20, 못 뽑으면 -1 로 두고 Mission 이 후속
-        # 질문("몇 분쯤?")으로 넘긴다. 상한(30분) 강제도 Mission. reply 는 몫.
+        # 시간 병합 (판정 권한 원칙): 코드가 원문의 단일 숫자를 우선 확정하고,
+        # 못 뽑으면(범위·애매) LLM 제안값을 폴백으로 쓴다 — 범위 "5~10분"을
+        # 상단×1.5=15 로 세는 센스는 LLM 이 하고(프롬프트), 명확한 "20분"은
+        # 코드가 환각 없이 잡는다. 둘 다 없으면 -1 로 두고 Mission 이 후속
+        # 질문. 상한(30분) 강제는 Mission. reply 는 Mission 몫.
         result.reply = ""
         result.need_confirm = False
         minutes = parse_wait_minutes(user_text)
+        if minutes is None and draft.wait_minutes and draft.wait_minutes > 0:
+            minutes = draft.wait_minutes
         result.wait_minutes = minutes if minutes else -1
         return result
 
