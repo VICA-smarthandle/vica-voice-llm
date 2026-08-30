@@ -342,3 +342,13 @@ class TestAgcDesiredFromEnv:
         from src.dsp_state import agc_desired_from_env
         assert agc_desired_from_env("-0.01") is None
         assert agc_desired_from_env("5.0") is None
+
+
+def test_confirm_hint_covers_arrival_dialog_vocab():
+    """확인 창 귀띔에 도착 후 대화의 답(대기·시간·종료)이 들어있어야 한다 —
+    빠지면 오전사로 wait/finish 가 안 잡힌다 (2026-08-30)."""
+    from src.wakeword_monitor import CONFIRM_HINT
+    for word in ["기다려", "이십", "삼십", "반시간", "됐어", "그만"]:
+        assert word in CONFIRM_HINT, f"귀띔에 '{word}' 누락"
+    # 너무 길면 딴말이 후보로 둔갑 — 상한을 둔다 (whisper 프롬프트 예산)
+    assert len(CONFIRM_HINT) < 200
