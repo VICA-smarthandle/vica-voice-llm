@@ -21,6 +21,12 @@ class TestParseWaitMinutes:
         ("20분", 20), ("이십 분", 20), ("삼십분만", 30), ("10분만 기다려", 10),
         ("반시간", 30), ("5분", 5), ("한 시간", 60), ("두 시간", 120),
         ("300분", 300),   # 상한을 넘겨도 그대로 — 깎기는 Mission
+        # 합성 한글 숫자 (실기 전사: "십 분에서 십오 분")
+        ("십오 분", 15), ("이십오 분만", 25),
+        # 범위 = 상단 x1.5 반올림 (2026-08-30 실기: LLM이 평균을 내서
+        # 13분이 나왔다 — 산수는 코드가 한다)
+        ("5분에서 10분", 15), ("십 분에서 십오 분.", 23),
+        ("10~20분", 30), ("한 5분에서 10분?", 15),
     ])
     def test_extracts(self, text, minutes):
         assert parse_wait_minutes(text) == minutes
@@ -71,10 +77,16 @@ class TestWaitTimeMerge:
         r = _finalize(draft, [DEST], user_text="20분만 기다려")
         assert r.wait_minutes == 20
 
-    def test_llm_value_used_when_code_cannot_parse(self):
-        # 범위 발화 — 코드는 단일 숫자를 못 뽑고, LLM 의 15(10×1.5)를 쓴다
+    def test_code_computes_range_itself(self):
+        # 범위도 코드가 직접 계산(상단 x1.5) — LLM 이 엉뚱한 값(13)을 줘도 이긴다
+        draft = _IntentDraft(intent="wait", confidence=0.9, wait_minutes=13)
+        r = _finalize(draft, [DEST], user_text="십 분에서 십오 분.")
+        assert r.wait_minutes == 23
+
+    def test_llm_value_used_when_no_number_at_all(self):
+        # 숫자가 아예 없는 발화만 LLM 제안을 폴백으로 쓴다
         draft = _IntentDraft(intent="wait", confidence=0.9, wait_minutes=15)
-        r = _finalize(draft, [DEST], user_text="한 5분에서 10분?")
+        r = _finalize(draft, [DEST], user_text="좀 있다가 올게")
         assert r.wait_minutes == 15
 
     def test_neither_defers_to_followup(self):

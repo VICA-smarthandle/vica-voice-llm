@@ -73,8 +73,8 @@ class _IntentDraft(BaseModel):
         default=None,
         description=(
             "intent 가 wait 이고 사용자가 시간을 말했으면 분(minute)으로. "
-            "범위면 넉넉한 쪽(상단)에 50%를 더해 넣어라 — 예: '5분에서 10분' "
-            "이면 15. 시간을 말하지 않았으면 null. 그 외 intent 는 null."
+            "범위('5분에서 10분')면 큰 쪽(10)을 넣어라 — 계산·여유는 시스템이 "
+            "한다. 시간을 말하지 않았으면 null. 그 외 intent 는 null."
         ),
     )
     reply: str = Field(
@@ -193,20 +193,39 @@ _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 # "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
 # 오전사 단골('피카야' 실측 2026-08-28)도 함께 받는다.
 _WAKE_WORDS = {"비카야", "피카야", "비까야"}
-# 한국어 수 -> 값. 시간 표현 파싱용 (5분, 이십 분, 반시간, 한 시간).
-_KO_NUM = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7,
-           "여덟": 8, "아홉": 9, "열": 10, "스무": 20,
-           "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7,
-           "팔": 8, "구": 9, "십": 10, "이십": 20, "삼십": 30, "사십": 40,
-           "오십": 50, "육십": 60}
+# 한국어 수 파싱용 (5분, 이십 분, 십오 분, 반시간, 한 시간).
+_SINO_UNITS = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
+               "육": 6, "칠": 7, "팔": 8, "구": 9}
+_NATIVE_NUM = {"한": 1, "두": 2, "세": 3, "네": 4}   # "한 시간" 등 고유어 수
+
+
+def _sino_number(token: str):
+    """한자어 수사 -> 값. "십오"=15, "이십"=20 같은 합성도 푼다. 실패면 None.
+
+    끝 글자만 보던 옛 방식은 "십오 분"을 5분으로 오파싱했다(잠재 결함,
+    2026-08-30 발견). 십의 자리와 일의 자리를 분리해 계산한다.
+    """
+    if not token:
+        return None
+    if "십" in token:
+        head, _, tail = token.partition("십")
+        if head and head not in _SINO_UNITS:
+            return None
+        if tail and tail not in _SINO_UNITS:
+            return None
+        return (_SINO_UNITS[head] if head else 1) * 10 + _SINO_UNITS.get(tail, 0)
+    return _SINO_UNITS.get(token)
 
 
 def parse_wait_minutes(text: str):
     """한국어 시간 표현에서 분(minute)을 뽑는다. 없으면 None.
 
-    상한(30분)은 여기서 걸지 않는다 — 판정 권한은 Mission 에 있다. "반시간"·
-    "한 시간" 같은 표현과 아라비아·한글 숫자를 함께 받는다. 애매하면 None 을
-    돌려 후속 질문("몇 분쯤?")으로 넘긴다.
+    산수는 전부 여기서 한다 — LLM 에게 계산을 맡겼더니 범위("십 분에서
+    십오 분")에 평균(13분)을 냈다(2026-08-30 실기). 규칙:
+    - 단일 값("20분", "십오 분", "한 시간")은 그대로.
+    - 범위(숫자 2개 이상 또는 "에서"·"~")는 넉넉한 쪽(최댓값) x1.5 반올림
+      (사용자 결정: "5분에서 10분" -> 15분 — 여유를 주는 게 센스다).
+    - 상한(30분)은 여기서 걸지 않는다 — 판정 권한은 Mission 에 있다.
     """
     import re
     t = (text or "").replace(" ", "")
@@ -214,27 +233,20 @@ def parse_wait_minutes(text: str):
         return None
     if "반시간" in t:
         return 30
-    # 범위 발화("5분에서 10분", "5~10분")는 코드가 물러난다 — 넉넉한 쪽×1.5
-    # 같은 센스는 LLM 이 하고, 코드는 명확한 단일 숫자만 확정한다(판정 권한).
-    if len(re.findall(r"\d+", t)) >= 2 or "에서" in t or "~" in t or "-" in t:
-        return None
-    # 아라비아 숫자 우선 (분 > 시간 순으로 본다)
-    m = re.search(r"(\d+)\s*분", t)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"(\d+)\s*시간", t)
-    if m:
-        return int(m.group(1)) * 60
-    # 한글 숫자 + 단위
-    for unit, mult in (("분", 1), ("시간", 60)):
-        idx = t.find(unit)
-        if idx <= 0:
+    values = []
+    for num, unit in re.findall(r"(\d+|[일이삼사오육칠팔구십]+|[한두세네])(분|시간)", t):
+        if num.isdigit():
+            value = int(num)
+        else:
+            value = _NATIVE_NUM.get(num) or _sino_number(num)
+        if value is None:
             continue
-        head = t[:idx]
-        for token in sorted(_KO_NUM, key=len, reverse=True):
-            if head.endswith(token):
-                return _KO_NUM[token] * mult
-    return None
+        values.append(value * (60 if unit == "시간" else 1))
+    if not values:
+        return None
+    if len(values) >= 2 or "에서" in t or "~" in t:
+        return int(max(values) * 1.5 + 0.5)
+    return values[0]
 
 
 def is_instant_utterance(user_text: str) -> bool:
@@ -431,11 +443,11 @@ def _finalize(
         return result
 
     if draft.intent == "wait":
-        # 시간 병합 (판정 권한 원칙): 코드가 원문의 단일 숫자를 우선 확정하고,
-        # 못 뽑으면(범위·애매) LLM 제안값을 폴백으로 쓴다 — 범위 "5~10분"을
-        # 상단×1.5=15 로 세는 센스는 LLM 이 하고(프롬프트), 명확한 "20분"은
-        # 코드가 환각 없이 잡는다. 둘 다 없으면 -1 로 두고 Mission 이 후속
-        # 질문. 상한(30분) 강제는 Mission. reply 는 Mission 몫.
+        # 시간 병합 (판정 권한 원칙): 단일 값도 범위(상단x1.5)도 코드가
+        # 계산한다 — LLM 에게 산수를 맡겼더니 평균을 냈다(2026-08-30 실기,
+        # "십 분에서 십오 분" -> 13분). LLM 제안값은 숫자가 아예 없는
+        # 발화("좀 있다가")의 폴백일 뿐. 둘 다 없으면 -1 로 두고 Mission 이
+        # 후속 질문. 상한(30분) 강제는 Mission. reply 는 Mission 몫.
         result.reply = ""
         result.need_confirm = False
         minutes = parse_wait_minutes(user_text)
