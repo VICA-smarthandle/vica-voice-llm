@@ -249,8 +249,11 @@ def test_vad_window_resets_at_sentence_boundary():
 
 
 # ---------------------------------------------------------------- 방향 잠금·보정
-def test_locked_direction_beats_static_sector():
-    """잠금(1순위)이 살아 있으면 장착 보정(2순위)보다 우선한다."""
+def test_lock_and_sector_are_a_union():
+    """잠금과 장착 부채꼴은 합집합 — 어느 쪽 방향이든 발동한다.
+
+    (2026-08-30 변경: 이전엔 잠금이 신선하면 ±15°만 봐서 반 발짝 옆의
+    사용자를 놓쳤다. 좁아서 못 듣는 쪽이 더 나쁘다 — 사용자 결정.)"""
     fake = Fake()
     events, texts, stops = [], [], []
     m = make(fake, events, texts, stops, user_doa_center=100.0, user_doa_width=12.0)
@@ -258,12 +261,19 @@ def test_locked_direction_beats_static_sector():
     m.lock_user_direction(USER_DOA, now=0.0)
     m.arm_followup(now=0.0)
     m.set_speaking(True, now=0.1)
-    # 보정 부채꼴(100°) 방향은 지금 기준이 아니다 — 발동 금지
+    # 잠금이 신선해도 부채꼴(100°) 방향 역시 발동한다 (합집합)
     results = run_frames(m, 30, LOUD, t0=0.2, vad=True, doa=102)
-    assert "barge_in" not in results
-    # 잠금 방향은 발동
-    results = run_frames(m, BARGE_VAD_WINDOW, LOUD, t0=3.0, vad=True, doa=USER_DOA)
     assert "barge_in" in results
+    # 잠금 방향도 물론 발동
+    m.arm_followup(now=3.0)
+    m.set_speaking(True, now=3.0)
+    results = run_frames(m, 30, LOUD, t0=3.1, vad=True, doa=USER_DOA)
+    assert "barge_in" in results
+    # 두 부채꼴 다 밖(옆사람)은 여전히 막는다
+    m.arm_followup(now=6.0)
+    m.set_speaking(True, now=6.0)
+    results = run_frames(m, 30, LOUD, t0=6.1, vad=True, doa=300)
+    assert "barge_in" not in results
 
 
 def test_expired_lock_falls_back_to_static_sector():

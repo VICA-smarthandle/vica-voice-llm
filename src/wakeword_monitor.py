@@ -349,23 +349,23 @@ class WakewordMonitor:
             and now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC
         ):
             # 방향 관문: 사용자 방향 밖(옆사람·행인)의 발화는 대답이 아니다.
-            # 1순위 — "비카야" 순간에 잠근 방향(신선할 때), 2순위 — 장착 보정
-            # 부채꼴(핸들 방향, 시나리오상 사용자는 항상 핸들에 있다).
-            # 시나리오 6.1: 모든 대화는 "비카야"로만 시작하므로 정상 흐름에서는
-            # 질문 시점에 항상 잠금이 있다. 방향을 모르거나(None) 못 읽었으면
-            # 증거 부족 — 발동하지 않는다 (기본 켬이 안전한 이유).
-            center: Optional[float] = None
-            width = self._user_doa_width
+            # 잠금(비카야 순간 방향 ±15°, 신선할 때)과 장착 부채꼴(핸들 방향)의
+            # **합집합** — 어느 쪽이든 들어오면 통과 (2026-08-30 사용자 결정:
+            # 좁아서 못 듣는 쪽이 더 나쁘다. 이전엔 잠금이 신선하면 ±15°만 봐서
+            # 반 발짝 옆의 사용자를 놓쳤다). 자책골 방어는 칩 VAD(에코 면역)와
+            # 과반 창이 맡는다 — 실기에서 로봇이 말하다 스스로 끊기면 이 완화가
+            # 1번 용의자다. 방향을 모르면 증거 부족 — 발동하지 않는다.
+            sectors = []
             if (self._locked_doa is not None
                     and now - self._locked_doa_at <= USER_DOA_LOCK_TTL_SEC):
-                center, width = self._locked_doa, USER_DOA_LOCK_WIDTH
-            elif self._user_doa_center is not None:
-                center = self._user_doa_center
+                sectors.append((self._locked_doa, USER_DOA_LOCK_WIDTH))
+            if self._user_doa_center is not None:
+                sectors.append((self._user_doa_center, self._user_doa_width))
             hit = (
                 bool(vad)
-                and center is not None
                 and doa is not None
-                and _angle_diff(float(doa), center) <= width
+                and any(_angle_diff(float(doa), center) <= width
+                        for center, width in sectors)
             )
             self._vad_window.append(hit)
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
