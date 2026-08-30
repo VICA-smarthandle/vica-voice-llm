@@ -47,6 +47,28 @@ class MentCache:
             except Exception:
                 # 깨진 파일 하나가 노드 기동을 막으면 안 된다 — 합성 폴백.
                 self.missing.append(filename)
+        # 구운 멘트 일괄 적재 (assets/baked/manifest.json — 2026-08-30 결정:
+        # 전 멘트를 CosyVoice F2 클로닝으로 굽는다). 같은 문구면 구운 판이
+        # 이긴다(목소리 통일). manifest 가 없으면 조용히 넘어간다.
+        baked = assets / "baked"
+        manifest = baked / "manifest.json"
+        if manifest.exists():
+            try:
+                import json
+
+                import soundfile as sf
+                for filename, text in json.load(open(manifest)).items():
+                    path = baked / filename
+                    if not path.exists():
+                        self.missing.append(f"baked/{filename}")
+                        continue
+                    try:
+                        wav, rate = sf.read(str(path), dtype="float32")
+                        self._by_text[text.strip()] = (wav, int(rate))
+                    except Exception:
+                        self.missing.append(f"baked/{filename}")
+            except Exception:
+                pass   # manifest 가 깨져도 기동은 계속
 
     def lookup(self, text: str) -> Optional[tuple]:
         """문장이 구워져 있으면 (wav, sample_rate), 아니면 None."""

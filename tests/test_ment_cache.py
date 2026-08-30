@@ -66,3 +66,34 @@ class TestRealAssets:
         """저장소에 커밋된 wav 는 실제로 읽혀야 한다 (배선 스모크)."""
         cache = MentCache(ASSETS_DIR)
         assert cache.lookup(replies.WAKE_GREETING) is not None
+
+
+class TestBakedManifest:
+    """구운 멘트 일괄 적재 (2026-08-30 사용자 결정 — 전 멘트 CV 굽기).
+
+    assets/baked/manifest.json {파일명: 문구} 를 CACHED_MENTS 위에 겹친다 —
+    같은 문구면 구운 판이 이긴다 (목소리 통일). 파일·manifest 가 없으면
+    조용히 무시한다 (굽기 전에도 동작해야 한다).
+    """
+
+    def test_manifest_loads_and_overrides(self, tmp_path):
+        import json
+        import numpy as np
+        import soundfile as sf
+        from src import replies
+        from src.ment_cache import MentCache
+
+        baked = tmp_path / "baked"
+        baked.mkdir()
+        sf.write(str(baked / "wake.wav"), np.zeros(800, dtype=np.float32),
+                 16000, subtype="PCM_16")
+        json.dump({"wake.wav": replies.WAKE_GREETING},
+                  open(baked / "manifest.json", "w"))
+        cache = MentCache(tmp_path)
+        got = cache.lookup(replies.WAKE_GREETING)
+        assert got is not None and len(got[0]) == 800   # 구운 판이 적재됨
+
+    def test_no_manifest_is_fine(self, tmp_path):
+        from src.ment_cache import MentCache
+        cache = MentCache(tmp_path)                     # baked/ 없음
+        assert cache.lookup("아무 문구") is None
