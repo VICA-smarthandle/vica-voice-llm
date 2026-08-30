@@ -185,14 +185,6 @@ _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 # "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
 # 오전사 단골('피카야' 실측 2026-08-28)도 함께 받는다.
 _WAKE_WORDS = {"비카야", "피카야", "비까야"}
-# 도착 후 대기·종료 (2026-08-30). finish 는 "오늘 안내 끝" — 도착 후 전용.
-# _normalize_short_reply 는 공백·문장부호를 지우므로 목록도 그 꼴로 둔다.
-_FINISH_WORDS = {"이제됐어", "이제됐어요", "그만할래", "그만할래요", "그만",
-                 "안내끝", "안내끝났어", "다됐어", "다됐어요", "됐어요",
-                 "이제그만", "여기까지"}
-_WAIT_HINTS = ("기다려", "기다릴", "대기", "있다 올", "있다올", "잠깐 있",
-               "여기 있어", "여기 계")
-
 # 한국어 수 -> 값. 시간 표현 파싱용 (5분, 이십 분, 반시간, 한 시간).
 _KO_NUM = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7,
            "여덟": 8, "아홉": 9, "열": 10, "스무": 20,
@@ -359,15 +351,9 @@ def parse_intent(
     if word in _PAUSE_WORDS:
         return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
 
-    # 도착 후 대화 (2026-08-30). finish 는 "오늘 안내 끝", wait 는 "기다려".
-    # 도착 후 상태에서만 Mission 이 소비한다 — 아무 때나 보내도 안전(무시됨).
-    # reply="" : 발화는 상태를 아는 Mission 몫. '취소'는 위에서 이미 잡혔다.
-    if word in _FINISH_WORDS:
-        return VicaIntent(intent="finish", confidence=1.0, reply="", need_confirm=False)
-    if any(h in user_text for h in _WAIT_HINTS):
-        minutes = parse_wait_minutes(user_text)
-        return VicaIntent(intent="wait", confidence=1.0, reply="",
-                          need_confirm=False, wait_minutes=minutes if minutes else -1)
+    # 도착 후 대기·종료(wait/finish)는 지름길을 두지 않는다 — 발화 의도가
+    # 맥락에 좌우돼("그만 좀 물어봐" ≠ 종료) 단어 매칭이 위험하다. LLM 이
+    # 판단하고, 시간 숫자만 코드가 원문에서 뽑는다 (2026-08-30 사용자 결정).
 
     # 확인 대기가 없는 짧은 긍/부정은 affirm/deny 로 발행한다 (0초, LLM 없이).
     # 어느 질문의 답인지는 판정하지 않는다 — 상태를 가진 Mission 이 소비하거나
@@ -399,7 +385,8 @@ def parse_intent(
             confidence=0.0,
             need_confirm=False,
         )
-    return _finalize(draft, destinations, pending=pending, pending_command=pending_command)
+    return _finalize(draft, destinations, pending=pending,
+                     pending_command=pending_command, user_text=user_text)
 
 
 def _finalize(
@@ -407,6 +394,7 @@ def _finalize(
     destinations: Sequence[DestinationData],
     pending: Optional[DestinationData] = None,
     pending_command: Optional[str] = None,
+    user_text: str = "",
 ) -> VicaIntent:
     """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)
 
@@ -431,12 +419,13 @@ def _finalize(
         return result
 
     if draft.intent == "wait":
-        # LLM 경로는 애매한 대기 표현("좀 있다가")을 받는다 — 시간이 분명하면
-        # 지름길이 이미 잡았다. 여기서 못 뽑으면 -1 로 두고 Mission 이
-        # 후속 질문("몇 분쯤?")으로 넘긴다. reply 는 Mission 몫.
+        # LLM 이 의도를 판단하고, 시간 숫자는 코드가 원문에서 뽑는다(판정 권한
+        # 원칙). "20분만 기다려"면 20, 못 뽑으면 -1 로 두고 Mission 이 후속
+        # 질문("몇 분쯤?")으로 넘긴다. 상한(30분) 강제도 Mission. reply 는 몫.
         result.reply = ""
         result.need_confirm = False
-        result.wait_minutes = -1
+        minutes = parse_wait_minutes(user_text)
+        result.wait_minutes = minutes if minutes else -1
         return result
 
     if draft.intent == "navigate":
