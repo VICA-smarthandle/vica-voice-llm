@@ -80,6 +80,9 @@ class WakewordNode(Node):
             "VICA_BARGE_IN_VOICE", "on").strip().lower() not in ("off", "0", "false")
         # 사용자 방향 부채꼴 (barge-in 전용 — 긴급어에는 방향 조건 없음).
         # 실기 장착 시 사용자(핸들) 방향을 실측해 넣는다 (tools/doa_probe).
+        # 방향 관문 스위치 (기본 켬). 0 이면 방향 불문 — 칩 VAD 만 본다.
+        self._doa_gate = os.environ.get(
+            "VICA_BARGE_DOA_GATE", "1").strip() not in ("0", "false", "off")
         doa_center = os.environ.get("VICA_USER_DOA_CENTER", "").strip()
         self._user_doa_center = float(doa_center) if doa_center else None
         self._user_doa_width = float(
@@ -107,6 +110,7 @@ class WakewordNode(Node):
             on_listen_empty=self._on_listen_empty,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
+            doa_gate=self._doa_gate,
             user_doa_width=self._user_doa_width,
         )
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로

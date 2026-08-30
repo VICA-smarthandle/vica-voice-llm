@@ -336,3 +336,23 @@ def test_drop_pending_all():
 
 def test_drop_pending_empty_queue():
     assert TtsQueue().drop_pending() == ()
+
+
+def test_doa_gate_off_hears_any_direction():
+    """방향 관문 해제(2026-08-30) — 잠금·부채꼴 무관, 어느 방향이든 발동.
+
+    장착 상태 DOA 실측이 아직 없어 방향 증거를 요구하지 않는다. DOA 점검
+    후 center 측정과 함께 다시 켠다 (VICA_BARGE_DOA_GATE)."""
+    fake = Fake()
+    events, texts, stops = [], [], []
+    m = make(fake, events, texts, stops, user_doa_center=None, doa_gate=False)
+    m.lock_user_direction(USER_DOA, now=0.0)      # 잠금이 있어도 무시
+    m.arm_followup(now=0.0)
+    m.set_speaking(True, now=0.1)
+    # 잠금 반대편(60°) + doa 미제공 둘 다 발동해야 한다
+    results = run_frames(m, 30, LOUD, t0=0.2, vad=True, doa=60)
+    assert "barge_in" in results
+    m.arm_followup(now=3.0)
+    m.set_speaking(True, now=3.0)
+    results = run_frames(m, 30, LOUD, t0=3.1, vad=True, doa=None)
+    assert "barge_in" in results

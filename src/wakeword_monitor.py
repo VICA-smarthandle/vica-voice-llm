@@ -129,6 +129,7 @@ class WakewordMonitor:
         on_reject: Optional[Callable[[str], None]] = None,
         on_listen_empty: Optional[Callable[[], None]] = None,
         voice_barge_in: bool = True,
+        doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
         user_doa_width: float = 45.0,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
@@ -152,6 +153,10 @@ class WakewordMonitor:
         # followup(질문 답변) 창의 무응답은 Mission 몫이라 알리지 않는다.
         self._on_listen_empty = on_listen_empty or (lambda: None)
         self._voice_barge_in = voice_barge_in
+        # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
+        # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
+        # 마이크 DOA 점검 후 center 측정과 함께 다시 켠다).
+        self._doa_gate = doa_gate
         # 사용자 방향 부채꼴 (도). 설정되면 그 방향의 발화만 대답으로 인정한다 —
         # 칩 VAD 는 화자를 못 가려 옆사람 대화가 질문을 끊었다(2026-08-24 실측).
         # DOA 실측: 나란히 앉은 두 화자도 평균 23° 차·퍼짐 ±2~7° 로 갈라졌다.
@@ -355,18 +360,22 @@ class WakewordMonitor:
             # 반 발짝 옆의 사용자를 놓쳤다). 자책골 방어는 칩 VAD(에코 면역)와
             # 과반 창이 맡는다 — 실기에서 로봇이 말하다 스스로 끊기면 이 완화가
             # 1번 용의자다. 방향을 모르면 증거 부족 — 발동하지 않는다.
-            sectors = []
-            if (self._locked_doa is not None
-                    and now - self._locked_doa_at <= USER_DOA_LOCK_TTL_SEC):
-                sectors.append((self._locked_doa, USER_DOA_LOCK_WIDTH))
-            if self._user_doa_center is not None:
-                sectors.append((self._user_doa_center, self._user_doa_width))
-            hit = (
-                bool(vad)
-                and doa is not None
-                and any(_angle_diff(float(doa), center) <= width
-                        for center, width in sectors)
-            )
+            if not self._doa_gate:
+                # 방향 관문 해제 — 어느 방향의 발화든 대답으로 본다.
+                hit = bool(vad)
+            else:
+                sectors = []
+                if (self._locked_doa is not None
+                        and now - self._locked_doa_at <= USER_DOA_LOCK_TTL_SEC):
+                    sectors.append((self._locked_doa, USER_DOA_LOCK_WIDTH))
+                if self._user_doa_center is not None:
+                    sectors.append((self._user_doa_center, self._user_doa_width))
+                hit = (
+                    bool(vad)
+                    and doa is not None
+                    and any(_angle_diff(float(doa), center) <= width
+                            for center, width in sectors)
+                )
             self._vad_window.append(hit)
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
             if (
