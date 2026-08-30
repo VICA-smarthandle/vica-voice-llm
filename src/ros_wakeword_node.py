@@ -50,6 +50,9 @@ class WakewordNode(Node):
         self._pub_emergency = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._pub_text = self.create_publisher(String, "/vica/user_text", 10)
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
+        # 청취 상태 (open/speech/closed/empty) — 미션이 무응답 시계를 귀가
+        # 바쁜 동안 멈추는 데 쓴다 (2026-08-30).
+        self._pub_listen_state = self.create_publisher(String, "/vica/listen_state", 10)
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         self._stop_pub = self.create_publisher(Empty, "/vica/tts_stop", 10)
         self._tts_speaking = False
@@ -108,6 +111,7 @@ class WakewordNode(Node):
             on_barge_in=self._on_barge_in,
             on_reject=self._on_reject,
             on_listen_empty=self._on_listen_empty,
+            on_listen_state=lambda st: self._pub_listen_state.publish(String(data=st)),
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,

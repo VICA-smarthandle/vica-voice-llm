@@ -128,6 +128,7 @@ class WakewordMonitor:
         on_barge_in: Optional[Callable[[], None]] = None,
         on_reject: Optional[Callable[[str], None]] = None,
         on_listen_empty: Optional[Callable[[], None]] = None,
+        on_listen_state: Optional[Callable[[str], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -152,6 +153,10 @@ class WakewordMonitor:
         # 사용자는 로봇이 죽었는지 못 들었는지 알 수 없다(2026-08-28 실측).
         # followup(질문 답변) 창의 무응답은 Mission 몫이라 알리지 않는다.
         self._on_listen_empty = on_listen_empty or (lambda: None)
+        # 청취 상태 중계 (open/speech/closed/empty). 미션이 무응답 시계를
+        # "귀가 바쁜 동안" 멈추는 데 쓴다 (2026-08-30 — 답이 STT·LLM 을
+        # 통과하는 동안 8초 시계가 먼저 울려 홈으로 떠나던 결함).
+        self._on_listen_state = on_listen_state or (lambda s: None)
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -400,6 +405,7 @@ class WakewordMonitor:
         self._state = "listen"
         self._collect = []
         self._listen_started_speech = False
+        self._on_listen_state("open")
         self._listen_silence = 0.0
         self._listen_is_followup = followup
         self._listen_opened_at = now
@@ -428,10 +434,15 @@ class WakewordMonitor:
             text = text.strip()
             if from_listen and text and not is_hallucination(text):
                 self.last_listen_stats = capture_stats(audio)
+                self._on_listen_state("closed")
                 self._on_user_text(text)
                 return "user_text"
+            if from_listen:
+                self._on_listen_state("empty")
             self._on_reject(text)
             return "reject"
+        if from_listen:
+            self._on_listen_state("empty")   # 청취는 긴급에 선점돼 폐기됐다
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
         self._on_emergency(event)
         return "emergency"
@@ -449,6 +460,7 @@ class WakewordMonitor:
         if vad:
             if not self._listen_started_speech:
                 self._listen_speech_started_at = now
+                self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
         elif self._listen_started_speech:
@@ -474,6 +486,7 @@ class WakewordMonitor:
         if not self._listen_started_speech:
             if not self._listen_is_followup:
                 self._on_listen_empty()
+            self._on_listen_state("empty")
             return "wake_silent"
         # 무음 문턱: 스친 잡음·거의 무음은 STT 로 보내지 않는다 — whisper 는
         # 무음에서 아무 말이나 지어내고, 귀띔은 그 환각을 진짜 장소 이름으로
@@ -484,6 +497,7 @@ class WakewordMonitor:
                 or self.last_listen_stats["rms"] < LISTEN_MIN_RMS):
             if not self._listen_is_followup:
                 self._on_listen_empty()
+            self._on_listen_state("empty")
             return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
@@ -502,7 +516,9 @@ class WakewordMonitor:
         if not text or is_hallucination(text):
             if not self._listen_is_followup:
                 self._on_listen_empty()
+            self._on_listen_state("empty")
             return "wake_silent"
+        self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
         self._on_user_text(text)
         return "user_text"
 

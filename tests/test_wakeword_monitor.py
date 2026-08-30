@@ -352,3 +352,32 @@ def test_confirm_hint_covers_arrival_dialog_vocab():
         assert word in CONFIRM_HINT, f"귀띔에 '{word}' 누락"
     # 너무 길면 딴말이 후보로 둔갑 — 상한을 둔다 (whisper 프롬프트 예산)
     assert len(CONFIRM_HINT) < 200
+
+
+def test_listen_state_relay():
+    """청취 상태 중계(2026-08-30): open → speech → closed(전사 성공).
+    미션이 이걸로 무응답 시계를 귀가 바쁜 동안 멈춘다."""
+    states = []
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="십 분만 기다려")
+    events, texts, wakes = [], [], []
+    m = WakewordMonitor(
+        on_emergency=events.append, on_user_text=texts.append,
+        on_wake=lambda: wakes.append(1), predict=fake.predict,
+        transcribe=fake.transcribe, on_listen_state=states.append)
+    run_frames(m, 2, LOUD)                      # wake → open
+    run_frames(m, 5, LOUD, t0=1.0, vad=True)    # 발화 → speech
+    run_frames(m, 12, QUIET, t0=2.0)            # 말끝 → 전사 → closed
+    assert states == ["open", "speech", "closed"]
+
+
+def test_listen_state_empty_on_silence():
+    states = []
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 200, text="")
+    events, texts, wakes = [], [], []
+    m = WakewordMonitor(
+        on_emergency=events.append, on_user_text=texts.append,
+        on_wake=lambda: wakes.append(1), predict=fake.predict,
+        transcribe=fake.transcribe, on_listen_state=states.append)
+    run_frames(m, 2, LOUD)
+    run_frames(m, 80, QUIET, t0=1.0)            # 6.4초 침묵 — 창 만료
+    assert states == ["open", "empty"]
