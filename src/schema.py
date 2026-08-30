@@ -53,6 +53,9 @@ VicaIntentType = Literal[
     # 어느 질문의 답인지는 담지 않는다 — Mission 이 상태로 판정한다.
     # 계약 정본: vica_ros2_ws vica_interfaces/msg/VicaIntent.msg 의 affirm/deny 절.
     "affirm", "deny",
+    # 목적지 도착 후 대화 (2026-08-30, arrival-dialog-flow). wait 는 시간을
+    # wait_minutes 에 담고, finish 는 홈 복귀 신호다. 둘 다 reply="".
+    "wait", "finish",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
@@ -73,6 +76,8 @@ class VicaIntent(BaseModel):
     need_confirm: bool = True
     reply: str = ""
     safety_flag: SafetyFlag = "normal"
+    # wait 의 요청 시간(분). 없거나 무관하면 -1. 상한 강제는 Mission 몫.
+    wait_minutes: int = -1
 
 
 class EmergencyEvent(BaseModel):

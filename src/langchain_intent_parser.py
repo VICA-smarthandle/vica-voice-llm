@@ -120,14 +120,17 @@ def _build_system_prompt(
 - affirm / deny: 로봇이 직전에 던진 안내 제안 질문("안내가 필요하신가요?" 등)에
   대한 수락/거절 ("어… 부탁드려요"->affirm, "괜찮아요, 됐어요"->deny).
   목적지 확인 질문의 답이 아니라, 안내 자체를 받겠냐는 제안에 대한 답일 때만.
+- wait: 목적지 도착 후 여기서 기다려 달라는 요청 ("좀 있다 올게", "잠깐 여기 있어").
+- finish: 오늘 안내를 다 끝내려 함 ("이제 됐어 고마워", "그만 갈게"). 도착 후
+  전체 종료다. cancel(주행 중간에 이 목적지만 그만)과 구분하라.
 
 [목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
-- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny 로 분류하면
-  reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
+- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish 로
+  분류하면 reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
 - 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
@@ -182,6 +185,52 @@ _PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
 # "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
 # 오전사 단골('피카야' 실측 2026-08-28)도 함께 받는다.
 _WAKE_WORDS = {"비카야", "피카야", "비까야"}
+# 도착 후 대기·종료 (2026-08-30). finish 는 "오늘 안내 끝" — 도착 후 전용.
+# _normalize_short_reply 는 공백·문장부호를 지우므로 목록도 그 꼴로 둔다.
+_FINISH_WORDS = {"이제됐어", "이제됐어요", "그만할래", "그만할래요", "그만",
+                 "안내끝", "안내끝났어", "다됐어", "다됐어요", "됐어요",
+                 "이제그만", "여기까지"}
+_WAIT_HINTS = ("기다려", "기다릴", "대기", "있다 올", "있다올", "잠깐 있",
+               "여기 있어", "여기 계")
+
+# 한국어 수 -> 값. 시간 표현 파싱용 (5분, 이십 분, 반시간, 한 시간).
+_KO_NUM = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7,
+           "여덟": 8, "아홉": 9, "열": 10, "스무": 20,
+           "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7,
+           "팔": 8, "구": 9, "십": 10, "이십": 20, "삼십": 30, "사십": 40,
+           "오십": 50, "육십": 60}
+
+
+def parse_wait_minutes(text: str):
+    """한국어 시간 표현에서 분(minute)을 뽑는다. 없으면 None.
+
+    상한(30분)은 여기서 걸지 않는다 — 판정 권한은 Mission 에 있다. "반시간"·
+    "한 시간" 같은 표현과 아라비아·한글 숫자를 함께 받는다. 애매하면 None 을
+    돌려 후속 질문("몇 분쯤?")으로 넘긴다.
+    """
+    import re
+    t = (text or "").replace(" ", "")
+    if not t:
+        return None
+    if "반시간" in t:
+        return 30
+    # 아라비아 숫자 우선 (분 > 시간 순으로 본다)
+    m = re.search(r"(\d+)\s*분", t)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)\s*시간", t)
+    if m:
+        return int(m.group(1)) * 60
+    # 한글 숫자 + 단위
+    for unit, mult in (("분", 1), ("시간", 60)):
+        idx = t.find(unit)
+        if idx <= 0:
+            continue
+        head = t[:idx]
+        for token in sorted(_KO_NUM, key=len, reverse=True):
+            if head.endswith(token):
+                return _KO_NUM[token] * mult
+    return None
 
 
 def is_instant_utterance(user_text: str) -> bool:
@@ -310,6 +359,16 @@ def parse_intent(
     if word in _PAUSE_WORDS:
         return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
 
+    # 도착 후 대화 (2026-08-30). finish 는 "오늘 안내 끝", wait 는 "기다려".
+    # 도착 후 상태에서만 Mission 이 소비한다 — 아무 때나 보내도 안전(무시됨).
+    # reply="" : 발화는 상태를 아는 Mission 몫. '취소'는 위에서 이미 잡혔다.
+    if word in _FINISH_WORDS:
+        return VicaIntent(intent="finish", confidence=1.0, reply="", need_confirm=False)
+    if any(h in user_text for h in _WAIT_HINTS):
+        minutes = parse_wait_minutes(user_text)
+        return VicaIntent(intent="wait", confidence=1.0, reply="",
+                          need_confirm=False, wait_minutes=minutes if minutes else -1)
+
     # 확인 대기가 없는 짧은 긍/부정은 affirm/deny 로 발행한다 (0초, LLM 없이).
     # 어느 질문의 답인지는 판정하지 않는다 — 상태를 가진 Mission 이 소비하거나
     # 무시한다 (계약: VicaIntent.msg affirm/deny 절, "아무 때나 보내도 안전").
@@ -364,11 +423,20 @@ def _finalize(
         safety_flag="normal",
     )
 
-    if draft.intent in ("affirm", "deny"):
-        # LLM 이 reply 를 채워도 비운다 — 수락/거절 발화는 Mission 몫 (계약).
+    if draft.intent in ("affirm", "deny", "finish"):
+        # LLM 이 reply 를 채워도 비운다 — 응답 발화는 Mission 몫 (계약).
         result.reply = ""
         result.matched_destination_id = ""
         result.need_confirm = False
+        return result
+
+    if draft.intent == "wait":
+        # LLM 경로는 애매한 대기 표현("좀 있다가")을 받는다 — 시간이 분명하면
+        # 지름길이 이미 잡았다. 여기서 못 뽑으면 -1 로 두고 Mission 이
+        # 후속 질문("몇 분쯤?")으로 넘긴다. reply 는 Mission 몫.
+        result.reply = ""
+        result.need_confirm = False
+        result.wait_minutes = -1
         return result
 
     if draft.intent == "navigate":

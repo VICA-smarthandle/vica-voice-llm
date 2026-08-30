@@ -33,6 +33,7 @@ def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
     msg.need_confirm = intent.need_confirm
     msg.reply = intent.reply
     msg.safety_flag = intent.safety_flag
+    msg.wait_minutes = int(intent.wait_minutes)
     return msg
 
 
@@ -46,6 +47,7 @@ def msg_to_intent(msg: VicaIntentMsg) -> VicaIntent:
         need_confirm=msg.need_confirm,
         reply=msg.reply,
         safety_flag=msg.safety_flag,
+        wait_minutes=msg.wait_minutes,
     )
 
 
