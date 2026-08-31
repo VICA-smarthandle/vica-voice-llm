@@ -8,11 +8,13 @@
         대기 중 비긴급 발화 폐기. 웨이크워드 노드가 재생 중 호출·긴급·질문
         답변을 감지했을 때 보낸다. 긴급 발화는 큐에 남는다.
 발행: /vica/tts_state   (std_msgs/Bool) - 재생 중 여부
-      /vica/tts_done    (std_msgs/String) - 한 발화를 끊기지 않고 끝까지
-        재생했을 때 그 문장을 그대로 발행한다. Mission 이 접근 질문의 응답
-        대기(8초)를 "재생 종료 시점"부터 세는 근거다(on_approach_question_spoken).
-        barge-in·선점으로 끊긴 발화는 발행하지 않는다 — 질문이 끝까지
-        전달되지 않았는데 시계가 도는 것을 막는다.
+      /vica/tts_done    (std_msgs/String) - 한 발화가 **끝난 시점**(완주든
+        중단이든)에 그 문장을 발행한다. Mission 이 질문의 응답 대기(8초)를
+        "발화 종료 시점"부터 세는 근거다. 예전엔 완주만 알렸는데, 그러면
+        barge-in·긴급 선점으로 끊긴 질문은 시계가 영영 시작되지 않아
+        ASKING 상태에 영구 정지했다(2026-08-31 근본 수리). 끊김 = 사용자가
+        끼어들었거나(답하는 중 — 귀 홀드가 시계를 잡아줌) 긴급 선점(상태가
+        어차피 떠남)이라, 종료를 알리는 것이 항상 옳다.
 
 /vica/tts_state 를 두는 이유:
     긴급어 상시 감시(ros_emergency_node)는 마이크를 계속 열어 두므로 스피커로 나간
@@ -154,10 +156,12 @@ class TtsNode(Node):
             self._preempt.clear()
             self.get_logger().info(f"재생[{item.priority}]: {item.text}")
             completed = self._speak(item.text)
-            if completed:
-                done = String()
-                done.data = item.text
-                self._done_pub.publish(done)
+            # 완주·중단 불문 종료를 알린다 — 응답 시계의 기점 (docstring).
+            done = String()
+            done.data = item.text
+            self._done_pub.publish(done)
+            if not completed:
+                self.get_logger().info("발화 중단 — 종료 신호는 발행 (시계 기점)")
 
     def _speak(self, text: str) -> bool:
         """재생하고, 끊기지 않고 끝까지 갔으면 True 를 돌려준다.
