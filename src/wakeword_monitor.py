@@ -443,7 +443,20 @@ class WakewordMonitor:
                 self._saved_listen = None
                 self._state = "listen"
                 return "listen_resumed"
-            self._on_reject(text.strip())
+            text = text.strip()
+            # 창 밖 오발동이라도 질문의 답을 기다리는 중(followup 예약)이면
+            # 그 전사는 십중팔구 답이다 — 버리면 "정확히 알아듣고도 기각"이
+            # 된다("필요없다구" 실측 2026-08-31). 예약이 없을 때(행인 대화
+            # 등)는 전처럼 기각 — 웨이크워드 규약은 유지된다.
+            if (self._followup_armed and text and not is_hallucination(text)
+                    and now - self._followup_armed_at
+                    <= FOLLOWUP_ARM_TIMEOUT_SEC):
+                self._followup_armed = False
+                self.last_listen_stats = capture_stats(audio)
+                self._on_listen_state("closed")
+                self._on_user_text(text)
+                return "user_text"
+            self._on_reject(text)
             return "reject"
         if from_listen:
             self._saved_listen = None

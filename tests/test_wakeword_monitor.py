@@ -386,3 +386,26 @@ def test_listen_state_empty_on_silence():
     run_frames(m, 2, LOUD)
     run_frames(m, 80, QUIET, t0=1.0)            # 6.4초 침묵 — 창 만료
     assert states == ["open", "empty"]
+
+
+def test_out_of_window_answer_rescued_when_followup_armed():
+    """질문 답 대기 중(followup 예약)의 창 밖 발화는 답으로 채택한다
+    (2026-08-31: "필요없다구"를 정확히 전사하고도 창 밖이라 기각했다)."""
+    fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="필요없다구")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    m.arm_followup(now=0.0)                     # 질문이 나감 — 답 대기
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    assert "user_text" in results
+    assert texts == ["필요없다구"]
+    assert events == []
+
+
+def test_out_of_window_speech_still_rejected_without_followup():
+    """예약이 없으면(행인 대화 등) 창 밖 발화는 전처럼 기각 — 규약 유지."""
+    fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="필요없다구")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    assert "reject" in results
+    assert texts == []
