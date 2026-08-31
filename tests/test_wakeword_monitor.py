@@ -202,6 +202,9 @@ def test_emergency_false_fire_in_listen_keeps_utterance():
     run_frames(m, 2, LOUD)                            # wake → listen
     run_frames(m, 5, LOUD, t0=1.0, vad=True)          # 발화 수집
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.5, vad=True)
+    assert "listen_resumed" in results                # 오발동 → 청취 복원
+    # 복원된 청취가 말끝(침묵 0.8초)까지 정상 진행돼 전체 발화를 전사한다
+    results = run_frames(m, 14, QUIET, t0=3.0)
     assert "user_text" in results
     assert texts == ["화장실로 가줘"]
     assert events == []                                # 긴급 이벤트는 없다
@@ -219,9 +222,11 @@ def test_emergency_false_fire_in_listen_still_blocks_hallucination():
     run_frames(m, 2, LOUD)
     run_frames(m, 5, LOUD, t0=1.0, vad=True)
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.5, vad=True)
-    assert "reject" in results
+    assert "listen_resumed" in results                # 복원은 되지만
+    results = run_frames(m, 14, QUIET, t0=3.0)        # 말끝 → 전사 → 환각 기각
+    assert "wake_silent" in results
     assert texts == []
-
+    assert events == []
 
 def test_wake_window_timeout_fires_listen_empty():
     """'비카야' 창이 빈손으로 닫히면 on_listen_empty 로 알린다.

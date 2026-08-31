@@ -50,7 +50,8 @@ CONFIRM_HINT = (
     "네. 그래. 응. 좋아요. 아니요. 아니. 싫어요. 취소. "
     "기다려. 기다려줘. 여기서 기다려. 대기. "
     "오 분. 십 분. 십오 분. 이십 분. 삼십 분. 반시간. 한 시간. "
-    "이제 됐어. 그만할래. 안내 끝. 다 됐어. 고마워."
+    "이제 됐어. 그만할래. 안내 끝. 다 됐어. 고마워. "
+    "대기해. 필요 없어요."
 )
 
 # 무음 문턱 — 이보다 짧거나 작은 수음은 STT 로 보내지 않는다. 귀띔이 무음
@@ -414,6 +415,11 @@ class WakewordMonitor:
 
     def _enter_postroll(self, from_listen: bool = False) -> None:
         self._state = "postroll"
+        # 청취를 가로챈 경우 수집분을 보존한다 — 오발동으로 판명되면 청취를
+        # 그대로 복원해 이어 듣는다 (2026-08-31 근본 수리: 이전엔 여기서
+        # 수집분을 파괴해, 검증 조각 전사가 빈손이면 발화가 통째로 죽었다.
+        # "필요없다구" 기각 실측).
+        self._saved_listen = self._collect if from_listen else None
         self._collect = []
         self.gate_a.reset()
         self._postroll_from_listen = from_listen
@@ -427,21 +433,20 @@ class WakewordMonitor:
         self._collect = []
         keyword = match_emergency_transcript(text)
         if keyword is None:
-            # 청취 창을 가로챈 오발동이면 발화를 버리지 않는다 — "화장실로
-            # 가줘"의 '가줘' 울림이 긴급 모델을 깨워 진짜 명령이 통째로
-            # 기각되던 결함(2026-08-28 실측). 창 밖(대기·TTS 중) 오발동은
-            # 전처럼 기각한다 — 그쪽 관문이 유령을 막는다.
-            text = text.strip()
-            if from_listen and text and not is_hallucination(text):
-                self.last_listen_stats = capture_stats(audio)
-                self._on_listen_state("closed")
-                self._on_user_text(text)
-                return "user_text"
             if from_listen:
-                self._on_listen_state("empty")
-            self._on_reject(text)
+                # 청취를 가로챈 오발동 — 청취를 그대로 복원해 이어 듣는다.
+                # 조각(링 2.5초)만 건지던 옛 방식은 조각 전사가 빈손이면
+                # 발화 전체를 잃었다(2026-08-31). 복원하면 발화가 자연스러운
+                # 말끝까지 수집돼 정상 STT(귀띔 포함)를 탄다. 검증 중 흘러간
+                # postroll 프레임도 발화의 일부이므로 이어 붙인다.
+                self._collect = (self._saved_listen or []) + self._collect
+                self._saved_listen = None
+                self._state = "listen"
+                return "listen_resumed"
+            self._on_reject(text.strip())
             return "reject"
         if from_listen:
+            self._saved_listen = None
             self._on_listen_state("empty")   # 청취는 긴급에 선점돼 폐기됐다
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
         self._on_emergency(event)
@@ -497,7 +502,9 @@ class WakewordMonitor:
                 or self.last_listen_stats["rms"] < LISTEN_MIN_RMS):
             if not self._listen_is_followup:
                 self._on_listen_empty()
-            self._on_listen_state("empty")
+            self._on_listen_state(
+                f"empty:ghost speech={speech_sec:.2f}s "
+                f"rms={self.last_listen_stats['rms']:.4f}")
             return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
@@ -516,7 +523,7 @@ class WakewordMonitor:
         if not text or is_hallucination(text):
             if not self._listen_is_followup:
                 self._on_listen_empty()
-            self._on_listen_state("empty")
+            self._on_listen_state(f"empty:reject {text[:30]!r}")
             return "wake_silent"
         self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
         self._on_user_text(text)

@@ -108,7 +108,7 @@ class WakewordNode(Node):
             on_barge_in=self._on_barge_in,
             on_reject=self._on_reject,
             on_listen_empty=self._on_listen_empty,
-            on_listen_state=lambda st: self._pub_listen_state.publish(String(data=st)),
+            on_listen_state=self._on_listen_state,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
@@ -165,6 +165,13 @@ class WakewordNode(Node):
         # 사용자가 뺐다(2026-08-28 "쓸데없이 멘트 늘어나는 게 제일 싫다").
         # 로그는 남긴다: 이 흔적이 없어서 "감지가 안 되는" 조사가 어려웠다.
         self.get_logger().info("청취 창 빈손 종료 (발화 없음/빈 전사)")
+
+    def _on_listen_state(self, state: str) -> None:
+        self._pub_listen_state.publish(String(data=state))
+        if ":" in state:
+            # 기각 사유(유령 문턱·환각·빈 전사) — 이전엔 followup 기각이
+            # 무로그라 "대기해가 왜 죽었나"를 사후 진단할 수 없었다(2026-08-31).
+            self.get_logger().warn(f"청취 기각: {state}")
 
     def _on_wake(self) -> None:
         # 로봇이 말하는 중에 부른 것이면 하던 말을 끊는다 (barge-in).
