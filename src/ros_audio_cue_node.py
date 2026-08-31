@@ -80,11 +80,12 @@ class AudioCueNode(Node):
         text = self._announcer.poll(time.time())
         if text is None:
             return
-        # 음이 먼저 — 말이 시작되기 전에 귀를 연다.
+        # 효과음만 낸다 — "좌회전 할게요" 멘트는 방송하지 않는다 (2026-08-31
+        # 사용자 결정: 회전 안내는 효과음 + 스마트핸들 서보·LED 로 충분하고,
+        # 잦은 회전마다 말이 나오면 소음이다). 멘트 복원은 git 이력 참고.
         audio_cue.play(
             audio_cue.turn_left() if text == TURN_LEFT else audio_cue.turn_right()
         )
-        self._tts_pub.publish(String(data=build_request(RESPONSE, text)))
         self.get_logger().info(f"🔀 회전 안내: {text}")
 
     def _on_goal_event(self, msg: String) -> None:
