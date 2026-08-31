@@ -81,5 +81,8 @@ def play(wave: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bool:
 
         audio_out.play(wave, sample_rate)
         return True
-    except Exception:
+    except Exception as exc:
+        # 침묵 실패는 "로봇이 대답 안 함"으로 보인다 — 원인은 남긴다.
+        import sys
+        print(f"[audio_cue] 재생 실패: {exc}", file=sys.stderr)
         return False

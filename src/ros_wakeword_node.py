@@ -197,8 +197,11 @@ class WakewordNode(Node):
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
         if self._greeting_wav is not None:
-            audio_cue.play(*self._greeting_wav)
-            return
+            if audio_cue.play(*self._greeting_wav):
+                return
+            # 직접 재생 실패(장치 바쁨/부재) — 조용히 사라지면 "비카야에
+            # 대답 안 함"이 된다(2026-08-31 실기). 로그 남기고 큐로 폴백.
+            self.get_logger().warn("호출 응답 직접 재생 실패 — TTS 큐로 폴백")
         # 폴백: 큐를 거치므로 조금 늦다. 파일을 만들어 두면 즉시 난다.
         self._tts_pub.publish(String(data=build_request(RESPONSE, WAKE_GREETING)))
 
