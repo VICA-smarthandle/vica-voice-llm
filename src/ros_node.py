@@ -33,7 +33,7 @@ from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
 from .destination_loader import load_destinations
-from .emergency_filter import EMERGENCY_REPLY, detect_emergency
+from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import is_instant_utterance, parse_intent
 from .replies import ACK_LISTENING_POOL, expects_answer
@@ -109,9 +109,12 @@ class LlmIntentNode(Node):
         # 1) 긴급어는 LLM 이전에 처리한다 (안전 경로).
         keyword = detect_emergency(text)
         if keyword:
+            # reply 는 비운다 — 걸림 멘트("안전을 위해 멈추겠습니다. 관리자를
+            # 호출했습니다")는 래치를 아는 미션이 말한다. 여기서도 말하면
+            # "멈춰" 한 번에 비슷한 말 2연발이었다 (2026-08-31 감량).
             intent = VicaIntent(
                 intent="unknown",
-                reply=EMERGENCY_REPLY,
+                reply="",
                 need_confirm=False,
                 safety_flag="emergency",
             )
