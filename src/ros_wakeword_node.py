@@ -29,7 +29,6 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
-from . import audio_cue
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import agc_desired_from_env, apply_agc_desired_level
 from .replies import WAKE_GREETING
@@ -41,7 +40,6 @@ from .wakeword_monitor import WakewordMonitor
 # 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
 # 만드는 법: scripts/make_cue_wavs.py (TTS 가 있는 기기에서 한 번 실행)
-GREETING_WAV = Path(__file__).resolve().parent.parent / "assets" / "wake_greeting.wav"
 
 
 class WakewordNode(Node):
@@ -65,7 +63,6 @@ class WakewordNode(Node):
         # 호출에는 항상 "네?"로 답한다. 짧은 신호음만으로는 언제 말해야
         # 하는지 알 수 없다는 로봇팀 실사용 피드백(2026-08-20)으로, 첫 호출만
         # 인사하던 GreetingState 를 없앴다. 효과음은 참고용일 뿐이다.
-        self._greeting_wav = self._load_greeting_wav()
 
         # TTS 재생 중 마이크 처리. 기본은 감시 유지(AEC) — 로봇의 표준 배선이
         # "reSpeaker USB 연결 + 스피커는 reSpeaker 출력에 물림"으로 확정되어
@@ -196,30 +193,15 @@ class WakewordNode(Node):
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
-        if self._greeting_wav is not None:
-            if audio_cue.play(*self._greeting_wav):
-                return
-            # 직접 재생 실패(장치 바쁨/부재) — 조용히 사라지면 "비카야에
-            # 대답 안 함"이 된다(2026-08-31 실기). 로그 남기고 큐로 폴백.
-            self.get_logger().warn("호출 응답 직접 재생 실패 — TTS 큐로 폴백")
-        # 폴백: 큐를 거치므로 조금 늦다. 파일을 만들어 두면 즉시 난다.
+        # "네?"는 무조건 TTS 큐로 보낸다 (2026-08-31 실기 — 직접 재생은
+        # 구조적으로 불가였다: TTS 노드가 reSpeaker 출력을 상시 점유
+        # (persistent stream, barge-in 끊기용)해서 다른 프로세스의 직접
+        # 재생은 항상 busy 로 죽고, 그 실패가 삼켜져 "비카야에 대답 안 함"
+        # 이 됐다. 장치 주인은 하나(단일 출구) — "네?"는 캐시 녹음이라
+        # 큐에 닿는 즉시 0초 재생된다. 로봇이 말하는 중이면 위에서 이미
+        # stop 을 보냈으므로(호출 barge-in) 곧바로 이어 나온다.
         self._tts_pub.publish(String(data=build_request(RESPONSE, WAKE_GREETING)))
 
-    def _load_greeting_wav(self):
-        """인사 음성 파일을 읽어 둔다. 없으면 None (TTS 폴백)."""
-        if not GREETING_WAV.exists():
-            self.get_logger().warn(
-                f"인사 음성이 없어 TTS 로 대체한다 (조금 늦다): {GREETING_WAV}\n"
-                "  만들기: .venv/bin/python scripts/make_cue_wavs.py")
-            return None
-        try:
-            import soundfile as sf
-
-            data, rate = sf.read(str(GREETING_WAV), dtype="float32")
-            return data, rate
-        except Exception as exc:
-            self.get_logger().warn(f"인사 음성을 읽지 못해 TTS 로 대체한다: {exc}")
-            return None
 
     def _on_listen_request(self, msg: Bool) -> None:
         if msg.data:
