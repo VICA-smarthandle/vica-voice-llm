@@ -78,6 +78,12 @@ CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
 # whisper 에 통째로 가는 것을 막는다.
 PREROLL_FRAMES = 6
 SPEECH_RMS = 0.01               # barge-in 의 "소리는 나야 한다" 건전성 바닥
+# 말머리 소급의 되돌아보기 상한 (0.64초). 링버퍼(2.5초) 안에서만 줍는다.
+HEAD_PRE_ROLL_FRAMES = 8
+
+
+def _frame_rms(frame) -> float:
+    return float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
 # 재청취(arm_followup) 예약의 유효 시간. 질문 TTS 가 유실돼 mute 해제가 안 오면
 # 예약이 남아, 한참 뒤 무관한 안내가 끝난 순간 마이크가 열리는 오동작을 막는다.
 FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
@@ -414,12 +420,30 @@ class WakewordMonitor:
         self._state = "listen"
         self._collect = []
         self._listen_started_speech = False
-        self._on_listen_state("open")
         self._listen_silence = 0.0
         self._listen_is_followup = followup
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
         self.last_listen_timing = None
+        # 말머리 소급 (2026-09-01, 블랙박스 방식): 창이 열리기 직전에 이미
+        # 말이 시작됐다면 링버퍼에서 그 머리를 줍는다 — "정확한 타이밍에
+        # 말하지 않아도" 들리게. 단, 되돌아본 구간이 전부 시끄러우면 줍지
+        # 않는다: 그건 방금 끝난 "비카야"·로봇 목소리가 이어지는 소리다
+        # (경계의 조용한 프레임 = 새 발화의 시작이라는 증거).
+        lookback = list(self._ring)[-HEAD_PRE_ROLL_FRAMES:]
+        tail: list = []
+        for f in reversed(lookback):
+            if _frame_rms(f) < SPEECH_RMS:
+                break
+            tail.append(f)
+        if tail and len(tail) < len(lookback):
+            tail.reverse()
+            self._collect = list(tail)
+            self._listen_started_speech = True
+            self._listen_speech_started_at = now - len(tail) * (FRAME / SAMPLE_RATE)
+        self._on_listen_state("open")
+        if self._listen_started_speech:
+            self._on_listen_state("speech")   # 귀 홀드가 볼 발화 표시
 
     def _enter_postroll(self, from_listen: bool = False) -> None:
         self._state = "postroll"
@@ -483,12 +507,30 @@ class WakewordMonitor:
         증거 없음 (장치가 없으면 애초에 기동이 실패한다 — 폴백 없음).
         """
         self._collect.append(frame)
+        loud = _frame_rms(frame) >= SPEECH_RMS
         if vad:
             if not self._listen_started_speech:
                 self._listen_speech_started_at = now
                 self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
+        elif vad is None and loud:
+            # 칩 판정 부재 (2026-09-01): 제어 읽기가 죽으면 vad 가 None 으로
+            # 오는데, 예전엔 그 동안의 진짜 말이 트림으로 통째 증발하거나
+            # 침묵으로 세져 조기 마감됐다 — 실기 유령 "소리 큼 + 발화
+            # 0.00초"의 정체. 판정이 없을 때만 소리 크기로 대체한다.
+            if not self._listen_started_speech:
+                self._listen_speech_started_at = now
+                self._on_listen_state("speech")
+            self._listen_started_speech = True
+            self._listen_silence = 0.0
+        elif not self._listen_started_speech and loud:
+            # 칩은 살아 있는데(False) 시작을 놓친 경우 — 시작만 소리로
+            # 보강한다. 말끝은 기존대로 칩 기준: RMS 말끝은 약한 어미를
+            # 자르고 배경 소음에 안 닫히던 전력으로 폐기됐다.
+            self._listen_speech_started_at = now
+            self._listen_started_speech = True
+            self._on_listen_state("speech")
         elif self._listen_started_speech:
             self._listen_silence += FRAME / SAMPLE_RATE
         else:

@@ -230,3 +230,68 @@ class TestShortAnswerRescue:
         run_frames(m, 12, QUIET, t0=0.3 + 0.08)
         assert texts == []
         assert any(s.startswith("empty:ghost") for s in states)
+
+
+class TestHeadRescue:
+    """말했는데 빈 창 — 두 구제 (2026-09-01).
+
+    ① 시작 판정 보강: 칩 VAD 가 놓쳐도(None) 소리 크기로 발화 시작 인정.
+    ② 말머리 소급: 창이 열리기 직전에 시작된 말의 머리를 링버퍼에서 줍는다.
+       단 되돌아본 구간이 전부 시끄러우면(직전 로봇·비카야 소리) 줍지 않는다.
+    """
+
+    def _open_followup(self, fake, texts, states, t0=10.0):
+        m = make(fake, [], texts, [])
+        m._on_listen_state = states.append if states is not None else (lambda s: None)
+        # 주의: make 가 만든 콜백을 덮으므로 states 는 이 시점 이후만 기록
+        m.arm_followup(now=t0)
+        m.set_muted(False, now=t0)
+        return m
+
+    def test_vad_missing_speech_is_rescued_by_rms(self):
+        """칩 VAD 전멸(None)이어도 큰 소리 발화가 전사까지 간다 — 예전엔
+        수집 트림으로 통째 증발했다(실기 유령 '소리 큼·발화 0초'의 정체)."""
+        texts, states = [], []
+        fake = Fake(text="화장실로 가자")
+        m = make(fake, [], texts, [])
+        m.arm_followup(now=10.0)
+        m.set_muted(False, now=10.0)
+        run_frames(m, 6, LOUD, t0=10.1, vad=None)
+        run_frames(m, 12, QUIET, t0=10.1 + 6 * 0.08, vad=None)
+        assert texts == ["화장실로 가자"]
+
+    def test_head_before_window_is_backfilled(self):
+        """창 직전에 시작한 말: 머리 3프레임 소급 + 본문 1프레임이면
+        유령 문턱(0.16초)을 넘어 전사된다."""
+        texts = []
+        captured = {}
+
+        class F(Fake):
+            def transcribe(self, audio):
+                captured["n"] = len(audio)
+                return "네."
+
+        fake = F(text="네.")
+        m = make(fake, [], texts, [])
+        run_frames(m, 12, QUIET, t0=5.0)              # 링 채움 (조용)
+        run_frames(m, 3, LOUD, t0=5.0 + 12 * 0.08)    # 창 직전, 말 시작
+        t_open = 5.0 + 15 * 0.08
+        m.arm_followup(now=t_open)
+        m.set_muted(False, now=t_open)                # 창 열림 — 소급 발동
+        run_frames(m, 1, LOUD, t0=t_open + 0.01, vad=True)
+        run_frames(m, 12, QUIET, t0=t_open + 0.09)
+        assert texts == ["네."]
+        assert captured["n"] >= 4 * 1280              # 소급 3 + 본문 1 이상
+
+    def test_no_backfill_when_lookback_is_all_loud(self):
+        """직전이 전부 시끄러우면(로봇·비카야 소리 연속) 소급하지 않는다 —
+        이후 침묵이면 발화 없음으로 조용히 닫힌다."""
+        texts = []
+        fake = Fake(text="유령이면안됨")
+        m = make(fake, [], texts, [])
+        run_frames(m, 10, LOUD, t0=5.0)               # 링이 통째로 시끄러움
+        t_open = 5.0 + 10 * 0.08
+        m.arm_followup(now=t_open)
+        m.set_muted(False, now=t_open)
+        run_frames(m, 12, QUIET, t0=t_open + 0.01, vad=None)
+        assert texts == []                            # 전사 없음
