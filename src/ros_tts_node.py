@@ -112,6 +112,13 @@ class TtsNode(Node):
     # -- 입력 ----------------------------------------------------------------
 
     def _on_request(self, msg: String) -> None:
+        if msg.data == "control:stop":
+            # 같은 토픽의 청소 명령 (2026-09-01): 청소와 뒤이어 시킬 새 발화
+            # ("네?"·"안내를 시작합니다")의 처리 순서를 보장한다 — 별도
+            # 토픽(tts_stop)으로 보내면 도착 순서가 이따금 뒤집혀 청소가
+            # 자기가 시킨 말을 지웠다 (실기: "비카야" 후 "네?" 증발 3회).
+            self._do_stop()
+            return
         priority, text = parse_request(msg.data)
         self._enqueue(priority, text)
 
@@ -160,7 +167,10 @@ class TtsNode(Node):
         self._tts.play_audio(chunk, audio_cue.SAMPLE_RATE)
 
     def _on_stop(self, _msg: Empty) -> None:
-        """barge-in — 사용자가 말을 시작했으니 하던 말을 즉시 끊는다.
+        self._do_stop()
+
+    def _do_stop(self) -> None:
+        """barge-in·청소 — 하던 말을 즉시 끊고 대기 발화를 버린다.
 
         일반 대기 발화도 함께 버린다: 대화가 시작된 뒤에 옛 안내가 이어지면
         사용자가 현재 상태를 오해한다 (큐의 신선도 원칙과 동일). 긴급은 남긴다.

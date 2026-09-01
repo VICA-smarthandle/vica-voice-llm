@@ -217,8 +217,10 @@ class WakewordNode(Node):
         # 호출 = 새 대화 (2026-09-01 사용자 결정). 하던 말을 끊고(barge-in)
         # 큐에 밀린 비긴급 발화도 함께 비운다 — 예전엔 "말하는 중일 때만"
         # 이라 문장 사이 침묵에 부르면 "네?" 뒤로 낡은 말이 이어졌다.
-        # 큐가 비어 있으면 무해한 공회전이고, 긴급 발화는 남는다.
-        self._stop_pub.publish(Empty())
+        # 청소는 tts_request 의 제어 메시지로 보낸다: 별도 토픽(tts_stop)은
+        # 뒤이은 "네?"와 도착 순서가 뒤집혀 청소가 "네?"를 지웠다(실기
+        # 3회 + 재현 1회). 같은 발신자·같은 토픽은 순서가 보장된다.
+        self._tts_pub.publish(String(data="control:stop"))
         self._greet()
         msg = String()
         msg.data = "wake"
