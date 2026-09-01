@@ -342,7 +342,15 @@ def parse_intent(
     pending = _pending_confirm_destination(history, destinations)
     if pending is not None:
         word = _normalize_short_reply(user_text)
-        if word in _AFFIRMATIVES:
+        # 첫 단어 기준 판정 (2026-09-01): "응 화장실로 가자"처럼 긍정어 뒤에
+        # 말이 붙으면 전체 정규화("응화장실로가자")로는 지름길에 안 걸려
+        # LLM 으로 갔고, LLM 이 재제안(need_confirm=True)으로 되돌려 같은
+        # 확인 질문이 반복됐다(8/31 야간 실기 — 3수째에야 출발). 첫 단어가
+        # 긍정/부정이면 그 자리에서 결정한다. 첫 단어 전체 일치라 "어디로
+        # 가?"("어" 접두)류 오폭은 없다.
+        tokens = user_text.split()
+        first = _normalize_short_reply(tokens[0]) if tokens else ""
+        if word in _AFFIRMATIVES or first in _AFFIRMATIVES:
             return VicaIntent(
                 intent="navigate",
                 destination_candidate=pending.name,
@@ -354,7 +362,7 @@ def parse_intent(
                 need_confirm=False,
                 safety_flag="normal",
             )
-        if word in _NEGATIVES:
+        if word in _NEGATIVES or first in _NEGATIVES:
             return VicaIntent(
                 intent="clarify",
                 confidence=1.0,

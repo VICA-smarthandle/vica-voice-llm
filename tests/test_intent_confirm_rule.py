@@ -100,3 +100,25 @@ class TestFinalizeConfirmationGate:
         result = _finalize(self._draft(), [DEST], pending=DEST)
         assert result.need_confirm is False
         assert "안내를 시작" in result.reply
+
+
+class TestFirstWordShortcut:
+    """첫 단어 판정(2026-09-01) — "응 화장실로 가자"가 LLM 없이 확정된다."""
+
+    def test_affirm_prefix_with_tail_confirms(self):
+        result = parse_intent("응 윤지영 교수님 사무실로 가자", [DEST], history=HISTORY)
+        assert result.intent == "navigate"
+        assert result.matched_destination_id == DEST.id
+        assert result.need_confirm is False
+
+    def test_negative_prefix_with_tail_declines(self):
+        result = parse_intent("아니 거기 말고 다른 데", [DEST], history=HISTORY)
+        assert result.intent == "clarify"
+
+    def test_word_starting_with_affirm_char_is_not_tripped(self):
+        """"어디로 가?"는 "어" 접두라도 지름길에 안 걸려야 한다 (첫 단어
+        전체 일치). LLM 없는 시험 환경에서는 LLM 경로가 안전 폴백(unknown)
+        으로 떨어지므로, 확정 navigate 가 아니면 지름길 미발동이다."""
+        result = parse_intent("어디로 가야 하지?", [DEST], history=HISTORY,
+                              model="__no_llm__")
+        assert result.intent != "navigate"
