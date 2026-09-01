@@ -204,11 +204,11 @@ class WakewordNode(Node):
             self.get_logger().warn(f"청취 기각: {state}")
 
     def _on_wake(self) -> None:
-        # 로봇이 말하는 중에 부른 것이면 하던 말을 끊는다 (barge-in).
-        # 뮤트 모드에서는 재생 중 호출이 애초에 들리지 않으므로 영향 없다.
-        if self._tts_speaking:
-            self._stop_pub.publish(Empty())
-            self.get_logger().info("호출 barge-in — 재생 중단 요청")
+        # 호출 = 새 대화 (2026-09-01 사용자 결정). 하던 말을 끊고(barge-in)
+        # 큐에 밀린 비긴급 발화도 함께 비운다 — 예전엔 "말하는 중일 때만"
+        # 이라 문장 사이 침묵에 부르면 "네?" 뒤로 낡은 말이 이어졌다.
+        # 큐가 비어 있으면 무해한 공회전이고, 긴급 발화는 남는다.
+        self._stop_pub.publish(Empty())
         self._greet()
         msg = String()
         msg.data = "wake"
