@@ -43,7 +43,7 @@
  "mission_msg_estopped.wav": "안전을 위해 멈추겠습니다. 관리자를 호출했습니다.",
  "mission_msg_estop_comm.wav": "연결 문제로 잠시 섰습니다. 곧 자동으로 복구됩니다.",
  "mission_msg_estop_reject.wav": "지금은 비상 멈춤 상태입니다. 해제 후 다시 말씀해 주세요.",
- "mission_msg_estop_released.wav": "비상 멈춤이 해제되었습니다. 새로운 목적지를 말씀해 주세요.",
+ "mission_msg_estop_released.wav": "비상멈춤이 해제되었습니다.",
  "mission_msg_estop_wait_admin.wav": "안전 확인이 필요해서 관리자를 기다리고 있습니다. 잠시만 기다려 주세요.",
  "mission_msg_nav_failed.wav": "죄송합니다. 이동에 실패했습니다. 다시 시도해 주세요.",
  "mission_msg_nav_not_ready.wav": "아직 준비 중입니다. 잠시 후 다시 말씀해 주세요.",
