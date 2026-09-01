@@ -321,7 +321,7 @@ def test_near_silence_never_reaches_stt():
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                        # wake → listen
     run_frames(m, 1, TINY, t0=1.0, vad=True)      # 잡음이 VAD 를 한 번 스침
-    results = run_frames(m, 22, TINY, t0=1.1)  # 최소 개방 2.5초(9/1) 경과
+    results = run_frames(m, 70, TINY, t0=1.1)  # 6초 상한(반짝 무효화 9/1) 경과
     assert "wake_silent" in results
     assert texts == []
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다

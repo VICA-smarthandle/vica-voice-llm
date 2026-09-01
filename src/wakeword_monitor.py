@@ -77,6 +77,11 @@ LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
 # 안에는 침묵-마감을 무시한다. 산정: 관측된 정상 대기 최대 1.94초 + 여유
 # 0.5초. 질문(재청취) 창은 30초짜리라 적용하지 않는다.
 LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
+# 반짝 무효화 문턱 [실측 2026-09-01]: 에코 반짝의 VAD 연속 구간은 전부
+# ≤0.14초(mic_probe, 로봇 단독 발화 조건), 진짜 발화의 최단은 0.48초
+# (실기 계측 15표본). 그 한가운데 — 이보다 짧은 "발화"는 자유 창에서
+# 없던 일로 되돌리고 6초 상한까지 계속 기다린다.
+LISTEN_BLIP_VOID_SEC = float(os.environ.get("VICA_LISTEN_BLIP_VOID_SEC", "0.32"))
 # 질문(재청취) 창은 시나리오 6.4의 확인 대기 30초와 일치시킨다 — 미션이
 # 30초를 기다린다고 약속하는데 귀가 6초만 열려 있으면 안 된다.
 CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
@@ -218,6 +223,7 @@ class WakewordMonitor:
         self._collect: list[np.ndarray] = []   # postroll·listen 수집분
         self._listen_started_speech = False
         self._listen_silence = 0.0
+        self._listen_voiced_sec = 0.0
         self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
         self._listen_opened_at = 0.0
         self._muted_until = 0.0
@@ -427,6 +433,7 @@ class WakewordMonitor:
         self._collect = []
         self._listen_started_speech = False
         self._listen_silence = 0.0
+        self._listen_voiced_sec = 0.0
         self._listen_is_followup = followup
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
@@ -450,6 +457,7 @@ class WakewordMonitor:
                 tail.reverse()
                 self._collect = list(tail)
                 self._listen_started_speech = True
+                self._listen_voiced_sec = len(tail) * (FRAME / SAMPLE_RATE)
                 self._listen_speech_started_at = (
                     now - len(tail) * (FRAME / SAMPLE_RATE))
         self._on_listen_state("open")
@@ -525,6 +533,7 @@ class WakewordMonitor:
                 self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
+            self._listen_voiced_sec += FRAME / SAMPLE_RATE
         elif vad is None and loud:
             # 칩 판정 부재 (2026-09-01): 제어 읽기가 죽으면 vad 가 None 으로
             # 오는데, 예전엔 그 동안의 진짜 말이 트림으로 통째 증발하거나
@@ -535,6 +544,7 @@ class WakewordMonitor:
                 self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
+            self._listen_voiced_sec += FRAME / SAMPLE_RATE
         elif not self._listen_started_speech and loud:
             # 칩은 살아 있는데(False) 시작을 놓친 경우 — 시작만 소리로
             # 보강한다. 말끝은 기존대로 칩 기준: RMS 말끝은 약한 어미를
@@ -553,11 +563,21 @@ class WakewordMonitor:
         # 자유 창은 최소 개방 시간 전에는 침묵으로 닫지 않는다 — 반짝 VAD
         # (에코·호출 꼬리)가 말끝 시계를 조기 가동시키는 것을 무력화한다.
         min_open = 0.0 if self._listen_is_followup else LISTEN_MIN_OPEN_SEC
+        silence_done = (self._listen_started_speech
+                        and self._listen_silence >= LISTEN_SILENCE_END_SEC)
+        if (silence_done and not self._listen_is_followup
+                and self._listen_voiced_sec < LISTEN_BLIP_VOID_SEC):
+            # 반짝 무효화 (실측 근거는 상수 주석): 쌓인 말이 반짝 수준이면
+            # 발화 도장을 취소하고 창을 계속 연다 — 원래 시나리오(6초
+            # 대기)의 복원. 질문 창은 초단 답("네")이 합법이라 제외.
+            self._listen_started_speech = False
+            self._listen_silence = 0.0
+            self._listen_voiced_sec = 0.0
+            self._listen_speech_started_at = 0.0
+            silence_done = False
         done = (
             now - self._listen_opened_at >= max_sec
-            or (self._listen_started_speech
-                and self._listen_silence >= LISTEN_SILENCE_END_SEC
-                and now - self._listen_opened_at >= min_open)
+            or (silence_done and now - self._listen_opened_at >= min_open)
         )
         if not done:
             return None
