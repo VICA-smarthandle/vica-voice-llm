@@ -169,3 +169,12 @@ class TestStripRobotEcho:
     def test_no_recent_robot_speech_passes(self):
         from src.stt_guard import strip_robot_echo
         assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."
+
+
+def test_gomawo_alone_is_hallucination_but_mixed_survives():
+    """"고마워" 단독은 유령(2026-09-01 실기 — 말한 적 없는데 반복 등장),
+    진짜 내용이 섞인 발화는 살아야 한다."""
+    from src.stt_guard import is_hallucination
+    assert is_hallucination("고마워.") is True
+    assert is_hallucination("고마워") is True
+    assert is_hallucination("고마워. 대기해.") is False
