@@ -295,3 +295,21 @@ class TestHeadRescue:
         m.set_muted(False, now=t_open)
         run_frames(m, 12, QUIET, t0=t_open + 0.01, vad=None)
         assert texts == []                            # 전사 없음
+
+
+class TestFreeWindowNoBackfill:
+    def test_wake_tail_does_not_close_free_window_early(self):
+        """자유 창은 소급 금지(9/1 실기 — '비카야' 꼬리가 말 시작으로 잡혀
+        1.4초 만에 창이 닫히고 뒤이은 명령이 통째로 무시됐다). 호출 꼬리가
+        링에 남아 있어도 창은 침묵을 기다리고, 늦게 온 말을 받아야 한다."""
+        texts = []
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 60,
+                    text="안내소로 가자")
+        m = make(fake, [], texts, [])
+        run_frames(m, 2, LOUD, t0=5.0)                 # "비카야" (꼬리 = 시끄러움)
+        # 사용자가 "네?"를 기다리며 1.6초 침묵 — 예전엔 여기서 창이 닫혔다
+        run_frames(m, 20, QUIET, t0=5.16, vad=None)
+        # 그 뒤에야 명령 — 반드시 접수돼야 한다
+        run_frames(m, 5, LOUD, t0=5.16 + 20 * 0.08, vad=True)
+        run_frames(m, 12, QUIET, t0=5.16 + 25 * 0.08)
+        assert texts == ["안내소로 가자"]

@@ -427,20 +427,25 @@ class WakewordMonitor:
         self.last_listen_timing = None
         # 말머리 소급 (2026-09-01, 블랙박스 방식): 창이 열리기 직전에 이미
         # 말이 시작됐다면 링버퍼에서 그 머리를 줍는다 — "정확한 타이밍에
-        # 말하지 않아도" 들리게. 단, 되돌아본 구간이 전부 시끄러우면 줍지
-        # 않는다: 그건 방금 끝난 "비카야"·로봇 목소리가 이어지는 소리다
-        # (경계의 조용한 프레임 = 새 발화의 시작이라는 증거).
-        lookback = list(self._ring)[-HEAD_PRE_ROLL_FRAMES:]
-        tail: list = []
-        for f in reversed(lookback):
-            if _frame_rms(f) < SPEECH_RMS:
-                break
-            tail.append(f)
-        if tail and len(tail) < len(lookback):
-            tail.reverse()
-            self._collect = list(tail)
-            self._listen_started_speech = True
-            self._listen_speech_started_at = now - len(tail) * (FRAME / SAMPLE_RATE)
+        # 말하지 않아도" 들리게. **질문(재청취) 창에만** 적용한다: 자유
+        # 창(비카야 직후) 직전의 소리는 정의상 사용자의 "비카야" 자신이라,
+        # 소급하면 그 꼬리가 "말 시작"이 되어 사용자가 "네?"를 기다리는
+        # 침묵에 창이 1.4초 만에 닫혔다(실기 2회 — '안내소로 가줘' 통째
+        # 무시). 되돌아본 구간이 전부 시끄러우면(로봇 목소리 연속) 역시
+        # 줍지 않는다 — 경계의 조용한 프레임이 새 발화의 증거다.
+        if followup:
+            lookback = list(self._ring)[-HEAD_PRE_ROLL_FRAMES:]
+            tail: list = []
+            for f in reversed(lookback):
+                if _frame_rms(f) < SPEECH_RMS:
+                    break
+                tail.append(f)
+            if tail and len(tail) < len(lookback):
+                tail.reverse()
+                self._collect = list(tail)
+                self._listen_started_speech = True
+                self._listen_speech_started_at = (
+                    now - len(tail) * (FRAME / SAMPLE_RATE))
         self._on_listen_state("open")
         if self._listen_started_speech:
             self._on_listen_state("speech")   # 귀 홀드가 볼 발화 표시
