@@ -24,6 +24,14 @@ import threading
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# .env 를 다른 어떤 모듈보다 먼저 로드한다 (2026-09-01). 예전엔 stt.py 의
+# load_dotenv 에 기대고 있었는데, 그 모듈은 첫 인식 때에야 임포트돼서
+# 기동 초반에 읽는 설정(AGC 목표·DOA 관문·청취 창 시간)이 전부 .env 를
+# 못 보고 기본값으로 돌았다 — "0.007 로 내렸는데 로그는 0.01" 의 정체.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -144,9 +152,11 @@ class WakewordNode(Node):
         self._thread.start()
         mode = "뮤트" if self._mute_during_tts else "감시 유지(AEC)"
         barge = "켜짐" if self._voice_barge_in else "꺼짐"
+        gate = (f"켜짐 center={self._user_doa_center}±{self._user_doa_width}"
+                if self._doa_gate else "꺼짐")
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
-            f"TTS 중 {mode} | 음성 barge-in {barge})")
+            f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
         # 긴급이 확정되면 로봇부터 입을 다문다 — 정지 안내(긴급 발화)는
