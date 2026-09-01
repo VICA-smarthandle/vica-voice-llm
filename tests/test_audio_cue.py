@@ -56,3 +56,17 @@ def test_play_is_safe_without_audio_device():
     """소리가 안 나는 것이 파이프라인을 멈출 이유는 되지 않는다."""
     assert audio_cue.play(np.zeros(0, dtype=np.float32)) is False
     assert audio_cue.play(None) is False
+
+
+def test_thinking_loop_is_a_quiet_seamless_cycle():
+    """"생각 중" 운율(2026-09-01): 말 대신 배경으로 반복되는 한 바퀴.
+
+    조건 셋 — ① 말보다 조용해야 하고(음량 상한) ② 끝이 무음이라 반복
+    이음새에 딱 소리가 없어야 하며 ③ 반복해 깔 만한 길이(1초 이상)여야 한다.
+    """
+    wave = audio_cue.thinking_loop()
+    assert wave.dtype == np.float32
+    assert len(wave) >= audio_cue.SAMPLE_RATE  # ③
+    assert np.abs(wave).max() <= audio_cue.THINKING_VOLUME + 1e-6  # ①
+    tail = wave[-int(0.05 * audio_cue.SAMPLE_RATE):]
+    assert np.abs(tail).max() == 0.0  # ②

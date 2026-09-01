@@ -43,9 +43,9 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, String
 
+from . import audio_cue
 from .destination_loader import load_destinations
 from .ment_cache import MentCache
-from .replies import ACK_LISTENING_POOL
 from .synth_cache import SynthCache
 from .tts import VicaTTS
 from .tts_queue import TtsQueue, parse_request
@@ -57,6 +57,14 @@ TAIL_SEC = 0.4
 
 # 큐가 비었을 때 재생 스레드가 쉬는 간격.
 IDLE_POLL_SEC = 0.05
+
+# "생각 중" 배경 운율 (2026-09-01 — "확인할게요" 발화 대체). 정지 신호를
+# 놓쳐도 영원히 돌지 않게 시한을 두고, 짧은 조각으로 잘라 재생해 응답
+# 발화가 오면 한 조각(0.2초) 안에 자리를 내준다. 스피커는 이 노드의
+# persistent stream 단일 출구라 루프도 반드시 여기서 튼다 — 다른 노드가
+# 틀면 응답 발화가 장치를 기다리게 된다.
+THINKING_MAX_SEC = 20.0
+THINKING_SLICE_SEC = 0.2
 
 
 class TtsNode(Node):
@@ -86,6 +94,13 @@ class TtsNode(Node):
 
         self.create_subscription(String, "/vica/tts_request", self._on_request, 10)
         self.create_subscription(Empty, "/vica/tts_stop", self._on_stop, 10)
+        # "생각 중" 운율 스위치 — LLM 노드가 해석 시작/끝에 켜고 끈다.
+        # 재생 중에도 tts_state 는 켜지 않는다(효과음과 같은 원칙 — 낮은
+        # 음량의 순음이라 긴급 감시를 쉬게 할 이유가 없다).
+        self._thinking_until = 0.0
+        self._thinking_pos = 0
+        self._thinking_wave = audio_cue.thinking_loop()
+        self.create_subscription(Bool, "/vica/thinking", self._on_thinking, 10)
 
         self._worker = threading.Thread(target=self._playback_loop, daemon=True)
         self._worker.start()
@@ -122,6 +137,28 @@ class TtsNode(Node):
         else:
             self.get_logger().info(f"발화 대기[{priority}]: {text}")
 
+    def _on_thinking(self, msg: Bool) -> None:
+        if msg.data:
+            self._thinking_pos = 0
+            self._thinking_until = time.time() + THINKING_MAX_SEC
+        else:
+            # 끄기만 한다 — stop() 은 부르지 않는다. 응답 발화가 이미
+            # 시작됐을 수 있고, 그걸 끊으면 안 된다. 루프는 다음 조각
+            # 경계(0.2초)에서 스스로 멈춘다.
+            self._thinking_until = 0.0
+
+    def _play_thinking_slice(self) -> None:
+        """운율 한 조각(0.2초)을 재생한다. 조각 사이마다 큐를 다시 본다."""
+        wave = self._thinking_wave
+        n = int(THINKING_SLICE_SEC * audio_cue.SAMPLE_RATE)
+        i = self._thinking_pos
+        chunk = wave[i:i + n]
+        if len(chunk) < n:
+            import numpy as np
+            chunk = np.concatenate([chunk, wave[:n - len(chunk)]])
+        self._thinking_pos = (i + n) % len(wave)
+        self._tts.play_audio(chunk, audio_cue.SAMPLE_RATE)
+
     def _on_stop(self, _msg: Empty) -> None:
         """barge-in — 사용자가 말을 시작했으니 하던 말을 즉시 끊는다.
 
@@ -149,7 +186,10 @@ class TtsNode(Node):
                 # 낡아서 버린 말도 반드시 남긴다 — 조용히 사라지면 추적 불가.
                 self.get_logger().info(f"발화 만료 폐기: {stale}")
             if item is None:
-                time.sleep(IDLE_POLL_SEC)
+                if time.time() < self._thinking_until:
+                    self._play_thinking_slice()
+                else:
+                    time.sleep(IDLE_POLL_SEC)
                 continue
 
             # 이전 선점 신호는 여기서 소비한다 — 새 발화까지 끊기면 안 된다.
@@ -205,7 +245,8 @@ class TtsNode(Node):
         확인 질문은 목적지별 고정 문장인데 매번 합성해 첫 응답이 늦었다
         (2026-08-28 실측 0.9초대). 실패해도 재생 경로가 그때그때 합성한다.
         """
-        phrases: list[str] = list(ACK_LISTENING_POOL)
+        # 접수 신호("확인할게요" 풀)는 2026-09-01 배경 운율로 대체돼 뺐다.
+        phrases: list[str] = []
         try:
             # 로봇 지도의 목적지 파일 — wakeword 노드의 장소 귀띔과 같은 경로
             yaml_path = os.environ.get(

@@ -19,7 +19,6 @@ navigate 확정 요청의 결과는 Mission Manager 만 알 수 있으므로 그
 """
 from __future__ import annotations
 
-import random
 import threading
 import time
 from pathlib import Path
@@ -36,10 +35,10 @@ from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import is_instant_utterance, parse_intent
-from .replies import ACK_LISTENING_POOL, expects_answer
+from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
-from .tts_queue import RESPONSE, build_request, request_for_intent
+from .tts_queue import request_for_intent
 
 
 class LlmIntentNode(Node):
@@ -71,6 +70,9 @@ class LlmIntentNode(Node):
         # 끝나는 순간 재청취 창을 열어, 사용자가 "비카야" 재호출 없이 "응"으로
         # 답할 수 있게 한다.
         self._listen_pub = self.create_publisher(Bool, "/vica/listen_request", 10)
+        # LLM 해석 중 "생각 중" 배경 운율 스위치 — TTS 노드가 반복 재생한다
+        # (2026-09-01 사용자 결정: "확인할게요" 말 대신 운율 루프).
+        self._thinking_pub = self.create_publisher(Bool, "/vica/thinking", 10)
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
 
@@ -121,22 +123,26 @@ class LlmIntentNode(Node):
             self.get_logger().warn(f"[긴급] '{keyword}' 감지 -> safety_flag=emergency")
         else:
             # 1-1) LLM 응답까지는 수 초가 걸린다. 그동안 침묵하면 눈으로 확인할 수
-            #      없는 사용자는 로봇이 들었는지 알 수 없다. 먼저 짧게 답한다.
-            #      단, 지름길 즉답("그래" 등)은 진짜 답이 바로 뒤따르므로 생략
-            #      (2026-08-28 사용자 결정 — 멘트 최소주의).
-            if not is_instant_utterance(text):
-                self._tts_pub.publish(
-                    String(data=build_request(
-                        RESPONSE, random.choice(ACK_LISTENING_POOL)))
-                )
+            #      없는 사용자는 로봇이 들었는지 알 수 없다. "확인할게요" 같은
+            #      말 대신 배경 운율을 응답이 나올 때까지 반복한다
+            #      (2026-09-01 사용자 결정 — 말은 잡담 유입마다 나가 너무 잦았다).
+            #      지름길 즉답("그래" 등)은 진짜 답이 0초에 뒤따르므로 생략.
+            thinking = not is_instant_utterance(text)
+            if thinking:
+                self._thinking_pub.publish(Bool(data=True))
 
             # 2) 일반 발화는 LLM intent 파서로 해석한다 (대화 히스토리 포함 = 멀티턴).
-            intent = parse_intent(
-                text,
-                self._destinations,
-                history=self._history.messages,
-                robot_state=self._robot_state,
-            )
+            try:
+                intent = parse_intent(
+                    text,
+                    self._destinations,
+                    history=self._history.messages,
+                    robot_state=self._robot_state,
+                )
+            finally:
+                # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
+                if thinking:
+                    self._thinking_pub.publish(Bool(data=False))
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.

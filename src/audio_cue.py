@@ -53,6 +53,25 @@ def sequence(freqs_hz, duration_sec: float, volume: float = DEFAULT_VOLUME) -> n
     return np.concatenate(parts)
 
 
+# "생각 중" 배경 운율 (2026-09-01 사용자 결정 — "확인할게요" 말 대체).
+# LLM 응답을 만드는 수 초 동안 이 한 바퀴(~2.1초)를 반복 재생한다. 말보다
+# 조용한 부드러운 아르페지오 — 배경으로 깔려 "듣고 생각 중"을 알린다.
+# 끝이 무음(gap)이라 반복 이음새에 딱 소리가 없다.
+THINKING_NOTES_HZ = (523.25, 659.25, 783.99, 659.25)   # C5 E5 G5 E5
+THINKING_NOTE_SEC = 0.42
+THINKING_GAP_SEC = 0.10
+THINKING_VOLUME = 0.16
+
+
+def thinking_loop() -> np.ndarray:
+    parts: list[np.ndarray] = []
+    gap = np.zeros(int(THINKING_GAP_SEC * SAMPLE_RATE), dtype=np.float32)
+    for f in THINKING_NOTES_HZ:
+        parts.append(tone(f, THINKING_NOTE_SEC, THINKING_VOLUME))
+        parts.append(gap)
+    return np.concatenate(parts)
+
+
 def wake_ack() -> np.ndarray:
     return tone(WAKE_ACK_HZ, WAKE_SEC)
 
