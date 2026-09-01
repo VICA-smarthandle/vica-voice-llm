@@ -26,11 +26,18 @@ PROMPT_TEXT = "별빛관 1층 화장실로 안내해드릴까요?"
 def main() -> None:
     name, text = sys.argv[1], sys.argv[2]
 
-    # ① 프롬프트 참조 음성 — supertonic F2 로 즉석 생성 (정본 목소리)
-    from src.tts import VicaTTS
-    ref_wav, ref_rate = VicaTTS(voice="F2").synthesize(PROMPT_TEXT)
+    # ① 프롬프트 참조 음성 — supertonic F2 로 즉석 생성 (정본 목소리).
+    # supertonic 은 프로젝트 .venv 에, CosyVoice 는 ~/venvs/cosyvoice 에
+    # 있어 한 인터프리터에 둘 다 없다 — F2 단계는 .venv 하위 프로세스로 돈다.
     ref_path = "/tmp/bake_one_ref_f2.wav"
-    sf.write(ref_path, ref_wav, ref_rate, subtype="PCM_16")
+    import subprocess
+    subprocess.run(
+        [str(ROOT / ".venv" / "bin" / "python"), "-c",
+         "import soundfile as sf\n"
+         "from src.tts import VicaTTS\n"
+         f"w, r = VicaTTS(voice='F2').synthesize({PROMPT_TEXT!r})\n"
+         f"sf.write({ref_path!r}, w, r, subtype='PCM_16')\n"],
+        cwd=ROOT, check=True)
 
     # ② CosyVoice3 로 클로닝 합성 (레시피: endofprompt + text_frontend=False)
     import torch
