@@ -32,6 +32,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
 from .wakeword_gate import FrameGate, match_emergency_transcript
@@ -59,6 +60,13 @@ CONFIRM_HINT = (
 # 발화 0.00초)이 근거. 진짜 조용한 답("응" rms 0.0185·0.24초)은 통과한다.
 LISTEN_MIN_SPEECH_SEC = 0.16    # 발화 최소 길이 (2프레임)
 LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
+# 짧은 답 구제 (2026-09-01, 질문 창 한정): "네" 한 글자는 0.16초 문턱 아래로
+# 잘리기도 한다(8/31 야간 실측 — 0.08초·rms 0.0289 가 기각됨). 질문(재청취)
+# 창에서는 짧아도 또렷하면(rms 이상) STT 재판을 받되, 통과는 정답 어휘
+# (긍/부정)로만 제한해 유령 전사의 부활을 막는다. 자유 창(호출 직후)은
+# 목적지 같은 긴 말을 기다리는 자리라 기존 문턱 그대로다 (사용자 결정).
+SHORT_ANSWER_MIN_RMS = 0.02
+_SHORT_ANSWER_WORDS = AFFIRMATIVES | NEGATIVES
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
@@ -511,13 +519,18 @@ class WakewordMonitor:
         # 만들어 유령 주행 명령이 된다 ('방2' 실측 2026-08-28).
         speech_end = now - self._listen_silence
         speech_sec = speech_end - self._listen_speech_started_at
-        if (speech_sec < LISTEN_MIN_SPEECH_SEC
-                or self.last_listen_stats["rms"] < LISTEN_MIN_RMS):
+        rms = self.last_listen_stats["rms"]
+        short = speech_sec < LISTEN_MIN_SPEECH_SEC
+        # 질문 창의 짧고 또렷한 소리는 버리지 않고 STT 재판을 받는다 —
+        # 단 통과는 정답 어휘로만 (아래 short_rescue 판정).
+        short_rescue = (short and self._listen_is_followup
+                        and rms >= SHORT_ANSWER_MIN_RMS)
+        if rms < LISTEN_MIN_RMS or (short and not short_rescue):
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(
                 f"empty:ghost speech={speech_sec:.2f}s "
-                f"rms={self.last_listen_stats['rms']:.4f}")
+                f"rms={rms:.4f}")
             return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
@@ -537,6 +550,11 @@ class WakewordMonitor:
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(f"empty:reject {text[:30]!r}")
+            return "wake_silent"
+        if short_rescue and normalize_short_reply(text) not in _SHORT_ANSWER_WORDS:
+            # 구제 재판의 판정 제한: 짧은 소리의 전사가 정답 어휘가 아니면
+            # 유령으로 본다 — 잡음 딸깍이 '방2' 같은 장소로 둔갑하는 것 방지.
+            self._on_listen_state(f"empty:short-reject {text[:30]!r}")
             return "wake_silent"
         self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
         self._on_user_text(text)

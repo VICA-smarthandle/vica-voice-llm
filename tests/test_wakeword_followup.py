@@ -167,3 +167,66 @@ def test_silent_followup_returns_quietly():
     assert "wake_silent" in results      # 확인 창 상한(30초)에서 닫혔다
     assert "user_text" not in results
     assert texts == []
+
+
+class TestShortAnswerRescue:
+    """짧은 답 구제 (2026-09-01, 질문 창 한정) — "네" 0.08초가 살아난다."""
+
+    LOUD1 = np.full(1280, 3000, dtype=np.int16)     # 1프레임 = 0.08초 발화
+    MID = np.full(1280, 1500, dtype=np.int16)       # 또렷 문턱(0.02) 미달
+
+    def _followup(self, fake, texts, states):
+        m = WakewordMonitor(
+            on_emergency=lambda e: None,
+            on_user_text=texts.append,
+            on_wake=lambda: None,
+            on_listen_state=states.append,
+            predict=fake.predict,
+            transcribe=fake.transcribe,
+        )
+        m.arm_followup(now=0.0)
+        m.set_muted(False, now=0.0)      # 질문 TTS 종료 → 재청취 창
+        return m
+
+    def _short_burst(self, m, frame):
+        run_frames(m, 1, frame, t0=0.1, vad=True)          # 0.08초 발화
+        return run_frames(m, 12, QUIET, t0=0.1 + 0.08)     # 말끝 → 창 닫힘
+
+    def test_short_loud_yes_survives(self):
+        texts, states = [], []
+        m = self._followup(Fake(text="네."), texts, states)
+        self._short_burst(m, self.LOUD1)
+        assert texts == ["네."]
+
+    def test_short_loud_nonanswer_is_rejected(self):
+        """전사가 정답 어휘가 아니면 유령 — '방2' 둔갑 방지."""
+        texts, states = [], []
+        m = self._followup(Fake(text="방2"), texts, states)
+        self._short_burst(m, self.LOUD1)
+        assert texts == []
+        assert any(s.startswith("empty:short-reject") for s in states)
+
+    def test_short_but_faint_stays_ghost(self):
+        texts, states = [], []
+        m = self._followup(Fake(text="네."), texts, states)
+        self._short_burst(m, self.MID)
+        assert texts == []
+        assert any(s.startswith("empty:ghost") for s in states)
+
+    def test_free_window_short_burst_stays_ghost(self):
+        """자유 창(호출 직후)은 구제 없음 — 기존 문턱 그대로 (사용자 결정)."""
+        texts, states = [], []
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 30, text="네.")
+        m = WakewordMonitor(
+            on_emergency=lambda e: None,
+            on_user_text=texts.append,
+            on_wake=lambda: None,
+            on_listen_state=states.append,
+            predict=fake.predict,
+            transcribe=fake.transcribe,
+        )
+        run_frames(m, 2, LOUD)                              # "비카야" → 창 열림
+        run_frames(m, 1, self.LOUD1, t0=0.3, vad=True)      # 0.08초 발화
+        run_frames(m, 12, QUIET, t0=0.3 + 0.08)
+        assert texts == []
+        assert any(s.startswith("empty:ghost") for s in states)
