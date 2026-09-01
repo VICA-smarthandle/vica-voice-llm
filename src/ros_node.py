@@ -41,6 +41,11 @@ from .schema import should_forward_intent, RobotState, VicaIntent
 from .tts_queue import request_for_intent
 
 
+# 재청취 창 문맥으로 보는 시간. 질문 발화(수 초) + 청취 창 + 답 처리까지
+# 덮는 넉넉한 값이다. "비카야" 직접 호출이 오면 즉시 해제된다.
+FOLLOWUP_CONTEXT_SEC = 40.0
+
+
 class LlmIntentNode(Node):
     def __init__(self) -> None:
         super().__init__("vica_llm_intent_node")
@@ -75,6 +80,13 @@ class LlmIntentNode(Node):
         self._thinking_pub = self.create_publisher(Bool, "/vica/thinking", 10)
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
+        # 재청취 창 문맥 추적 (2026-09-01): 질문 뒤 자동으로 열린 창에서 온
+        # 무의미 발화(unknown·clarify)는 침묵으로 버린다 — 잡담·오전사에
+        # 일일이 대꾸하면 그 대답이 또 창을 열어 온갖 문장이 연쇄로 나온다
+        # (2026-08-31 야간 실기). "비카야" 직접 호출은 대답할 자격을 되살린다.
+        self._followup_until = 0.0
+        self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
+        self.create_subscription(String, "/vica/wake", self._on_wake_signal, 10)
 
         self.get_logger().info(
             "VICA LLM intent node 시작 (구독: /vica/user_text, /vica/robot_state | 발행: /vica/intent)"
@@ -91,6 +103,16 @@ class LlmIntentNode(Node):
                 f"LLM 워밍업 완료 ({time.monotonic() - started:.1f}초)")
         except Exception as exc:
             self.get_logger().warning(f"LLM 워밍업 실패(무시 가능): {exc}")
+
+    def _on_listen_request(self, msg: Bool) -> None:
+        # 이 노드 자신이 낸 요청도 같은 토픽으로 돌아온다 — 효과는 같다.
+        if msg.data:
+            self._followup_until = time.time() + FOLLOWUP_CONTEXT_SEC
+        else:
+            self._followup_until = 0.0
+
+    def _on_wake_signal(self, _msg: String) -> None:
+        self._followup_until = 0.0
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """로봇 상태 메시지를 받아 최신값으로 보관한다."""
@@ -143,6 +165,18 @@ class LlmIntentNode(Node):
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
                 if thinking:
                     self._thinking_pub.publish(Bool(data=False))
+
+        # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
+        #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
+        #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
+        #      특히 중요하다 — 잡담이 기록에 쌓이면 다음 "그래"가 엉뚱한
+        #      목적지로 붙는다 (2026-08-31 야간).
+        if (time.time() < self._followup_until
+                and intent.intent in ("unknown", "clarify")
+                and not intent.need_confirm):
+            self.get_logger().info(
+                f"재청취 기각(무의미): '{text}' intent={intent.intent}")
+            return
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.

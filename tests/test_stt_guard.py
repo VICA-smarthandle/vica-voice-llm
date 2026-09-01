@@ -126,3 +126,46 @@ def test_capture_stats_numbers():
     normal = np.full(100, 3000, dtype=np.int16)
     s = capture_stats(normal)
     assert 0.05 < s["rms"] < 0.15 and s["clip_ratio"] == 0.0
+
+
+class TestStripRobotEcho:
+    """에코 방어(2026-09-01) — 야간 실기의 실제 전사 4건이 기준이다."""
+
+    ROBOT = [
+        "화장실로 안내해 드릴까요?",
+        "잘 듣지 못했습니다. 다시 말씀해 주세요.",
+        "무슨 뜻인지 잘 모르겠어요.",
+        "네?",   # 짧은 발화는 대조에서 빠져야 한다
+    ]
+
+    def test_full_echo_is_dropped(self):
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("무슨 뜻인지 잘 모르겠어요.", self.ROBOT) == ""
+
+    def test_partial_transcript_of_robot_ment_is_dropped(self):
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("다시 말씀해주세요.", self.ROBOT) == ""
+
+    def test_answer_after_echo_survives(self):
+        from src.stt_guard import strip_robot_echo
+        out = strip_robot_echo("화장실로 안내해 드릴까요? 어.", self.ROBOT)
+        assert "어" in out and "안내해" not in out
+
+    def test_glued_answer_survives_without_punctuation(self):
+        from src.stt_guard import strip_robot_echo
+        out = strip_robot_echo("화장실로 안내해 드릴까요 어", self.ROBOT)
+        assert out == "어"
+
+    def test_short_affirmation_is_never_treated_as_echo(self):
+        """로봇이 방금 "네?" 라고 했어도 사용자의 "네."는 살아야 한다."""
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("네.", self.ROBOT) == "네."
+        assert strip_robot_echo("어.", self.ROBOT) == "어."
+
+    def test_normal_utterance_passes_unchanged(self):
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("화장실 가고 싶어.", self.ROBOT) == "화장실 가고 싶어."
+
+    def test_no_recent_robot_speech_passes(self):
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."

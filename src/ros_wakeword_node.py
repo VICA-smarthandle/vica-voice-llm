@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 
 import rclpy
@@ -32,6 +33,7 @@ from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import agc_desired_from_env, apply_agc_desired_level
 from .replies import WAKE_GREETING
+from .stt_guard import strip_robot_echo
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
@@ -41,12 +43,23 @@ from .wakeword_monitor import WakewordMonitor
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
 # 만드는 법: scripts/make_cue_wavs.py (TTS 가 있는 기기에서 한 번 실행)
 
+# 에코 대조용으로 로봇 발화를 기억하는 시간. 발화 종료(tts_done) 직후의
+# 재청취 창에서 잡히는 에코를 덮으면 된다 — 길게 두면 사용자가 로봇 말을
+# 그대로 따라 하는 정당한 발화까지 지울 위험만 커진다.
+ROBOT_ECHO_TTL_SEC = 12.0
+
 
 class WakewordNode(Node):
     def __init__(self) -> None:
         super().__init__("vica_wakeword_node")
         self._pub_emergency = self.create_publisher(EmergencyEventMsg, "/vica/emergency", 10)
         self._pub_text = self.create_publisher(String, "/vica/user_text", 10)
+        # 로봇이 방금 한 말(에코 대조용). AEC 잔여로 자기 발화가 전사에
+        # 섞인다 — tts_done(완주·중단 불문 발행)의 문장을 잠시 기억해
+        # 전사에서 걷어낸다 (strip_robot_echo, 2026-09-01).
+        self._robot_recent: list = []
+        self.create_subscription(
+            String, "/vica/tts_done", self._on_tts_done_text, 10)
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
         # 청취 상태 (open/speech/closed/empty) — 미션이 무응답 시계를 귀가
         # 바쁜 동안 멈추는 데 쓴다 (2026-08-30).
@@ -143,7 +156,24 @@ class WakewordNode(Node):
         self.get_logger().warn(
             f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})")
 
+    def _on_tts_done_text(self, msg: String) -> None:
+        now = time.time()
+        self._robot_recent = [
+            (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
+        self._robot_recent.append((now, msg.data))
+
     def _on_user_text(self, text: str) -> None:
+        # 자기 목소리 에코를 먼저 걷어낸다 — 로봇의 질문이 사용자 답으로
+        # 둔갑하면 LLM 이 자기 말에 자기가 대답하는 연쇄가 된다.
+        now = time.time()
+        recent = [s for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
+        cleaned = strip_robot_echo(text, recent)
+        if cleaned != text.strip():
+            if not cleaned:
+                self._on_listen_state(f"empty:echo {text[:40]!r}")
+                return
+            self.get_logger().info(f"에코 제거: {text!r} -> {cleaned!r}")
+            text = cleaned
         msg = String()
         msg.data = text
         self._pub_text.publish(msg)
