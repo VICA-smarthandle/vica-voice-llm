@@ -39,6 +39,10 @@ frames = 0
 active = 0
 doa_hist: Counter = Counter()
 fails = 0
+# ● 연속 구간(말소리 판정이 이어진 길이) 채증 — 반짝(에코) vs 진짜 발화의
+# 지속시간 분포를 재서 '반짝 무효화' 문턱을 실측으로 정한다 (2026-09-01).
+runs: list[float] = []
+run_start: float | None = None
 t_end = time.time() + duration
 prev_line = ""
 try:
@@ -53,9 +57,15 @@ try:
         else:
             fails = 0
             frames += 1
+            now_t = time.time()
             if vad:
                 active += 1
                 doa_hist[(doa // 10) * 10 if doa is not None else -1] += 1
+                if run_start is None:
+                    run_start = now_t
+            elif run_start is not None:
+                runs.append(now_t - run_start)
+                run_start = None
             mark = "●" if vad else "─"
             line = f"  {mark}  DOA {doa if doa is not None else '?':>3}°"
             if line != prev_line:
@@ -65,6 +75,9 @@ try:
 except KeyboardInterrupt:
     pass
 
+if run_start is not None:
+    runs.append(time.time() - run_start)
+
 print("\n===== 요약 =====")
 if frames:
     print(f"관찰 {frames}프레임 · 말소리 판정 {active}프레임 ({active/frames:.0%})")
@@ -73,3 +86,9 @@ if frames:
         print(f"  말소리 중 방향 {label}: {n}회")
 else:
     print("표본 없음")
+if runs:
+    runs.sort()
+    mid = runs[len(runs) // 2]
+    print(f"● 연속 구간 {len(runs)}개 · 최단 {runs[0]:.2f}s · "
+          f"중앙값 {mid:.2f}s · 최장 {runs[-1]:.2f}s")
+    print("  구간 목록:", " ".join(f"{r:.2f}" for r in runs))
