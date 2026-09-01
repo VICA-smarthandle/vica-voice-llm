@@ -227,7 +227,7 @@ class TestShortAnswerRescue:
         )
         run_frames(m, 2, LOUD)                              # "비카야" → 창 열림
         run_frames(m, 1, self.LOUD1, t0=0.3, vad=True)      # 0.08초 발화
-        run_frames(m, 12, QUIET, t0=0.3 + 0.08)
+        run_frames(m, 32, QUIET, t0=0.3 + 0.08)   # 최소 개방 2.5초(9/1)
         assert texts == []
         assert any(s.startswith("empty:ghost") for s in states)
 
@@ -313,3 +313,33 @@ class TestFreeWindowNoBackfill:
         run_frames(m, 5, LOUD, t0=5.16 + 20 * 0.08, vad=True)
         run_frames(m, 12, QUIET, t0=5.16 + 25 * 0.08)
         assert texts == ["안내소로 가자"]
+
+
+class TestFreeWindowMinOpen:
+    def test_vad_blip_does_not_close_before_min_open(self):
+        """반짝 VAD(에코·호출 꼬리) 후 침묵이 0.88초를 넘어도, 최소 개방
+        시간(2.5초) 전에는 창이 살아 있어 늦게 온 명령을 받는다 (9/1)."""
+        texts = []
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 70,
+                    text="화장실로 가자")
+        m = make(fake, [], texts, [])
+        run_frames(m, 2, LOUD, t0=5.0)                       # "비카야"
+        run_frames(m, 1, LOUD, t0=5.16, vad=True)            # 에코 반짝 ●
+        run_frames(m, 18, QUIET, t0=5.24, vad=False)         # 침묵 1.44초 — 예전엔 마감
+        run_frames(m, 6, LOUD, t0=5.24 + 18 * 0.08, vad=True)  # 이제야 말함
+        run_frames(m, 12, QUIET, t0=5.24 + 24 * 0.08, vad=False)
+        assert texts == ["화장실로 가자"]
+
+    def test_truly_silent_call_closes_after_min_open(self):
+        """정말 아무 말 없으면 최소 개방이 지나고 닫힌다 — 영구 개방은 아니다."""
+        texts, states = [], []
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 90, text="X")
+        m = WakewordMonitor(
+            on_emergency=lambda e: None, on_user_text=texts.append,
+            on_wake=lambda: None, on_listen_state=states.append,
+            predict=fake.predict, transcribe=fake.transcribe)
+        run_frames(m, 2, LOUD, t0=5.0)
+        run_frames(m, 1, LOUD, t0=5.16, vad=True)            # 반짝
+        run_frames(m, 45, QUIET, t0=5.24, vad=False)         # 3.6초 침묵
+        assert texts == []
+        assert any(s.startswith("empty") for s in states)

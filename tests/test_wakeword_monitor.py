@@ -158,14 +158,15 @@ def test_listen_timing_breakdown():
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                      # wake — 창 열림 now=0.08
     run_frames(m, 5, LOUD, t0=1.0, vad=True)    # 발화 1.00~1.32
-    results = run_frames(m, 12, QUIET, t0=1.4)  # 침묵 0.8초 누적 → 종료
+    results = run_frames(m, 20, QUIET, t0=1.4)  # 최소 개방 2.5초(9/1)를 넘겨 마감  # 침묵 0.8초 누적 → 종료
     assert "user_text" in results
     t = m.last_listen_timing
     assert t is not None
     assert t["wait"] == pytest.approx(0.92, abs=0.01)    # 창 열림 → 말 시작
     assert t["speech"] == pytest.approx(0.32, abs=0.01)  # 말 시작 → 말끝
-    # 말끝 → 판정: 침묵 규정치 0.8초 + 프레임 반올림 1칸(80ms) 안
-    assert 0.80 <= t["tail"] <= 0.89
+    # 말끝 → 판정: 침묵 0.8초 이상. 최소 개방(2.5초, 9/1)이 마감을 미루면
+    # 그만큼 커진다 — 실제 기다린 시간의 정직한 계측이다.
+    assert t["tail"] >= 0.80
     assert t["stt"] >= 0.0                               # 가짜 STT 는 즉시
 
 
@@ -176,7 +177,7 @@ def test_listen_timing_resets_on_new_window():
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)
     run_frames(m, 5, LOUD, t0=1.0, vad=True)
-    run_frames(m, 12, QUIET, t0=1.4)
+    run_frames(m, 20, QUIET, t0=1.4)  # 최소 개방 2.5초(9/1)를 넘겨 마감
     assert m.last_listen_timing is not None
     m.arm_followup(now=10.0)
     m.set_muted(False, now=10.0)   # 예약된 재청취 창이 열린다
@@ -301,7 +302,7 @@ def test_wake_window_ignores_confirm_transcriber():
     m._transcribe_confirm = lambda a: "그래"
     run_frames(m, 2, LOUD)                        # wake 창
     run_frames(m, 5, LOUD, t0=1.0, vad=True)
-    results = run_frames(m, 12, QUIET, t0=1.4)
+    results = run_frames(m, 20, QUIET, t0=1.4)  # 최소 개방 2.5초(9/1)를 넘겨 마감
     assert "user_text" in results
     assert texts == ["화장실로 가자"]
 
@@ -320,7 +321,7 @@ def test_near_silence_never_reaches_stt():
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                        # wake → listen
     run_frames(m, 1, TINY, t0=1.0, vad=True)      # 잡음이 VAD 를 한 번 스침
-    results = run_frames(m, 12, TINY, t0=1.1)
+    results = run_frames(m, 22, TINY, t0=1.1)  # 최소 개방 2.5초(9/1) 경과
     assert "wake_silent" in results
     assert texts == []
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다

@@ -77,10 +77,10 @@ def test_hallucinated_listen_window_closes_quietly():
     for i in range(5):
         # 칩이 발화로 오판한 소음 (사람 말 유사음 등)
         results.append(m.process_frame(LOUD, now=i * 0.08, vad=True))
-    for i in range(11):
+    for i in range(30):   # 최소 개방 2.5초(9/1)를 넘겨 마감
         results.append(m.process_frame(QUIET, now=0.4 + i * 0.08))
 
-    assert results[-1] == "wake_silent"
+    assert "wake_silent" in results   # 최소 개방(9/1) 탓에 마감이 루프 중간에 온다
     assert texts == []
 
 
@@ -100,7 +100,7 @@ def test_listen_prefers_guarded_transcribe_but_emergency_uses_raw():
     m._open_listen(followup=False, now=0.0)
     for i in range(5):
         m.process_frame(LOUD, now=i * 0.08, vad=True)
-    for i in range(11):
+    for i in range(30):   # 최소 개방 2.5초(9/1)를 넘겨 마감
         m.process_frame(QUIET, now=0.4 + i * 0.08)
     assert texts == ["화장실 가자"]           # 대화 경로가 필터판을 썼다
 

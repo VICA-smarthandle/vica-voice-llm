@@ -71,6 +71,12 @@ _SHORT_ANSWER_WORDS = AFFIRMATIVES | NEGATIVES
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
 LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
+# 자유 창 최소 개방 시간 [TARGET] (2026-09-01): "네?" 에코·비카야 꼬리에
+# VAD 가 반짝하면 말끝 시계(0.8초)가 조기 가동돼 창이 1~1.5초 만에 닫히고,
+# 그 뒤에 말한 명령이 통째로 무시됐다(어제 10회+·오늘 2회 실측). 이 시간
+# 안에는 침묵-마감을 무시한다. 산정: 관측된 정상 대기 최대 1.94초 + 여유
+# 0.5초. 질문(재청취) 창은 30초짜리라 적용하지 않는다.
+LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
 # 질문(재청취) 창은 시나리오 6.4의 확인 대기 30초와 일치시킨다 — 미션이
 # 30초를 기다린다고 약속하는데 귀가 6초만 열려 있으면 안 된다.
 CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
@@ -544,10 +550,14 @@ class WakewordMonitor:
             del self._collect[:-PREROLL_FRAMES]
 
         max_sec = CONFIRM_WINDOW_SEC if self._listen_is_followup else LISTEN_MAX_SEC
+        # 자유 창은 최소 개방 시간 전에는 침묵으로 닫지 않는다 — 반짝 VAD
+        # (에코·호출 꼬리)가 말끝 시계를 조기 가동시키는 것을 무력화한다.
+        min_open = 0.0 if self._listen_is_followup else LISTEN_MIN_OPEN_SEC
         done = (
             now - self._listen_opened_at >= max_sec
             or (self._listen_started_speech
-                and self._listen_silence >= LISTEN_SILENCE_END_SEC)
+                and self._listen_silence >= LISTEN_SILENCE_END_SEC
+                and now - self._listen_opened_at >= min_open)
         )
         if not done:
             return None
