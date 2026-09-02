@@ -427,3 +427,82 @@ class TestRequireBothSignals:
                 break
         assert out == "user_text"
         assert texts == ["네"]
+
+
+class TestBargeMissReport:
+    """미달 채증 — 발동은 로그를 남기는데 **미달은 아무 흔적도 없었다.**
+
+    질문 재생 중에는 청취 창이 없어 창 사건조차 안 남는다. 그래서 9/2 실기
+    6회차에서 "말을 안 한 것"과 "말했는데 문턱을 못 넘은 것"이 구분되지
+    않았다 — AND 를 켜고 재는 중에는 그 구분이 판정 그 자체다.
+    """
+
+    def _make(self, states: list, **kwargs):
+        fake = Fake(text="아니")
+        events, texts, stops = [], [], []
+        return WakewordMonitor(
+            on_emergency=events.append,
+            on_user_text=texts.append,
+            on_barge_in=lambda: stops.append(1),
+            on_listen_state=states.append,
+            predict=fake.predict,
+            transcribe=fake.transcribe,
+            **kwargs,
+        ), stops
+
+    def test_sound_below_threshold_is_reported(self, monkeypatch):
+        """문턱에 못 미치는 발화가 있었으면 단계별 숫자를 남긴다.
+
+        짧은 답으로 끼어들 때의 모습이다 — 소리는 났는데 창 과반에 못 미친다.
+        """
+        import src.wakeword_monitor as wm
+        monkeypatch.setattr(wm, "BARGE_VAD_MIN_HITS", 5)
+        states = []
+        m, stops = self._make(states)
+        armed_speaking(m)
+        for i in range(BARGE_VAD_WINDOW):
+            spoke = i < 4                        # 4프레임만 발화 — 문턱 5 미달
+            m.process_frame(LOUD if spoke else QUIET, now=0.2 + i * 0.08,
+                            vad=spoke, doa=USER_DOA)
+        m.set_speaking(False, now=1.2)          # 질문 끝 — 여기서 보고한다
+        assert stops == []                       # 발동은 안 했다
+        miss = [s for s in states if s.startswith("barge-miss")]
+        assert miss, "미달이 보고돼야 한다"
+        assert "S=4" in miss[0] and "문턱 5" in miss[0]
+
+    def test_silence_is_not_reported(self):
+        """아무도 말하지 않았으면 남기지 않는다 — 매 질문마다 쌓이면
+        진짜 신호가 묻힌다."""
+        states = []
+        m, _ = self._make(states)
+        armed_speaking(m)
+        for i in range(BARGE_VAD_WINDOW):
+            m.process_frame(QUIET, now=0.2 + i * 0.08, vad=False, doa=USER_DOA)
+        m.set_speaking(False, now=1.2)
+        assert not [s for s in states if s.startswith("barge-miss")]
+
+    def test_fired_barge_in_reports_nothing(self):
+        """발동했으면 미달이 아니다 — 채증은 그 자리에서 비운다."""
+        states = []
+        m, stops = self._make(states)
+        armed_speaking(m)
+        for i in range(BARGE_VAD_WINDOW):
+            m.process_frame(LOUD, now=0.2 + i * 0.08, vad=True, doa=USER_DOA)
+        assert stops == [1]
+        m.set_speaking(False, now=1.2)
+        assert not [s for s in states if s.startswith("barge-miss")]
+
+    def test_direction_rejection_is_visible(self, monkeypatch):
+        """옆사람 발화는 S 는 켜지고 방향에서 0 이 된다 — 그 대비가 남는다."""
+        import src.wakeword_monitor as wm
+        monkeypatch.setattr(wm, "BARGE_VAD_MIN_HITS", 5)
+        states = []
+        m, stops = self._make(states, user_doa_center=USER_DOA,
+                              user_doa_width=15.0)
+        armed_speaking(m, lock=None)
+        for i in range(BARGE_VAD_WINDOW):
+            m.process_frame(LOUD, now=0.2 + i * 0.08, vad=True, doa=20.0)
+        m.set_speaking(False, now=1.2)
+        assert stops == []
+        miss = [s for s in states if s.startswith("barge-miss")]
+        assert miss and "S=10" in miss[0] and "방향=0" in miss[0]

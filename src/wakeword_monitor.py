@@ -291,6 +291,12 @@ class WakewordMonitor:
         # 사용자가 "응" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
         self._followup_armed = False
         self._followup_armed_at = 0.0
+        # 끼어들기 미달 채증 (2026-09-02). 발동은 로그를 남기는데 **미달은
+        # 아무 흔적도 안 남았다** — 질문 재생 중에는 청취 창이 없어 창
+        # 사건조차 없다. 그래서 실기에서 "말을 안 한 것"과 "말했는데 문턱을
+        # 못 넘은 것"이 구분되지 않았다(9/2 에코 6회차). AND 를 켜고 재는
+        # 중에는 이 구분이 판정 그 자체다.
+        self._barge_tally = {"프레임": 0, "S": 0, "AND": 0, "방향": 0, "소리": 0}
         # 마지막 청취 창의 수음 품질 (노드가 로그로 남긴다)
         self.last_listen_stats: Optional[dict] = None
         # 마지막 청취 창의 구간 계측 — 대기·발화·말끝판정·STT (초).
@@ -351,6 +357,7 @@ class WakewordMonitor:
         self.gate_b.reset()
         if self._followup_armed:
             self._followup_armed = False
+            self._report_barge_miss()
             if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
                 self._open_listen(followup=True, now=now)
 
@@ -376,6 +383,7 @@ class WakewordMonitor:
         # 외침은 점수가 깎인다(실측 근접 미달 0.27). 검증은 그대로 거친다.
         self.gate_b.threshold = GATE_B_SPEAKING if speaking else self._gate_b_base
         if speaking:
+            self._reset_barge_tally()   # 이 문장에 대한 채증을 새로 센다
             if self._state == "listen" and self._listen_is_followup:
                 self._state = "idle"
                 self._collect = []
@@ -383,6 +391,7 @@ class WakewordMonitor:
             return
         if self._followup_armed:
             self._followup_armed = False
+            self._report_barge_miss()
             if now - self._followup_armed_at <= FOLLOWUP_ARM_TIMEOUT_SEC:
                 self._open_listen(followup=True, now=now)
 
@@ -481,6 +490,13 @@ class WakewordMonitor:
                 )
             self._vad_window.append(hit)
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+            # 미달 채증: 관문 단계별로 몇 프레임이 살아남았는지 센다.
+            t = self._barge_tally
+            t["프레임"] += 1
+            t["S"] += bool(vad)
+            t["AND"] += speech
+            t["방향"] += hit
+            t["소리"] += rms >= SPEECH_RMS
             if (
                 len(self._vad_window) == BARGE_VAD_WINDOW
                 and sum(self._vad_window) >= BARGE_VAD_MIN_HITS
@@ -488,6 +504,7 @@ class WakewordMonitor:
             ):
                 self._vad_window.clear()
                 self._followup_armed = False
+                self._reset_barge_tally()
                 self._on_barge_in()
                 self._open_listen(followup=True, now=now)
                 # 말머리를 버리지 않는다 — 판정 창만큼 직전 프레임부터 수집한다.
@@ -497,6 +514,25 @@ class WakewordMonitor:
         return None
 
     # ---------------------------------------------------------------- 내부
+    def _reset_barge_tally(self) -> None:
+        for k in self._barge_tally:
+            self._barge_tally[k] = 0
+
+    def _report_barge_miss(self) -> None:
+        """질문이 끝나도록 끼어들기가 안 걸렸을 때, 어느 관문에서 막혔는지 남긴다.
+
+        소리 자체가 없었으면(아무도 말하지 않았으면) 남기지 않는다 — 그건
+        정상이고, 매 질문마다 줄이 쌓이면 진짜 신호가 묻힌다.
+        """
+        t = self._barge_tally
+        if t["S"] == 0:
+            self._reset_barge_tally()
+            return
+        self._on_listen_state(
+            f"barge-miss S={t['S']} AND={t['AND']} 방향={t['방향']} "
+            f"소리={t['소리']} / 문턱 {BARGE_VAD_MIN_HITS} of {BARGE_VAD_WINDOW}")
+        self._reset_barge_tally()
+
     def _open_listen(self, followup: bool, now: float) -> None:
         """청취 창을 연다. followup 이면 웨이크워드 없이(질문 답변용) 연 것이라
         인사(on_wake)를 하지 않고, 창 길이도 확인 대기(30초)를 따른다."""

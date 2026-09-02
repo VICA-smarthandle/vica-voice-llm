@@ -216,6 +216,11 @@ class WakewordNode(Node):
             # 승낙으로 읽어 **확인 없이 출발**했다(2026-09-02 실기 9회차).
             self.get_logger().info(f"🙋 창 안 호출 (소리로 구제): {state}")
             self._pub_wake.publish(String(data="wake"))
+        if state.startswith("barge-miss"):
+            # 끼어들기가 안 걸린 채 질문이 끝났고, 그 사이 소리는 있었다.
+            # 어느 관문에서 막혔는지 남긴다 — 이 줄이 없어서 "말을 안 한
+            # 것"과 "말했는데 문턱을 못 넘은 것"이 구분되지 않았다(9/2).
+            self.get_logger().info(f"🔇 {state}")
         if ":" in state:
             # 기각 사유(유령 문턱·환각·빈 전사) — 이전엔 followup 기각이
             # 무로그라 "대기해가 왜 죽었나"를 사후 진단할 수 없었다(2026-08-31).
