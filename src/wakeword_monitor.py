@@ -142,7 +142,23 @@ FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
 # 발화 리듬상 절반쯤 켜지므로 "최근 창의 과반"으로 판정한다. 값은 노드가
 # 프레임마다 vad 인자로 넣어 주고, 없으면(None) 음성 barge-in 은 잠든다.
 BARGE_VAD_WINDOW = 10      # 최근 프레임 수 (0.8초)
-BARGE_VAD_MIN_HITS = 5     # 그중 발화 판정 최소 개수
+# 두 신호 AND (2026-09-02, 실측 근거). 칩은 발화 판정을 두 개 낸다:
+# SPEECHDETECTED(잡음억제 쪽, 현재 척추)와 VOICEACTIVITY(AEC 후단). 둘이
+# **다른 순간에** 반짝하므로 곱하면 에코가 크게 준다.
+#
+#   에코 조건(로봇만 말함) : S 6%  → AND 1.6%   (4분의 1)
+#   발화 조건(핸들 위치)   : S 39% → AND 28%    (72% 유지, 앉아서)
+#                            S 37% → AND 26%    (61% 유지, 서서=정본 자세)
+#   두 회차 모두 **V 가 통째로 놓친 발화 0/6** — 발화 단위로는 안전하다.
+#
+# 다만 프레임은 3분의 1쯤 줄고 짧은 답에서 특히 성기다(AND 1~2프레임).
+# 그래서 켤 때는 문턱을 함께 내린다. 기본은 꺼짐 — barge-in 자책골이 0회인
+# 동안에는 켤 이유가 없고, 켜면 짧은 답의 끼어들기가 둔해진다. 에코가
+# 재발하면(마이크 굳음 등) .env 한 줄로 즉시 켠다.
+BARGE_REQUIRE_BOTH = os.environ.get(
+    "VICA_BARGE_REQUIRE_BOTH", "0").strip().lower() not in ("0", "false", "")
+BARGE_VAD_MIN_HITS = int(os.environ.get(
+    "VICA_BARGE_MIN_HITS", "3" if BARGE_REQUIRE_BOTH else "5"))
 # "비카야" 순간에 잠근 사용자 방향의 허용 폭과 유효 시간 (사용자 제안
 # 2026-08-24): 웨이크워드 순간은 로봇이 대개 조용해 방향이 깨끗하고(단일
 # 화자 퍼짐 ±2~4° 실측), 사용자가 어디 서 있든 보정 없이 맞는다. 고정
@@ -373,13 +389,18 @@ class WakewordMonitor:
     # ---------------------------------------------------------------- 핵심 로직
     def process_frame(self, frame: np.ndarray, now: Optional[float] = None,
                       vad: Optional[bool] = None,
-                      doa: Optional[float] = None) -> Optional[str]:
+                      doa: Optional[float] = None,
+                      vad2: Optional[bool] = None) -> Optional[str]:
         """int16 80ms 프레임 하나를 처리한다. 일어난 일을 문자열로 돌려준다
         (emergency / reject / wake / user_text / wake_silent / barge_in / None).
 
-        vad: 칩(XVF-3000)의 발화 판정(SPEECHDETECTED). 질문 재생 중 음성
-        barge-in 판정에만 쓴다. None = 하드웨어 없음/미조회 — 판정 안 함.
+        vad: 칩(XVF-3000)의 발화 판정(SPEECHDETECTED). 청취 창의 발화
+        시작/끝과 음성 barge-in 에 쓴다. None = 하드웨어 없음/미조회.
         doa: 칩의 소리 방향(도). 사용자 부채꼴이 설정된 경우 대답 인정 조건.
+        vad2: 칩의 두 번째 발화 판정(VOICEACTIVITY, AEC 후단).
+        **barge-in 에서만** vad 와 AND 로 묶는다(BARGE_REQUIRE_BOTH 일 때).
+        청취 창의 발화 판정에는 절대 섞지 않는다 — 섞으면 짧은 답이
+        말머리·말끝에서 잘려 9/1~9/2 에 고친 것이 되돌아간다.
         """
         now = time.time() if now is None else now
         self._ring.append(frame)
@@ -439,9 +460,12 @@ class WakewordMonitor:
             # 반 발짝 옆의 사용자를 놓쳤다). 자책골 방어는 칩 VAD(에코 면역)와
             # 과반 창이 맡는다 — 실기에서 로봇이 말하다 스스로 끊기면 이 완화가
             # 1번 용의자다. 방향을 모르면 증거 부족 — 발동하지 않는다.
+            # 두 신호 AND (선택). 켜면 에코 반짝이 4분의 1로 준다 — 다만
+            # 청취 창의 발화 판정에는 섞지 않는다(위 docstring).
+            speech = bool(vad) and (not BARGE_REQUIRE_BOTH or bool(vad2))
             if not self._doa_gate:
                 # 방향 관문 해제 — 어느 방향의 발화든 대답으로 본다.
-                hit = bool(vad)
+                hit = speech
             else:
                 sectors = []
                 if (self._locked_doa is not None
@@ -450,7 +474,7 @@ class WakewordMonitor:
                 if self._user_doa_center is not None:
                     sectors.append((self._user_doa_center, self._user_doa_width))
                 hit = (
-                    bool(vad)
+                    speech
                     and doa is not None
                     and any(_angle_diff(float(doa), center) <= width
                             for center, width in sectors)
@@ -801,9 +825,10 @@ class WakewordMonitor:
                                device=device, callback=cb):
             while True:
                 frame = q.get()
-                vad = doa = None
+                vad = doa = vad2 = None
                 if self._state == "listen":
-                    # 청취 중: 발화 시작/끝 판정용
+                    # 청취 중: 발화 시작/끝 판정용 (여기서는 AND 를 쓰지
+                    # 않는다 — 짧은 답이 말머리·말끝에서 잘린다)
                     vad = dsp.speech_detected()
                 elif (self._voice_barge_in and self._speaking
                         and self._followup_armed):
@@ -811,7 +836,11 @@ class WakewordMonitor:
                     vad = dsp.speech_detected()
                     if vad:
                         doa = dsp.doa_angle()
-                r = self.process_frame(frame, vad=vad, doa=doa)
+                        # 두 번째 신호는 AND 를 켠 경우에만 읽는다 — USB
+                        # 제어 통로를 프레임마다 한 번 더 두드리는 값이다.
+                        if BARGE_REQUIRE_BOTH:
+                            vad2 = dsp.voice_activity()
+                r = self.process_frame(frame, vad=vad, doa=doa, vad2=vad2)
                 if r == "wake":
                     # "비카야"가 온 방향을 이번 대화의 사용자 방향으로 잠근다
                     self.lock_user_direction(dsp.doa_angle())

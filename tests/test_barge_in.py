@@ -356,3 +356,74 @@ def test_doa_gate_off_hears_any_direction():
     m.set_speaking(True, now=3.0)
     results = run_frames(m, 30, LOUD, t0=3.1, vad=True, doa=None)
     assert "barge_in" in results
+
+
+# ------------------------------------------------- 두 신호 AND (2026-09-02)
+class TestRequireBothSignals:
+    """칩의 두 발화 판정(SPEECHDETECTED · VOICEACTIVITY)을 곱하는 선택지.
+
+    실측 근거: 둘이 **다른 순간에** 반짝해서, 로봇만 말하는 에코 조건에서
+    S 6% → AND 1.6%(4분의 1)로 준다. 사용자 발화 조건에서는 프레임이
+    61~72% 남고 **V 가 통째로 놓친 발화는 0/12** 였다(핸들 위치 2회차).
+
+    기본은 꺼짐 — barge-in 자책골이 0회인 동안 켜면 얻는 것 없이 짧은 답의
+    끼어들기만 둔해진다. 켜고 끄는 것은 .env 다(VICA_BARGE_REQUIRE_BOTH).
+    """
+
+    def _run(self, monkeypatch, require_both: bool, vad2, min_hits: int):
+        import src.wakeword_monitor as wm
+        monkeypatch.setattr(wm, "BARGE_REQUIRE_BOTH", require_both)
+        monkeypatch.setattr(wm, "BARGE_VAD_MIN_HITS", min_hits)
+        fake = Fake(text="네")
+        events, texts, stops = [], [], []
+        m = make(fake, events, texts, stops)
+        armed_speaking(m)
+        out = []
+        for i in range(wm.BARGE_VAD_WINDOW):
+            out.append(m.process_frame(LOUD, now=0.2 + i * 0.08, vad=True,
+                                       doa=USER_DOA, vad2=vad2))
+        return out, stops
+
+    def test_off_ignores_second_signal(self):
+        """꺼져 있으면 종전 그대로 — vad2 가 없어도(None) 발동한다."""
+        fake = Fake(text="네")
+        events, texts, stops = [], [], []
+        m = make(fake, events, texts, stops)
+        armed_speaking(m)
+        out = run_frames(m, BARGE_VAD_WINDOW, LOUD, t0=0.2, vad=True,
+                         doa=USER_DOA)
+        assert out[-1] == "barge_in"
+
+    def test_on_requires_both(self, monkeypatch):
+        """켜면 두 번째 신호가 꺼진 프레임은 세지 않는다 — 에코가 그 자리다."""
+        out, stops = self._run(monkeypatch, True, vad2=False, min_hits=3)
+        assert "barge_in" not in out
+        assert stops == []
+
+    def test_on_fires_when_both_present(self, monkeypatch):
+        """둘 다 켜진 진짜 발화는 그대로 발동한다."""
+        out, _ = self._run(monkeypatch, True, vad2=True, min_hits=3)
+        assert out[-1] == "barge_in"
+
+    def test_listen_window_never_uses_second_signal(self):
+        """청취 창의 발화 판정에는 vad2 를 섞지 않는다.
+
+        섞으면 짧은 답이 말머리·말끝에서 잘려 9/1~9/2 수리가 되돌아간다.
+        vad2=False 를 계속 줘도 창은 정상적으로 발화를 잡아야 한다.
+        """
+        fake = Fake(scores=[(0.9, 0.0)] * 2, text="네")
+        events, texts, stops = [], [], []
+        m = make(fake, events, texts, stops)
+        for i in range(2):          # 호출 → 창 열림
+            m.process_frame(QUIET, now=i * 0.08, vad=False, vad2=False)
+        for i in range(5):          # 발화 (vad2 는 계속 False)
+            m.process_frame(LOUD, now=0.16 + i * 0.08, vad=True, vad2=False)
+        out = None
+        for i in range(40):
+            r = m.process_frame(QUIET, now=0.56 + i * 0.08, vad=False,
+                                vad2=False)
+            if r is not None:
+                out = r
+                break
+        assert out == "user_text"
+        assert texts == ["네"]
