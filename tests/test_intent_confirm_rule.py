@@ -143,3 +143,38 @@ class TestFirstWordShortcut:
         result = parse_intent("어디로 가야 하지?", [DEST], history=HISTORY,
                               model="__no_llm__")
         assert result.intent != "navigate"
+
+
+class TestCorrectionBeatsFirstWord:
+    """사람은 말하다 마음을 바꾼다 — 첫 단어만 보면 그 정정을 놓친다.
+
+    2026-09-02 실기: "네. 아니. 아니. 아니." 를 첫 단어 '네' 로 승낙으로 읽어
+    **거절한 사용자를 태우고 출발했다.** 부정어가 한 토막이라도 섞이면 승낙
+    지름길을 쓰지 않는다 — 애매하면 출발하지 않는 쪽이 안전하다(fail-closed).
+    """
+
+    def test_yes_then_no_is_deny(self):
+        result = parse_intent("네. 아니. 아니. 아니.", [DEST], history=HISTORY)
+        assert result.intent == "deny"
+        assert result.need_confirm is False
+
+    def test_yes_then_no_two_words(self):
+        result = parse_intent("네 아니요", [DEST], history=HISTORY)
+        assert result.intent == "deny"
+
+    def test_plain_affirmative_with_tail_still_confirms(self):
+        """정정이 아닌 평범한 승낙은 그대로 확정된다 — 방어가 과하면 안 된다."""
+        result = parse_intent("응 윤지영 교수님 사무실로 가자", [DEST],
+                              history=HISTORY)
+        assert result.intent == "navigate"
+        assert result.need_confirm is False
+
+    def test_negative_inside_a_word_is_not_a_correction(self):
+        """'아니고'는 부정어 목록에 없다 — 토막 전체 일치라 오폭하지 않는다.
+
+        LLM 없는 시험 환경에서는 LLM 경로가 unknown 으로 떨어지므로,
+        deny 가 아니라는 것으로 지름길 미발동을 확인한다.
+        """
+        result = parse_intent("네 화장실 아니고 안내소로", [DEST],
+                              history=HISTORY, model="__no_llm__")
+        assert result.intent != "deny"

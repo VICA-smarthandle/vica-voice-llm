@@ -368,7 +368,15 @@ def parse_intent(
         # 가?"("어" 접두)류 오폭은 없다.
         tokens = user_text.split()
         first = _normalize_short_reply(tokens[0]) if tokens else ""
-        if word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES:
+        # 정정 방어 (2026-09-02 실기): 사람은 말하다 마음을 바꾼다.
+        # "네. 아니. 아니. 아니." 를 첫 단어만 보고 승낙으로 읽어 **거절한
+        # 사용자를 태우고 출발했다.** 부정어가 한 토막이라도 섞여 있으면
+        # 승낙 지름길을 쓰지 않는다 — 애매하면 출발하지 않는 쪽이 안전하다
+        # (fail-closed). 판정은 토막 전체 일치라 "화장실 아니고 안내소"의
+        # '아니고' 같은 말은 걸리지 않는다.
+        denied = (word in _NEGATIVES
+                  or any(_normalize_short_reply(t) in _NEGATIVES for t in tokens))
+        if not denied and (word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES):
             return VicaIntent(
                 intent="navigate",
                 destination_candidate=pending.name,
@@ -380,7 +388,7 @@ def parse_intent(
                 need_confirm=False,
                 safety_flag="normal",
             )
-        if word in _NEGATIVES or first in _NEGATIVES:
+        if denied:
             # deny 로 보낸다 (2026-09-02). 종전의 clarify 는 두 곳에서 막혔다:
             # ① 미션의 on_intent 는 navigate 가 아니면 아무것도 하지 않아
             #    CONFIRMING 이 타임아웃까지 남았고 ② ros_node 의 재청취 기각이
