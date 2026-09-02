@@ -55,7 +55,8 @@ def test_known_hallucinations_full_match():
 
 def test_real_speech_is_not_flagged():
     assert not is_hallucination("화장실 데려다줘")
-    assert not is_hallucination("감사합니다")            # 합법 발화 — 지우면 안 됨
+    # "감사합니다" 단독은 2026-09-02 사용자 결정으로 환각 목록에 들어갔다.
+    # 섞인 발화는 여전히 살아야 한다 — 그 경계가 이 시험의 몫이다.
     assert not is_hallucination("안내해 주셔서 감사합니다")  # 부분 유사도 아님
     assert not is_hallucination("")
 
@@ -169,6 +170,20 @@ class TestStripRobotEcho:
     def test_no_recent_robot_speech_passes(self):
         from src.stt_guard import strip_robot_echo
         assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."
+
+
+def test_short_answer_ghosts_2026_09_02():
+    """짧은답 30회 실기: 사용자가 "네"·"대기해줘"라고 말한 자리에서 나온
+    문구들(사용자 증언 — 한 적 없는 말). 둘 다 finish 로 해석돼 안내가
+    통째로 끝났다. 진짜 말이 한 조각이라도 섞이면 살려 둔다."""
+    assert is_hallucination("다 됐어.") is True
+    assert is_hallucination("고맙습니다") is True
+    assert is_hallucination("감사합니다.") is True
+    # 조각이 전부 환각이면 붙어 있어도 기각한다 (30회차 실측).
+    assert is_hallucination("다 됐어. 고마워.") is True
+    # 진짜 말이 섞이면 통과 — 기각은 사용자의 말을 통째로 버리는 일이다.
+    assert is_hallucination("다 됐어. 화장실로 가자.") is False
+    assert is_hallucination("이제 됐어") is False   # 진짜 종료 표현은 산다
 
 
 def test_gomawo_alone_is_hallucination_but_mixed_survives():

@@ -8,9 +8,10 @@ whisper 는 입력에 말이 없으면 학습 데이터에서 흔했던 문장(�
   2. 출구 (accept_segments): segment 신뢰도 — no_speech_prob 이 높고
      avg_logprob 이 낮은 조각은 버린다. openai-whisper 기본 휴리스틱과 같은
      조건·같은 임계값이다.
-  3. 수배 전단 (is_hallucination): 무음 환각 단골 문구 목록. **전사 전체가
-     그 문구일 때만** 유령으로 본다 — 진짜 발화에 섞인 부분 일치는 지우지
-     않는다("감사합니다"는 합법 발화다).
+  3. 수배 전단 (is_hallucination): 무음 환각 단골 문구 목록. **전사가 그
+     문구들만으로 이루어졌을 때만** 유령으로 본다 — 진짜 발화에 섞인 부분
+     일치는 지우지 않는다("네, 감사합니다"는 통과). 문장이 여럿이면 조각을
+     쪼개 전부 환각일 때만 기각한다 ("다 됐어. 고마워." 실측 2026-09-02).
 
 전부 순수 함수라 장치 없이 시험된다. 목록은 실측 로그에서 발견되는 대로
 추가한다 (근거 없는 선제 추가는 하지 않는다).
@@ -35,9 +36,22 @@ HALLUCINATION_PHRASES = (
     "다음영상에서만나요",
     "자막제공배달의민족",
     # 2026-09-01 실기: 사용자가 말한 적 없는 "고마워"가 반복 등장 —
-    # '그래' 오인식·에코성 환각으로 확인(사용자 증언 + 로그). 전체 일치만
-    # 기각이므로 "고마워. 대기해." 같은 혼합 발화는 여전히 통과한다.
+    # '그래' 오인식·에코성 환각으로 확인(사용자 증언 + 로그).
     "고마워",
+    # 2026-09-02 짧은답 30회: 사용자가 "네"·"대기해줘"라고 말한 자리에서
+    # 아래 세 문구가 나왔다(사용자 증언 — 한 적 없는 말). 길이·음량으로는
+    # 못 가린다 — 환각 발화 0.38~0.80초 vs 진짜 짧은 답 0.40~0.64초로
+    # 완전히 겹치고 rms 도 비슷하다(실측). 그래서 어구로만 막는다.
+    # 대가: 진짜 "다 됐어"로는 안내를 끝낼 수 없다. "이제 됐어"·"그만"·
+    # "끝났어"는 살아 있다. 이 대가를 감수하는 이유는 오전사가 하필
+    # finish(안내 전체 종료)로 몰려 되돌리기가 가장 어렵기 때문이다.
+    "다됐어",
+    "고맙습니다",
+    # "감사합니다" 단독도 환각으로 본다 (2026-09-02 사용자 결정 — 종전의
+    # "합법 발화라 살린다"를 뒤집는다). 실기에서 사용자가 말한 적 없이
+    # 나왔고, 인사말 단독은 로봇이 할 일이 없어 기각해도 잃는 것이 없다.
+    # 섞인 발화("안내해 주셔서 감사합니다")는 여전히 통과한다.
+    "감사합니다",
 )
 
 # 뉴스 맺음말 계열("MBC 뉴스 ○○○입니다")은 이름이 매번 달라 목록으로 못
@@ -46,19 +60,34 @@ _NEWS_PREFIX = re.compile(r"^(MBC|KBS|SBS|YTN|JTBC)뉴스")
 
 _STRIP = re.compile(r"[\s.,!?~♪…'\"”“]+")
 
+# 문장 경계. 환각이 여러 문장으로 붙어 나오는 경우를 조각내 판정한다.
+_SENTENCE_SPLIT = re.compile(r"[.!?…]+")
+
 
 def _normalize(text: str) -> str:
     return _STRIP.sub("", text)
 
 
+def _is_ghost_piece(norm: str) -> bool:
+    return norm in HALLUCINATION_PHRASES or bool(_NEWS_PREFIX.match(norm))
+
+
 def is_hallucination(text: str) -> bool:
-    """전사 전체가 무음 환각 단골 문구인가. 부분 포함은 유령으로 보지 않는다."""
+    """전사가 무음 환각 단골 문구들만으로 이루어졌는가.
+
+    문장이 여럿이면 조각마다 판정해 **전부** 환각일 때만 기각한다. 하나라도
+    진짜 말이 섞여 있으면 통과시킨다 — 기각은 사용자의 말을 통째로 버리는
+    일이라 확실할 때만 한다 (fail-open).
+    """
     norm = _normalize(text)
     if not norm:
         return False
-    if norm in HALLUCINATION_PHRASES:
+    if _is_ghost_piece(norm):
         return True
-    return bool(_NEWS_PREFIX.match(norm))
+    pieces = [_normalize(p) for p in _SENTENCE_SPLIT.split(text)]
+    pieces = [p for p in pieces if p]
+    # 조각이 하나뿐이면 위에서 이미 판정했다 — 재판할 것이 없다.
+    return len(pieces) > 1 and all(_is_ghost_piece(p) for p in pieces)
 
 
 def accept_segments(segments) -> str:
