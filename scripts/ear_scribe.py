@@ -259,13 +259,20 @@ def _summary_row(idx, start, answer, trial_events, title=""):
                  if s == "창" and d.startswith("empty")]
     intents = [d for _, _, s, d in trial_events if s == "의도"]
     stops = sum(1 for _, _, s, _ in trial_events if s == "tts중단")
+    # 진짜 barge-in 은 웨이크워드 노드만 판정한다("답변 barge-in"). TTS 노드의
+    # "barge-in — 재생 중단"은 호출 때 큐를 비우는 정상 청소라, 낱말로 세면
+    # 호출 횟수만큼 유령 barge 가 잡힌다 (2026-09-02 호출 시험에서 5회 오계수).
     barge = sum(1 for _, _, s, d in trial_events
-                if s.startswith("log:") and "barge" in d)
+                if s == "log:vica_wakeword_node" and "barge-in" in d)
+    wakes = sum(1 for _, _, s, _ in trial_events if s == "wake")
     extra = []
     if stops:
         extra.append(f"stop×{stops}")
     if barge:
         extra.append(f"barge-in×{barge}")
+    if wakes > 1:
+        # 회차마다 엔터를 치지 않으면 표본이 한 줄에 뭉친다 — 표에서 바로 보이게.
+        extra.append(f"호출×{wakes}(회차 뭉침)")
     stamp = datetime.datetime.fromtimestamp(start).strftime("%H:%M:%S")
     cell = lambda items: " / ".join(items) if items else "—"
     head = f"| {idx} | {title} " if title else f"| {idx} "
