@@ -170,3 +170,21 @@ class TestFollowupFilterLetsAnswersThrough:
         from src.langchain_intent_parser import SHORTCUT_REPLIES
         assert "무슨 말씀이신지 잘 모르겠어요." not in SHORTCUT_REPLIES
         assert "" not in SHORTCUT_REPLIES
+
+
+class TestWakeWordVariants2026_09_02:
+    """실기에서 관측된 '비카야' 오전사 변형. 창이 열린 동안 호출 감지기가
+    잠들어 있어 창 안의 호출은 오직 STT 전사로만 판별된다 — 그래서 변형을
+    어휘로 받는다(대증요법. 근본은 창 안 모델 A 재가동)."""
+
+    @pytest.mark.parametrize("word", ["미카야", "리카야", "비켜야.", "비кая."])
+    def test_observed_variants_get_greeting(self, word):
+        from src.replies import WAKE_GREETING
+        result = parse_intent(word, [DEST], history=[])
+        assert result.reply == WAKE_GREETING
+
+    def test_variant_with_tail_is_not_a_wake_word(self):
+        """"비켜야 해요"는 호출이 아니다 — 전체 일치라 꼬리가 붙으면 빠진다."""
+        from src.langchain_intent_parser import _WAKE_WORDS
+        from src.handle_mode import normalize_short_reply
+        assert normalize_short_reply("비켜야 해요") not in _WAKE_WORDS
