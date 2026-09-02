@@ -33,7 +33,9 @@ if not dsp.available:
     raise SystemExit("reSpeaker 제어 통로를 못 열었다 — USB 뽑았다 꽂기 후 재시도")
 
 duration = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
-print(f"{duration:.0f}초 관찰 시작 (Ctrl+C 로 조기 종료) — ● = 말소리 판정")
+print(f"{duration:.0f}초 관찰 시작 (Ctrl+C 로 조기 종료)")
+print("  두 신호 동시 표시: S=SPEECHDETECTED(잡음억제 쪽, 현재 척추) · "
+      "V=VOICEACTIVITY(AEC 후단, 미사용 후보) — ●=발동 ─=꺼짐")
 
 frames = 0
 active = 0
@@ -43,11 +45,14 @@ fails = 0
 # 지속시간 분포를 재서 '반짝 무효화' 문턱을 실측으로 정한다 (2026-09-01).
 runs: list[float] = []
 run_start: float | None = None
+active_v = 0
+both = 0
 t_end = time.time() + duration
 prev_line = ""
 try:
     while time.time() < t_end:
         vad = dsp.speech_detected()
+        va = dsp.voice_activity()
         doa = dsp.doa_angle()
         if vad is None and doa is None:
             fails += 1
@@ -66,8 +71,13 @@ try:
             elif run_start is not None:
                 runs.append(now_t - run_start)
                 run_start = None
+            if va:
+                active_v += 1
+            if va and vad:
+                both += 1
             mark = "●" if vad else "─"
-            line = f"  {mark}  DOA {doa if doa is not None else '?':>3}°"
+            mark_v = "●" if va else "─"
+            line = f"  S{mark} V{mark_v}  DOA {doa if doa is not None else '?':>3}°"
             if line != prev_line:
                 print(f"[{time.strftime('%H:%M:%S')}] {line}", flush=True)
                 prev_line = line
@@ -80,7 +90,8 @@ if run_start is not None:
 
 print("\n===== 요약 =====")
 if frames:
-    print(f"관찰 {frames}프레임 · 말소리 판정 {active}프레임 ({active/frames:.0%})")
+    print(f"관찰 {frames}프레임 · S(SPEECHDETECTED) {active}회 ({active/frames:.0%}) · "
+          f"V(VOICEACTIVITY) {active_v}회 ({active_v/frames:.0%}) · 동시 {both}회")
     for bucket, n in doa_hist.most_common(5):
         label = f"{bucket}~{bucket+9}°" if bucket >= 0 else "방향?"
         print(f"  말소리 중 방향 {label}: {n}회")
