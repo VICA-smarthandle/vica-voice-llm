@@ -134,3 +134,18 @@ def test_listen_gate_does_not_consume_outer_cooldown():
     assert m.gate_a is not m.gate_a_listen
     assert m.gate_a_listen.cooldown_sec == 0.0
     assert m.gate_a_listen.threshold == m.gate_a.threshold
+
+
+def test_rescue_state_prefix_is_the_node_contract():
+    """구제 보고 문자열의 접두는 노드와의 계약이다.
+
+    ros_wakeword_node 가 이 접두를 보고 `/vica/wake` 를 발행한다 — 그래야
+    미션이 확인 상태를 접는다. 종전에는 전사만 흘러가(user_text="비카야")
+    음성은 "네?"라고 답했는데 미션은 CONFIRMING 을 들고 있었고, 그 뒤 같은
+    목적지를 다시 말하자 "재제안=답" 규칙이 그것을 승낙으로 읽어 **확인 없이
+    출발**했다(2026-09-02 실기 9회차). 이 문자열이 바뀌면 그 결함이 돌아온다.
+    """
+    _, _, _, states = _run("비켜야.", wake_frames={2, 3})
+    rescued = [s for s in states if s.startswith("wake-rescue")]
+    assert rescued, "구제 사실이 listen_state 로 보고돼야 한다"
+    assert rescued[0].startswith("wake-rescue ")

@@ -208,6 +208,14 @@ class WakewordNode(Node):
 
     def _on_listen_state(self, state: str) -> None:
         self._pub_listen_state.publish(String(data=state))
+        if state.startswith("wake-rescue"):
+            # 창 안에서 소리로 건진 호출도 **진짜 호출과 똑같이** 미션에
+            # 알린다. 종전에는 전사만 흘러가(user_text="비카야") 음성은
+            # "네?"라고 답했는데 미션은 확인 상태를 그대로 들고 있었고,
+            # 그 뒤 같은 목적지를 다시 말하자 "재제안=답" 규칙이 그것을
+            # 승낙으로 읽어 **확인 없이 출발**했다(2026-09-02 실기 9회차).
+            self.get_logger().info(f"🙋 창 안 호출 (소리로 구제): {state}")
+            self._pub_wake.publish(String(data="wake"))
         if ":" in state:
             # 기각 사유(유령 문턱·환각·빈 전사) — 이전엔 followup 기각이
             # 무로그라 "대기해가 왜 죽었나"를 사후 진단할 수 없었다(2026-08-31).
