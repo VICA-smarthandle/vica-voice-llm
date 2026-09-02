@@ -67,6 +67,26 @@ LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
 # (긍/부정)로만 제한해 유령 전사의 부활을 막는다. 자유 창(호출 직후)은
 # 목적지 같은 긴 말을 기다리는 자리라 기존 문턱 그대로다 (사용자 결정).
 SHORT_ANSWER_MIN_RMS = 0.02
+
+# 창 안 호출 구제 (2026-09-02) — 창이 열린 동안의 "비카야"는 음향 모델이
+# 꺼져 있어 **오직 STT 전사로만** 판별된다. 그런데 whisper 는 사전에 없는
+# 이 이름을 못 적는다: 실기 13회 전수에서 '비카야'로 적힌 것이 **0건**
+# (미카야 4·피카야 3·비켜야 3·리카야/비кая/이까랑 각 1). 어휘 목록은 하루에
+# 6종이 나와 따라잡을 수 없다.
+#
+# 그래서 창 안에서도 호출 점수를 계산하되 **창을 열지 않고** 사실만 기록해
+# 두고(창을 열면 "비카야 화장실로 가자"의 뒷말이 날아간다), 전사가 한 덩어리
+# 짧은 말이면 그 기록을 근거로 호출로 판정한다. 소리가 정본이고 글자는 보조다.
+#
+# 길이 조건: 호출어 변형은 전부 1토큰 3자다. 2~5자로 두어 '비 카야' 같은
+# 띄어쓰기 변형까지 받고, '화장실로 가자'(2토큰 6자)류 명령은 제외한다.
+LISTEN_WAKE_RESCUE_TOKENS = 2
+LISTEN_WAKE_RESCUE_MIN_CHARS = 2
+LISTEN_WAKE_RESCUE_MAX_CHARS = 5
+# 구제 시 전사를 이 말로 갈아 끼운다 — 아래 계층(langchain_intent_parser 의
+# _WAKE_WORDS)이 아는 정본 표기다. 여기서 갈아 두면 자유 창·재청취 창이
+# 똑같이 "네?"로 처리된다.
+WAKE_WORD_TEXT = "비카야"
 _SHORT_ANSWER_WORDS = AFFIRMATIVES | SOFT_AFFIRMATIVES | NEGATIVES
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
@@ -96,6 +116,22 @@ HEAD_PRE_ROLL_FRAMES = 8
 
 def _frame_rms(frame) -> float:
     return float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+
+
+def _looks_like_short_call(text: str) -> bool:
+    """호출 구제 대상인가 — 한 덩어리 짧은 말인지만 본다.
+
+    글자 내용은 보지 않는다. 그것이 이 구제의 요점이다: whisper 가 '비카야'를
+    어떻게 적든(미카야·비켜야·비가야·비кая…) 소리 쪽 증거로 판정한다.
+    길이만 재는 이유는 **명령을 삼키지 않기 위해서**다 — "비카야 화장실로
+    가자"(3토큰)는 구제하지 않고 명령 그대로 흘려보낸다.
+    """
+    tokens = text.split()
+    if not tokens or len(tokens) > LISTEN_WAKE_RESCUE_TOKENS:
+        return False
+    chars = normalize_short_reply(text)
+    return (LISTEN_WAKE_RESCUE_MIN_CHARS
+            <= len(chars) <= LISTEN_WAKE_RESCUE_MAX_CHARS)
 # 재청취(arm_followup) 예약의 유효 시간. 질문 TTS 가 유실돼 mute 해제가 안 오면
 # 예약이 남아, 한참 뒤 무관한 안내가 끝난 순간 마이크가 열리는 오동작을 막는다.
 FOLLOWUP_ARM_TIMEOUT_SEC = 20.0
@@ -216,6 +252,10 @@ class WakewordMonitor:
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
         self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
+        # 창 안 호출 관찰용 — 같은 문턱·지속을 쓰되 **별도 객체**다. gate_a 를
+        # 그대로 먹이면 쿨다운이 소모돼 창이 닫힌 직후의 진짜 호출이 막힌다.
+        # 쿨다운 0: 여기서는 발동이 아니라 사실 기록만 하므로 중복이 무해하다.
+        self.gate_a_listen = FrameGate(gate_a, persist=2, cooldown_sec=0.0)
         self._gate_b_base = gate_b   # set_speaking 이 재생 중 완화/복원한다
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
@@ -226,6 +266,7 @@ class WakewordMonitor:
         self._listen_silence = 0.0
         self._listen_voiced_sec = 0.0
         self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
+        self._listen_heard_wake = False        # 이 창 안에서 호출 소리를 들었는가
         self._listen_opened_at = 0.0
         self._muted_until = 0.0
         self._muted = False
@@ -362,6 +403,11 @@ class WakewordMonitor:
             if fire_b:
                 self._enter_postroll(from_listen=True)
                 return None
+            # 창 안 호출 관찰: **창을 새로 열지 않는다.** 열면 이어지는 말이
+            # 통째로 날아간다("비카야 화장실로 가자"). 들었다는 사실만 남기고
+            # 판정은 전사가 나온 뒤에 한다 (LISTEN_WAKE_RESCUE_* 참조).
+            if self.gate_a_listen.feed(float(scores["a"]), now):
+                self._listen_heard_wake = True
             return self._listen_step(frame, now, vad)
 
         # idle
@@ -438,6 +484,8 @@ class WakewordMonitor:
         self._listen_is_followup = followup
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
+        self._listen_heard_wake = False
+        self.gate_a_listen.reset()
         self.last_listen_timing = None
         # 말머리 소급 (2026-09-01, 블랙박스 방식): 창이 열리기 직전에 이미
         # 말이 시작됐다면 링버퍼에서 그 머리를 줍는다 — "정확한 타이밍에
@@ -622,6 +670,12 @@ class WakewordMonitor:
             "tail": now - speech_end,
             "stt": time.monotonic() - stt_started,
         }
+        # 창 안 호출 구제: 이 창에서 호출 소리를 들었고 전사가 한 덩어리 짧은
+        # 말이면, 글자가 무엇이든 호출로 본다. 소리가 정본이고 글자는 보조다.
+        # 환각 검사보다 먼저 둔다 — 호출을 '감사합니다' 따위로 적어도 살린다.
+        if self._listen_heard_wake and _looks_like_short_call(text):
+            self._on_listen_state(f"wake-rescue {text[:20]!r}")
+            text = WAKE_WORD_TEXT
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
         # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):
