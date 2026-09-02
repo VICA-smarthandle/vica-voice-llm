@@ -115,6 +115,18 @@ class TestFirstWordShortcut:
         result = parse_intent("아니 거기 말고 다른 데", [DEST], history=HISTORY)
         assert result.intent == "clarify"
 
+    def test_hesitation_alone_confirms_but_prefix_does_not(self):
+        """'음'·'어어'는 whisper 가 적은 "응"이라 단독이면 승낙이다. 그러나
+        첫 단어로는 승낙이 아니다 — "음… 아니야"의 망설임이 곧바로 주행이
+        되면 안 된다 (2026-09-02 목록 추가 시 함께 정한 경계)."""
+        alone = parse_intent("음.", [DEST], history=HISTORY)
+        assert alone.intent == "navigate"
+        assert alone.need_confirm is False
+
+        prefixed = parse_intent("음 아니야 다른 데 갈래", [DEST], history=HISTORY,
+                                model="__no_llm__")
+        assert prefixed.intent != "navigate"
+
     def test_word_starting_with_affirm_char_is_not_tripped(self):
         """"어디로 가?"는 "어" 접두라도 지름길에 안 걸려야 한다 (첫 단어
         전체 일치). LLM 없는 시험 환경에서는 LLM 경로가 안전 폴백(unknown)

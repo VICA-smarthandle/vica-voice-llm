@@ -15,7 +15,8 @@ from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
-from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
+from .handle_mode import (
+    AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from .replies import (
     ASK_DESTINATION,
     CANCEL_CONFIRM,
@@ -158,6 +159,9 @@ def _build_system_prompt(
 # 기존 호출부와 테스트가 쓰던 것이라 별칭으로 남긴다.
 _AFFIRMATIVES = AFFIRMATIVES
 _NEGATIVES = NEGATIVES
+# 혼잣소리('음'·'어어')는 발화 전체가 그것뿐일 때만 긍정으로 본다.
+# 첫 단어 지름길에는 넣지 않는다 — "음… 아니야"가 승낙이 되면 안 된다.
+_SOLO_AFFIRMATIVES = AFFIRMATIVES | SOFT_AFFIRMATIVES
 _normalize_short_reply = normalize_short_reply
 
 
@@ -258,7 +262,7 @@ def is_instant_utterance(user_text: str) -> bool:
     """
     word = _normalize_short_reply(user_text)
     return bool(word) and (
-        word in _AFFIRMATIVES or word in _NEGATIVES
+        word in _SOLO_AFFIRMATIVES or word in _NEGATIVES
         or word in _CANCEL_WORDS or word in _PAUSE_WORDS
         or word in _WAKE_WORDS)
 
@@ -350,7 +354,7 @@ def parse_intent(
         # 가?"("어" 접두)류 오폭은 없다.
         tokens = user_text.split()
         first = _normalize_short_reply(tokens[0]) if tokens else ""
-        if word in _AFFIRMATIVES or first in _AFFIRMATIVES:
+        if word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES:
             return VicaIntent(
                 intent="navigate",
                 destination_candidate=pending.name,
@@ -392,7 +396,7 @@ def parse_intent(
     # 무시한다 (계약: VicaIntent.msg affirm/deny 절, "아무 때나 보내도 안전").
     # reply 는 빈 문자열 — 수락/거절 발화는 Mission 몫이라 채우면 두 번 말한다.
     # '취소'는 NEGATIVES 에도 있으나 위 _CANCEL_WORDS 직행이 먼저 잡는다.
-    if word in _AFFIRMATIVES:
+    if word in _SOLO_AFFIRMATIVES:
         return VicaIntent(intent="affirm", confidence=1.0, reply="", need_confirm=False)
     if word in _NEGATIVES:
         return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)

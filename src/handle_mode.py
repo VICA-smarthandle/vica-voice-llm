@@ -75,6 +75,14 @@ AFFIRMATIVES = frozenset(
 NEGATIVES = frozenset(
     {"아니", "아니요", "아뇨", "아니야", "아니에요", "싫어", "싫어요", "취소"}
 )
+# 혼잣소리 계열 긍정 — whisper 가 "응"을 이렇게 적는다(2026-09-02 짧은답
+# 30회: '응' 5회 중 '음' 2회·'으음' 1회). 목록 밖이라 매번 LLM 이 판정했고
+# 같은 소리가 두 번은 unknown 으로 버려지고 한 번만 affirm 으로 살았다.
+#
+# **단독일 때만** 긍정으로 본다 — AFFIRMATIVES 와 나눠 둔 이유가 이것이다.
+# 확인 질문의 첫 단어 지름길에는 넣지 않는다: "음… 아니야"의 첫 단어를
+# 승낙으로 읽으면 망설임이 곧바로 주행이 된다.
+SOFT_AFFIRMATIVES = frozenset({"음", "으음", "음음", "어어", "어어어"})
 
 YES = "yes"
 NO = "no"
@@ -98,7 +106,7 @@ def classify_short_reply(text: str) -> Optional[str]:
     처리로 넘겨 목적지를 뽑는 편이 낫다 — 안내가 막히지 않는다.
     """
     word = normalize_short_reply(text)
-    if word in AFFIRMATIVES:
+    if word in AFFIRMATIVES or word in SOFT_AFFIRMATIVES:
         return YES
     if word in NEGATIVES:
         return NO

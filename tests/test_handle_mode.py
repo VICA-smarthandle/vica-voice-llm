@@ -21,6 +21,14 @@ def test_affirmative_forms(text):
     assert classify_short_reply(text) == YES
 
 
+@pytest.mark.parametrize("text", ["음", "음.", "으음", "어어", "음음"])
+def test_hesitation_sounds_are_affirmative(text):
+    """whisper 가 "응"을 이렇게 적는다 (2026-09-02 짧은답 30회 실측:
+    '응' 5회 중 '음' 2회·'으음' 1회). 목록 밖이라 매번 LLM 이 판정했고,
+    같은 소리가 두 번은 버려지고 한 번만 살았다."""
+    assert classify_short_reply(text) == YES
+
+
 @pytest.mark.parametrize("text", ["아니", "아니요.", "아뇨", "싫어요", "취소"])
 def test_negative_forms(text):
     assert classify_short_reply(text) == NO

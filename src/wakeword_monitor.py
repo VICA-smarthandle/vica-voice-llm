@@ -32,7 +32,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
+from .handle_mode import (
+    AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
 from .wakeword_gate import FrameGate, match_emergency_transcript
@@ -66,7 +67,7 @@ LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
 # (긍/부정)로만 제한해 유령 전사의 부활을 막는다. 자유 창(호출 직후)은
 # 목적지 같은 긴 말을 기다리는 자리라 기존 문턱 그대로다 (사용자 결정).
 SHORT_ANSWER_MIN_RMS = 0.02
-_SHORT_ANSWER_WORDS = AFFIRMATIVES | NEGATIVES
+_SHORT_ANSWER_WORDS = AFFIRMATIVES | SOFT_AFFIRMATIVES | NEGATIVES
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
