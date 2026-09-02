@@ -25,10 +25,17 @@ import sys
 import threading
 import time
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, String
-from rcl_interfaces.msg import Log
+try:
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import Bool, Empty, String
+    from rcl_interfaces.msg import Log
+except ImportError:  # ROS 미소싱 터미널 (venv 여부와 무관 — rclpy 는 /opt/ros 에 있다)
+    sys.exit(
+        "rclpy 를 찾지 못했습니다 — 이 터미널에 ROS 를 소싱하세요:\n"
+        "  source /opt/ros/humble/setup.bash\n"
+        "  source ~/VICA-smarthandle/vica_ros2_ws/install/setup.bash\n"
+        "(서기는 토픽만 듣습니다. 음성 venv 는 필요 없습니다.)")
 
 try:  # 워크스페이스 미소싱이어도 서기는 돌아가게 한다 (의도 칸만 빈다)
     from vica_interfaces.msg import VicaIntent
