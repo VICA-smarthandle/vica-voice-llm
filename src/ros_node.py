@@ -34,7 +34,8 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
-from .langchain_intent_parser import is_instant_utterance, parse_intent
+from .langchain_intent_parser import (
+    SHORTCUT_REPLIES, is_instant_utterance, parse_intent)
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -171,9 +172,16 @@ class LlmIntentNode(Node):
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
         #      특히 중요하다 — 잡담이 기록에 쌓이면 다음 "그래"가 엉뚱한
         #      목적지로 붙는다 (2026-08-31 야간).
+        #      단, **할 말을 들고 온 판정은 통과**시킨다 (2026-09-02). 지름길이
+        #      만든 호출 응답("네?")이 intent 이름만 보고 함께 삼켜져 '피카야'가
+        #      무응답이 됐다(실기). 판별은 SHORTCUT_REPLIES 로 한다 — LLM 이
+        #      지어낸 잡담 대꾸는 이 목록에 없으므로 종전대로 버려진다.
+        #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
         if (time.time() < self._followup_until
                 and intent.intent in ("unknown", "clarify")
-                and not intent.need_confirm):
+                and not intent.need_confirm
+                and intent.reply not in SHORTCUT_REPLIES
+                and intent.safety_flag != "emergency"):
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")
             return

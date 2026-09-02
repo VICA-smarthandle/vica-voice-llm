@@ -30,10 +30,12 @@ class TestCancelRule:
         assert result.reply == CANCEL_CONFIRM
 
     def test_cancel_during_destination_confirm_stays_negative(self):
-        # 목적지 확인 중의 "취소"는 기존 NEGATIVES 경로(되묻기)가 우선이다.
+        # 목적지 확인 중의 "취소"는 취소 지름길이 아니라 부정 경로가 먼저
+        # 잡는다. 그 경로의 결과는 deny 다 (2026-09-02, 종전 clarify) —
+        # 미션이 CONFIRMING 을 즉시 접는다.
         history = [HumanMessage("화장실로 가줘"), AIMessage(DEST.confirm_prompt)]
         result = parse_intent("취소", [DEST], history=history)
-        assert result.intent == "clarify"
+        assert result.intent == "deny"
 
 
 class TestCommandConfirmFlow:

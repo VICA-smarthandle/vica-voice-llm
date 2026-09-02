@@ -138,3 +138,35 @@ class TestWakeWordInsideWindow:
         """접수 신호("확인할게요") 없이 바로 "네?"가 나가야 한다."""
         from src.langchain_intent_parser import is_instant_utterance
         assert is_instant_utterance("비카야") is True
+
+
+class TestFollowupFilterLetsAnswersThrough:
+    """재청취 기각(ros_node 2-1)이 **할 말을 든 판정**까지 삼키던 결함.
+
+    9/1~9/2 실기: 확인 질문에 "아니"라고 답한 6회가 전부 증발했고
+    ('재청취 기각(무의미): 아니. intent=clarify'), 창 안에서 부른 '피카야'의
+    "네?"도 같은 자리에서 삼켜졌다. 필터가 intent 이름만 보고 reply 를 보지
+    않았기 때문이다. 여기서는 필터가 보는 **입력 조건**을 못박는다 — 필터
+    자체는 노드에 있어 ROS 없이 직접 부를 수 없다.
+    """
+
+    def test_decline_is_not_droppable_kind(self):
+        """거절은 이제 deny 라 필터의 폐기 대상(unknown/clarify)이 아니다."""
+        history = [HumanMessage("화장실로 가줘"), AIMessage(DEST.confirm_prompt)]
+        result = parse_intent("아니", [DEST], history=history)
+        assert result.intent == "deny"
+        assert result.intent not in ("unknown", "clarify")
+
+    def test_wake_greeting_is_marked_as_shortcut_reply(self):
+        """호출 응답은 unknown 이지만 SHORTCUT_REPLIES 표지로 통과한다."""
+        from src.langchain_intent_parser import SHORTCUT_REPLIES
+        result = parse_intent("피카야", [DEST], history=[])
+        assert result.intent == "unknown"          # 폐기 대상 종류지만
+        assert result.reply in SHORTCUT_REPLIES    # 표지가 있어 살아난다
+
+    def test_llm_chatter_reply_is_not_marked(self):
+        """LLM 이 지어낸 대꾸는 표지가 없어 종전대로 버려진다 — 이 경계가
+        무너지면 잡담마다 로봇이 대꾸해 멘트 최소주의가 깨진다."""
+        from src.langchain_intent_parser import SHORTCUT_REPLIES
+        assert "무슨 말씀이신지 잘 모르겠어요." not in SHORTCUT_REPLIES
+        assert "" not in SHORTCUT_REPLIES

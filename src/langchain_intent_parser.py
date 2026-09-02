@@ -21,7 +21,6 @@ from .replies import (
     ASK_DESTINATION,
     CANCEL_CONFIRM,
     COMMAND_DECLINED,
-    CONFIRM_DECLINED,
     LLM_UNAVAILABLE,
     PAUSE_ACK,
     RESUME_CONFIRM,
@@ -163,6 +162,11 @@ _NEGATIVES = NEGATIVES
 # 첫 단어 지름길에는 넣지 않는다 — "음… 아니야"가 승낙이 되면 안 된다.
 _SOLO_AFFIRMATIVES = AFFIRMATIVES | SOFT_AFFIRMATIVES
 _normalize_short_reply = normalize_short_reply
+
+# 코드(지름길)가 직접 채운 응답 문구. LLM 이 지어낸 잡담 대꾸와 구별하는
+# 유일한 표지다 — ros_node 의 재청취 기각이 이 답은 삼키지 않는다.
+# 목록은 지름길이 늘 때만 늘린다 (LLM 생성 문구는 절대 넣지 않는다).
+SHORTCUT_REPLIES = frozenset({WAKE_GREETING})
 
 
 def _pending_confirm_destination(
@@ -367,10 +371,18 @@ def parse_intent(
                 safety_flag="normal",
             )
         if word in _NEGATIVES or first in _NEGATIVES:
+            # deny 로 보낸다 (2026-09-02). 종전의 clarify 는 두 곳에서 막혔다:
+            # ① 미션의 on_intent 는 navigate 가 아니면 아무것도 하지 않아
+            #    CONFIRMING 이 타임아웃까지 남았고 ② ros_node 의 재청취 기각이
+            #    clarify 를 잡담으로 보고 삼켜 거절이 통째로 증발했다(9/1~9/2
+            #    실기 3/3 + 3회). 미션에는 이미 정식 통로가 있다 —
+            #    on_confirm_answer(False) 가 CONFIRMING 을 접고 말한다.
+            # reply 는 비운다 — 계약(VicaIntent.msg affirm/deny 절): 발화는
+            # 상태를 아는 미션 몫이라 여기서 채우면 두 번 말한다.
             return VicaIntent(
-                intent="clarify",
+                intent="deny",
                 confidence=1.0,
-                reply=CONFIRM_DECLINED,
+                reply="",
                 need_confirm=False,
             )
 
@@ -380,6 +392,9 @@ def parse_intent(
     if word in _WAKE_WORDS:
         # 창 안에서 부른 호출어 — "네?"는 ?로 끝나 재청취 창이 다시 열리고,
         # 녹음 캐시(wake_greeting.wav)가 있어 0초에 재생된다.
+        # intent 는 unknown 이지만 **할 말을 들고 있다** — ros_node 의 재청취
+        # 기각이 이 답까지 삼켜 '피카야'가 무응답이 됐다(9/2 실기). 그쪽은
+        # SHORTCUT_REPLIES 로 가려낸다.
         return VicaIntent(intent="unknown", reply=WAKE_GREETING,
                           need_confirm=False, confidence=1.0)
     if word in _CANCEL_WORDS:

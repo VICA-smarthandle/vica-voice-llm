@@ -57,11 +57,20 @@ class TestParseIntentShortcut:
             assert result.need_confirm is False, word
             assert result.matched_destination_id == DEST.id, word
 
-    def test_negative_clarifies(self):
+    def test_negative_denies(self):
+        """거절은 deny 다 (2026-09-02, 종전 clarify).
+
+        clarify 는 두 곳에서 막혔다: 미션의 on_intent 는 navigate 가 아니면
+        아무것도 안 해 CONFIRMING 이 타임아웃까지 남았고, ros_node 의 재청취
+        기각이 clarify 를 잡담으로 보고 삼켰다(실기 6회). deny 는 미션의
+        정식 통로(on_confirm_answer(False))로 들어가 상태를 즉시 접는다.
+        """
         result = parse_intent("아니요", [DEST], history=HISTORY)
-        assert result.intent == "clarify"
+        assert result.intent == "deny"
         assert result.matched_destination_id is None
         assert result.need_confirm is False
+        # 발화는 상태를 아는 미션 몫 — 여기서 채우면 두 번 말한다(계약).
+        assert result.reply == ""
 
 
 class TestFinalizeConfirmationGate:
@@ -113,7 +122,7 @@ class TestFirstWordShortcut:
 
     def test_negative_prefix_with_tail_declines(self):
         result = parse_intent("아니 거기 말고 다른 데", [DEST], history=HISTORY)
-        assert result.intent == "clarify"
+        assert result.intent == "deny"
 
     def test_hesitation_alone_confirms_but_prefix_does_not(self):
         """'음'·'어어'는 whisper 가 적은 "응"이라 단독이면 승낙이다. 그러나
