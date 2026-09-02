@@ -350,12 +350,23 @@ class TestAgcDesiredFromEnv:
         assert agc_desired_from_env("5.0") is None
 
 
-def test_confirm_hint_covers_arrival_dialog_vocab():
-    """확인 창 귀띔에 도착 후 대화의 답(대기·시간·종료)이 들어있어야 한다 —
-    빠지면 오전사로 wait/finish 가 안 잡힌다 (2026-08-30)."""
+def test_confirm_hint_holds_only_answers_to_questions():
+    """initial_prompt 에는 **로봇이 물어서 받는 답**만 둔다.
+
+    이 창을 여는 질문 여섯 중 다섯이 네/아니오이고, 숫자를 받는 것은
+    "몇 분쯤 걸리실까요?" 하나다. 그래서 남기는 것은 긍/부정·대기·시간뿐.
+
+    종료·감사 표현은 뺐다 (2026-09-02). 하루치 로그에서 오전사 11건이
+    전부 그 계열로 몰렸고 — whisper 가 짧고 애매한 소리를 그 문구로
+    메꾼다 — 그중 '다 됐어' 2건은 finish(안내 전체 종료)로 갔다.
+    반대로 진짜 종료 의사를 놓친 사례는 0건이었다.
+    """
     from src.wakeword_monitor import CONFIRM_HINT
-    for word in ["기다려", "이십", "삼십", "반시간", "됐어", "그만"]:
-        assert word in CONFIRM_HINT, f"귀띔에 '{word}' 누락"
+    for word in ["네", "아니", "기다려", "대기해", "이십", "삼십", "반시간"]:
+        assert word in CONFIRM_HINT, f"질문의 답 '{word}' 가 빠졌다"
+    for word in ["됐어", "그만", "고마워", "감사", "안내 끝", "필요 없"]:
+        assert word not in CONFIRM_HINT, (
+            f"'{word}' 는 질문의 답이 아니다 — whisper 가 이것으로 메꾼다")
     # 너무 길면 딴말이 후보로 둔갑 — 상한을 둔다 (whisper 프롬프트 예산)
     assert len(CONFIRM_HINT) < 200
 
