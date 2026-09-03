@@ -111,12 +111,26 @@ class WakewordNode(Node):
 
         # 장소 이름 귀띔 — 자유 명령 창의 목적지 오전사('휴게실'→'조계실') 대책.
         # 목적지를 못 읽어도 감시는 시작해야 하므로 실패는 경고로만 남긴다.
+        #
+        # 경로는 **launch 가 넘겨주는 파라미터**가 정본이다(2026-09-03). 종전에는
+        # 환경변수 아니면 vica_map_0630 고정이라, map_id 를 바꿔 띄워도 이 노드만
+        # 옛 지도를 봤다 — LLM 노드는 새 지도(목적지 4개)를 읽는데 귀는 옛 이름
+        # (입구·안내소·휴게실…)을 외우고 있었다. 그 상태의 위험은 두 겹이다:
+        # 새 목적지 이름을 못 알아듣고, **지금 없는 옛 이름으로 웅얼거림을
+        # 메꾼다**(9/2 에 initial_prompt 에서 겪은 것과 같은 모양).
+        # 파라미터 이름·기본값은 ros_node 와 맞춘다 — launch 가 같은 값을 둘에
+        # 똑같이 넘긴다.
+        self.declare_parameter(
+            "destinations_yaml",
+            str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
+                / "destinations.yaml"),
+        )
+        hint_path = os.environ.get(
+            "VICA_DESTINATIONS_YAML",
+            str(self.get_parameter("destinations_yaml").value))
         try:
-            listen_hint = build_place_hint(load_destinations(os.environ.get(
-                "VICA_DESTINATIONS_YAML",
-                str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
-                    / "destinations.yaml"))))
-            self.get_logger().info(f"장소 귀띔 준비: '{listen_hint}'")
+            listen_hint = build_place_hint(load_destinations(hint_path))
+            self.get_logger().info(f"장소 귀띔 준비 ({hint_path}): '{listen_hint}'")
         except Exception as exc:
             listen_hint = None
             self.get_logger().warning(f"장소 귀띔 생략 (목적지 로드 실패): {exc}")

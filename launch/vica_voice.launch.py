@@ -71,7 +71,18 @@ def generate_launch_description() -> LaunchDescription:
             # 웨이크워드 앞단: 호출(비카야) + 긴급어(whisper 검증) — LLM 우회 안전 경로.
             # 기존 ros_emergency_node(whisper 상시)를 대체한다. 롤백 = 아랫줄을
             # ros_emergency_node 로 되돌리고 push-to-talk STT 를 별도 실행.
-            _python_node("src.ros_wakeword_node", "vica_wakeword"),
+            # 목적지 경로는 LLM 노드와 **같은 값**을 넘긴다. 이 노드는 그것으로
+            # STT 장소 귀띔을 만든다 — 안 넘기면 옛 지도를 외운 채 듣는다
+            # (2026-09-03 수리).
+            _python_node(
+                "src.ros_wakeword_node",
+                "vica_wakeword",
+                [
+                    "--ros-args",
+                    "-p",
+                    ["destinations_yaml:=", destinations_yaml],
+                ],
+            ),
             # 회전·도착 청각 안내 (음 + 말). 알리기만 한다.
             _python_node("src.ros_audio_cue_node", "vica_audio_cue"),
         ]
