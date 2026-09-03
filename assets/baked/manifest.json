@@ -71,5 +71,14 @@
  "dest_e59b071c_confirm.wav": "화장실3으로 안내해드릴까요?",
  "dest_e59b071c_arrival.wav": "화장실3 앞에 도착했습니다.",
  "mission_msg_start_delivery_407.wav": "407호로 배달을 시작합니다.",
- "mission_msg_arrived_delivery_407.wav": "407호로 배달을 완료했습니다."
+ "mission_msg_arrived_delivery_407.wav": "407호로 배달을 완료했습니다.",
+ "dest_wonmugwa_start.wav": "원무과로 안내를 시작합니다.",
+ "dest_wonmugwa_confirm.wav": "원무과으로 안내해드릴까요?",
+ "dest_wonmugwa_arrival.wav": "원무과 앞에 도착했습니다.",
+ "dest_jeopsucheo_start.wav": "접수처로 안내를 시작합니다.",
+ "dest_jeopsucheo_confirm.wav": "접수처으로 안내해드릴까요?",
+ "dest_jeopsucheo_arrival.wav": "접수처 앞에 도착했습니다.",
+ "dest_mullichiryosil_start.wav": "물리치료실로 안내를 시작합니다.",
+ "dest_mullichiryosil_confirm.wav": "물리치료실으로 안내해드릴까요?",
+ "dest_mullichiryosil_arrival.wav": "물리치료실 앞에 도착했습니다."
 }
