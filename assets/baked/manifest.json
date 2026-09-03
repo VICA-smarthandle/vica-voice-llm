@@ -69,5 +69,7 @@
  "dest_b7627d7c_confirm.wav": "화장실2으로 안내해드릴까요?",
  "dest_b7627d7c_arrival.wav": "화장실2 앞에 도착했습니다.",
  "dest_e59b071c_confirm.wav": "화장실3으로 안내해드릴까요?",
- "dest_e59b071c_arrival.wav": "화장실3 앞에 도착했습니다."
+ "dest_e59b071c_arrival.wav": "화장실3 앞에 도착했습니다.",
+ "mission_msg_start_delivery_407.wav": "407호로 배달을 시작합니다.",
+ "mission_msg_arrived_delivery_407.wav": "407호로 배달을 완료했습니다."
 }
