@@ -39,7 +39,8 @@ from std_msgs.msg import Bool, Empty, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from .destination_loader import build_place_hint, load_destinations
-from .dsp_state import agc_desired_from_env, apply_agc_desired_level
+from .dsp_state import (agc_desired_from_env, apply_agc_desired_level,
+                        apply_echo_tuning, echo_tuning_from_env)
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
 from .ros_convert import emergency_to_msg
@@ -160,6 +161,22 @@ class WakewordNode(Node):
             else:
                 self.get_logger().warning(
                     f"AGC 목표 레벨 설정 실패({desired}) — 공장 기본으로 감시 계속")
+
+        # 에코 억제 나사 (2026-09-04 촬영 현장 결정). AGC 와 같은 자리에서,
+        # 같은 이유로 매 기동 쓴다 — 칩은 전원 재투입마다 공장값으로 돌아간다.
+        # 반드시 마이크 스트림을 열기 전이어야 한다(제어 전송 거부).
+        etail, nlatten = echo_tuning_from_env(
+            os.environ.get("VICA_MIC_GAMMA_ETAIL", ""),
+            os.environ.get("VICA_MIC_NLATTEN", ""))
+        if etail is not None or nlatten is not None:
+            wrote = apply_echo_tuning(etail, nlatten)
+            if wrote:
+                self.get_logger().info(
+                    "에코 억제 설정: "
+                    + " · ".join(f"{k}={v}" for k, v in wrote.items()))
+            else:
+                self.get_logger().warning(
+                    "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._thread = threading.Thread(target=self._monitor.run, daemon=True)

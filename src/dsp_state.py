@@ -35,6 +35,93 @@ _LIVE_INT = {
 # AGC 목표 레벨 (id19, offset2, float) — D7 예외로 승인된 유일한 쓰기 대상
 _AGC_DESIRED = (19, 2)
 
+# 에코 억제 나사 (2026-09-04 사용자 승인 — D7 동결의 두 번째 예외).
+# 촬영 장소가 복도라 울림이 AEC 한계를 넘었다. 칩이 지우는 세기를 올린다.
+# 값은 Seeed 공식 tuning.py 표 기준이며 전부 rw 다. 공장 기본은 셋 다
+# 1.0 / 0 이고(2026-09-04 실측), 전원을 껐다 켜면 그 값으로 돌아간다 —
+# 그래서 노드가 뜰 때마다 다시 쓴다(AGC 와 같은 이유).
+#
+#   GAMMA_ETAIL   0~3  에코 **꼬리** 과잉 차감 배율 ← 복도 울림이 이것
+#   NLATTENONOFF  0/1  비선형 에코 억제 스위치. 스피커가 크면 원신호와
+#                      닮지 않은 왜곡 에코가 생기는데 일반 AEC 로는 못 지운다
+#
+# 올리면 에코가 더 지워지는 만큼 **사람 목소리도 깎인다.** 올린 뒤에는
+# 반드시 "비카야"가 여전히 걸리는지 확인할 것.
+_GAMMA_ETAIL = (19, 16)
+_NLATTEN = (19, 18)
+
+
+def _write_param(dev, param: tuple, value, is_int: bool) -> Optional[float]:
+    """칩에 한 값을 쓰고 읽어서 확인한다. 실패하면 None.
+
+    전송 형식은 Seeed tuning.py 와 같다 — payload 의 마지막 필드가 형 표시
+    (int=1, float=0)이고, 읽기는 0x80(read) | 0x40(int) | offset 이다.
+    """
+    import struct
+    import usb.util
+
+    param_id, offset = param
+    payload = (struct.pack("<iii", offset, int(value), 1) if is_int
+               else struct.pack("<ifi", offset, float(value), 0))
+    dev.ctrl_transfer(
+        usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR
+        | usb.util.CTRL_RECIPIENT_DEVICE, 0, 0, param_id, payload, TIMEOUT_MS)
+    cmd = 0x80 | offset | (0x40 if is_int else 0)
+    resp = dev.ctrl_transfer(
+        usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR
+        | usb.util.CTRL_RECIPIENT_DEVICE, 0, cmd, param_id, 8, TIMEOUT_MS)
+    lo, hi = struct.unpack("<ii", resp.tobytes())
+    return float(lo) if is_int else lo * (2.0 ** hi)
+
+
+def apply_echo_tuning(gamma_etail: Optional[float],
+                      nlatten: Optional[int]) -> dict:
+    """에코 억제 나사를 칩에 쓴다. 쓴 값(읽어서 확인한 값)을 돌려준다.
+
+    AGC 와 같은 제약: **마이크 스트림을 열기 전에** 부를 것. 스트림과 겹치면
+    칩이 제어 전송을 거부한다(Pipe error). 실패해도 예외를 내지 않는다 —
+    에코가 조금 더 샐 뿐 감시는 계속돼야 한다.
+    """
+    result: dict = {}
+    if gamma_etail is None and nlatten is None:
+        return result
+    try:
+        import usb.core
+
+        dev = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        if dev is None:
+            return result
+        if nlatten is not None:
+            result["NLATTENONOFF"] = _write_param(dev, _NLATTEN, nlatten, True)
+        if gamma_etail is not None:
+            result["GAMMA_ETAIL"] = _write_param(
+                dev, _GAMMA_ETAIL, gamma_etail, False)
+    except Exception:
+        return result
+    return result
+
+
+def echo_tuning_from_env(raw_etail: str, raw_nlatten: str) -> tuple:
+    """(gamma_etail, nlatten) 해석. None = 쓰지 않음(공장 기본 유지).
+
+    범위는 Seeed 표 그대로 — etail 0~3, nlatten 0/1. 벗어난 값은 무시한다.
+    """
+    etail: Optional[float] = None
+    raw = (raw_etail or "").strip().lower()
+    if raw not in ("", "off", "none"):
+        try:
+            v = float(raw)
+            etail = v if 0.0 <= v <= 3.0 else None
+        except ValueError:
+            etail = None
+    nl: Optional[int] = None
+    raw = (raw_nlatten or "").strip().lower()
+    if raw in ("1", "on", "true"):
+        nl = 1
+    elif raw in ("0", "off", "false"):
+        nl = 0
+    return etail, nl
+
 
 def agc_desired_from_env(raw: str) -> Optional[float]:
     """VICA_MIC_AGC_DESIRED 해석. None = 쓰지 않음(공장 기본 유지).
