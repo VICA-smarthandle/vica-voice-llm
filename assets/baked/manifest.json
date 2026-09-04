@@ -84,5 +84,8 @@
  "dest_restroom_arrival_with_sides.wav": "화장실 앞에 도착했습니다. 남자화장실은 왼쪽, 여자화장실은 오른쪽에 있습니다. 다녀오시는 동안 여기서 기다릴까요?",
  "dest_wonmugwa_arrival_merged.wav": "원무과 앞에 도착했습니다. 여기서 대기할까요?",
  "dest_jeopsucheo_arrival_merged.wav": "접수처 앞에 도착했습니다. 여기서 대기할까요?",
- "dest_mullichiryosil_arrival_merged.wav": "물리치료실 앞에 도착했습니다. 여기서 대기할까요?"
+ "dest_mullichiryosil_arrival_merged.wav": "물리치료실 앞에 도착했습니다. 여기서 대기할까요?",
+ "handle_grip_request.wav": "스마트핸들 손잡이를 잡아주세요!",
+ "handle_grip_confirmed.wav": "확인되었습니다!",
+ "handle_grip_lost.wav": "안전을 위해 손잡이를 다시 잡아주세요"
 }
