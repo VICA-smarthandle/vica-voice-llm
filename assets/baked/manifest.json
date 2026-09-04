@@ -81,5 +81,8 @@
  "dest_mullichiryosil_start.wav": "물리치료실로 안내를 시작합니다.",
  "dest_mullichiryosil_confirm.wav": "물리치료실으로 안내해드릴까요?",
  "dest_mullichiryosil_arrival.wav": "물리치료실 앞에 도착했습니다.",
- "dest_restroom_arrival_with_sides.wav": "화장실 앞에 도착했습니다. 남자화장실은 왼쪽, 여자화장실은 오른쪽에 있습니다. 다녀오시는 동안 여기서 기다릴까요?"
+ "dest_restroom_arrival_with_sides.wav": "화장실 앞에 도착했습니다. 남자화장실은 왼쪽, 여자화장실은 오른쪽에 있습니다. 다녀오시는 동안 여기서 기다릴까요?",
+ "dest_wonmugwa_arrival_merged.wav": "원무과 앞에 도착했습니다. 여기서 대기할까요?",
+ "dest_jeopsucheo_arrival_merged.wav": "접수처 앞에 도착했습니다. 여기서 대기할까요?",
+ "dest_mullichiryosil_arrival_merged.wav": "물리치료실 앞에 도착했습니다. 여기서 대기할까요?"
 }
