@@ -221,6 +221,7 @@ class WakewordMonitor:
         on_reject: Optional[Callable[[str], None]] = None,
         on_listen_empty: Optional[Callable[[], None]] = None,
         on_listen_state: Optional[Callable[[str], None]] = None,
+        on_wake_doa: Optional[Callable[[float], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -249,6 +250,9 @@ class WakewordMonitor:
         # "귀가 바쁜 동안" 멈추는 데 쓴다 (2026-08-30 — 답이 STT·LLM 을
         # 통과하는 동안 8초 시계가 먼저 울려 홈으로 떠나던 결함).
         self._on_listen_state = on_listen_state or (lambda s: None)
+        # 호출이 온 방향(DOA). 로봇이 그쪽으로 고개를 돌리는 데 쓴다
+        # (호출 접근 설계). 방향을 못 읽으면 부르지 않는다.
+        self._on_wake_doa = on_wake_doa or (lambda doa: None)
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -331,6 +335,18 @@ class WakewordMonitor:
             return
         self._locked_doa = float(doa)
         self._locked_doa_at = time.time() if now is None else now
+
+    def note_wake_direction(self, doa: Optional[float],
+                            now: Optional[float] = None) -> None:
+        """호출 순간의 방향을 잠그고(barge-in) 밖에 알린다(고개 돌리기).
+
+        둘을 한 자리에 묶는 이유: run() 에서 on_wake 콜백은 방향 잠금보다
+        먼저 불린다. 노드가 나중에 잠긴 값을 읽으면 직전 대화의 방향을
+        읽게 된다.
+        """
+        self.lock_user_direction(doa, now=now)
+        if doa is not None:
+            self._on_wake_doa(float(doa))
 
     # ---------------------------------------------------------------- 재청취
     def arm_followup(self, now: Optional[float] = None) -> None:
@@ -891,8 +907,9 @@ class WakewordMonitor:
                             vad2 = dsp.voice_activity()
                 r = self.process_frame(frame, vad=vad, doa=doa, vad2=vad2)
                 if r == "wake":
-                    # "비카야"가 온 방향을 이번 대화의 사용자 방향으로 잠근다
-                    self.lock_user_direction(dsp.doa_angle())
+                    # "비카야"가 온 방향을 이번 대화의 사용자 방향으로 잠그고,
+                    # 로봇이 그쪽으로 고개를 돌릴 수 있게 밖에도 알린다.
+                    self.note_wake_direction(dsp.doa_angle())
 
 
 def _demo() -> None:
