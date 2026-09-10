@@ -69,3 +69,14 @@ def test_callback_is_optional():
     m = make()
     m.note_wake_direction(90.0, now=0.0)   # 예외 없이 끝나야 한다
     assert m._locked_doa == 90.0
+
+
+def test_consecutive_calls_each_announce_their_own_direction():
+    """지키는 불변식: 발행되는 방향은 항상 "이번" 호출의 것이다 — 깨지면
+    로봇이 직전 대화 방향으로 돈다. 기존 시험 5개는 호출을 한 번씩만 해서
+    이 회귀를 하나도 못 잡는다."""
+    seen: list = []
+    m = make(on_wake_doa=seen.append)
+    m.note_wake_direction(10, now=0.0)
+    m.note_wake_direction(200, now=1.0)
+    assert seen == [10.0, 200.0]
