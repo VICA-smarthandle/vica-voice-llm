@@ -35,7 +35,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import Bool, Empty, Float32, String
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from .destination_loader import build_place_hint, load_destinations
@@ -70,6 +70,11 @@ class WakewordNode(Node):
         self.create_subscription(
             String, "/vica/tts_done", self._on_tts_done_text, 10)
         self._pub_wake = self.create_publisher(String, "/vica/wake", 10)  # 계측·UI 앵커
+        # 호출이 온 방향(0~359°, 마이크 좌표계. 정면 0 / 핸들 180).
+        # 미션이 대기 중에만 받아 그쪽으로 고개를 돌린다(호출 접근 설계).
+        # /vica/wake 의 payload 를 넓히지 않는 이유는 그 토픽에 안내 중
+        # 각성·복귀 브레이크가 이미 걸려 있어서다.
+        self._pub_wake_doa = self.create_publisher(Float32, "/vica/wake_doa", 10)
         # 청취 상태 (open/speech/closed/empty) — 미션이 무응답 시계를 귀가
         # 바쁜 동안 멈추는 데 쓴다 (2026-08-30).
         self._pub_listen_state = self.create_publisher(String, "/vica/listen_state", 10)
@@ -145,6 +150,7 @@ class WakewordNode(Node):
             on_reject=self._on_reject,
             on_listen_empty=self._on_listen_empty,
             on_listen_state=self._on_listen_state,
+            on_wake_doa=self._publish_wake_doa,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
@@ -270,6 +276,11 @@ class WakewordNode(Node):
         msg.data = "wake"
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
+
+    def _publish_wake_doa(self, doa: float) -> None:
+        """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다."""
+        self._pub_wake_doa.publish(Float32(data=float(doa)))
+        self.get_logger().info(f"🧭 호출 방향 {doa:.0f}°")
 
     def _on_barge_in(self) -> None:
         """질문 재생 중 사용자가 답을 시작했다 — 하던 말을 끊고 듣는다."""
