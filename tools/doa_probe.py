@@ -95,7 +95,7 @@ def main() -> None:
     speak_for(PHASE_SEC)
     a1 = time.time()
 
-    audio_out.play(audio_cue.arrived(), audio_cue.SAMPLE_RATE, blocking=True)
+    audio_out.play(audio_cue.sequence((784.0, 1047.0), 0.15), audio_cue.SAMPLE_RATE, blocking=True)
     time.sleep(1.0)
     print(f"B구간 {PHASE_SEC:.0f}초 — 삑 후, '옆사람'이 자기 위치에서 계속 말하세요 (사용자는 조용)")
     b0 = time.time()

@@ -1,4 +1,4 @@
-"""안내음 파형 검증 (소리 장치 없이)."""
+"""알림음 파형 검증 (소리 장치 없이)."""
 from __future__ import annotations
 
 import numpy as np
@@ -30,23 +30,10 @@ def test_tone_does_not_clip():
     assert float(np.max(np.abs(wave))) <= 1.0
 
 
-def test_arrived_is_two_rising_tones():
-    """도착음은 단음이 아닌 상행 2음이다 — 다른 알림음과 구분된다."""
-    wave = audio_cue.arrived()
-    half = len(wave) // 2
-    assert _peak_freq(wave[:half]) < _peak_freq(wave[half:])
-
-
 def test_degenerate_input_returns_empty_wave():
     assert len(audio_cue.tone(880.0, 0.0)) == 0
     assert len(audio_cue.tone(0.0, 0.2)) == 0
     assert len(audio_cue.sequence([], 0.1)) == 0
-
-
-def test_play_is_safe_without_audio_device():
-    """소리가 안 나는 것이 파이프라인을 멈출 이유는 되지 않는다."""
-    assert audio_cue.play(np.zeros(0, dtype=np.float32)) is False
-    assert audio_cue.play(None) is False
 
 
 def test_thinking_loop_is_a_quiet_seamless_cycle():

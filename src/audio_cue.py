@@ -26,11 +26,6 @@ import numpy as np
 SAMPLE_RATE = 44100
 DEFAULT_VOLUME = 0.4
 
-WAKE_ACK_HZ = 880.0
-ARRIVED_HZ = (784.0, 1047.0)
-
-CUE_SEC = 0.15
-WAKE_SEC = 0.12
 
 
 def tone(freq_hz: float, duration_sec: float, volume: float = DEFAULT_VOLUME) -> np.ndarray:
@@ -68,30 +63,3 @@ def thinking_loop() -> np.ndarray:
         parts.append(tone(f, THINKING_NOTE_SEC, THINKING_VOLUME))
         parts.append(gap)
     return np.concatenate(parts)
-
-
-def wake_ack() -> np.ndarray:
-    return tone(WAKE_ACK_HZ, WAKE_SEC)
-
-
-def arrived() -> np.ndarray:
-    return sequence(ARRIVED_HZ, CUE_SEC)
-
-
-def play(wave: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bool:
-    """파형을 재생한다. 재생 장치가 없거나 실패해도 예외를 내지 않는다.
-
-    blocking 하지 않는다 — 호출한 콜백을 붙잡아 두면 안 된다.
-    """
-    if wave is None or len(wave) == 0:
-        return False
-    try:
-        from . import audio_out
-
-        audio_out.play(wave, sample_rate)
-        return True
-    except Exception as exc:
-        # 침묵 실패는 "로봇이 대답 안 함"으로 보인다 — 원인은 남긴다.
-        import sys
-        print(f"[audio_cue] 재생 실패: {exc}", file=sys.stderr)
-        return False

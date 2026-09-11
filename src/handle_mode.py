@@ -1,7 +1,7 @@
 """스마트핸들 모드 첫 질문과 그 응답 판정 (순수 로직).
 
 ROS·LLM·langchain 의존이 없어 개발용 컴퓨터에서 그대로 검증한다.
-`cue_logic.py` 와 같은 위치의 모듈이며, 배선은 노드가 맡는다.
+순수 로직 모듈이며, 배선은 노드가 맡는다.
 
 ## 왜 규칙으로 판정하는가
 
@@ -116,9 +116,8 @@ def classify_short_reply(text: str) -> Optional[str]:
 class ModeQuestion:
     """모드를 물었는지 기억하고, 바로 다음 발화를 그 답으로 본다.
 
-    안내 한 건의 첫 호출에만 묻는다. 이 판정 자체는 `cue_logic.GreetingState`
-    가 이미 하고 있으므로 여기서 되풀이하지 않는다 — 노드가 그 결과를 받아
-    `on_asked()` 를 부른다.
+    안내 한 건의 첫 호출에만 묻는다. "첫 호출인가" 판정은 노드가 하고,
+    그 결과를 받아 `on_asked()` 를 부른다.
     """
 
     def __init__(self, answer_window_sec: float = DEFAULT_ANSWER_WINDOW_SEC) -> None:

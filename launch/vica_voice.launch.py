@@ -83,7 +83,5 @@ def generate_launch_description() -> LaunchDescription:
                     ["destinations_yaml:=", destinations_yaml],
                 ],
             ),
-            # 회전·도착 청각 안내 (음 + 말). 알리기만 한다.
-            _python_node("src.ros_audio_cue_node", "vica_audio_cue"),
         ]
     )
