@@ -98,11 +98,11 @@ def test_wake_then_user_text():
 
 def test_wake_silent_timeout():
     # 호출 후 아무 말 없음 → user_text 없이 복귀 (호출 오탐 기록 지점)
-    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 200, text="")
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 220, text="")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)
-    results = run_frames(m, 80, QUIET, t0=1.0)   # 6.4초 — 상한 초과
+    results = run_frames(m, 220, QUIET, t0=1.0)   # 15초 상한 초과 (2026-09-11: 6->15)
     assert "wake_silent" in results
     assert texts == []
 
@@ -236,7 +236,7 @@ def test_wake_window_timeout_fires_listen_empty():
     침묵해서, 사용자는 "아예 감지가 안 된다"고 느꼈다. 못 들었으면
     못 들었다고 말해야 한다.
     """
-    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 200, text="")
+    fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 220, text="")
     events, texts, wakes, empties = [], [], [], []
     m = WakewordMonitor(
         on_emergency=events.append,
@@ -247,7 +247,7 @@ def test_wake_window_timeout_fires_listen_empty():
         transcribe=fake.transcribe,
     )
     run_frames(m, 2, LOUD)
-    results = run_frames(m, 80, QUIET, t0=1.0)   # 상한 초과 — 발화 없음
+    results = run_frames(m, 220, QUIET, t0=1.0)  # 15초 상한 초과(2026-09-11) — 발화 없음
     assert "wake_silent" in results
     assert empties == [1]
     assert texts == []
@@ -321,7 +321,7 @@ def test_near_silence_never_reaches_stt():
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                        # wake → listen
     run_frames(m, 1, TINY, t0=1.0, vad=True)      # 잡음이 VAD 를 한 번 스침
-    results = run_frames(m, 70, TINY, t0=1.1)  # 6초 상한(반짝 무효화 9/1) 경과
+    results = run_frames(m, 200, TINY, t0=1.1)  # 15초 상한(반짝 무효화 9/1, 2026-09-11: 6->15) 경과
     assert "wake_silent" in results
     assert texts == []
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다
@@ -396,7 +396,7 @@ def test_listen_state_empty_on_silence():
         on_wake=lambda: wakes.append(1), predict=fake.predict,
         transcribe=fake.transcribe, on_listen_state=states.append)
     run_frames(m, 2, LOUD)
-    run_frames(m, 80, QUIET, t0=1.0)            # 6.4초 침묵 — 창 만료
+    run_frames(m, 220, QUIET, t0=1.0)           # 15초 침묵 — 창 만료(2026-09-11: 6->15)
     assert states == ["open", "empty"]
 
 

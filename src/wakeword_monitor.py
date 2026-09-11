@@ -103,7 +103,7 @@ WAKE_WORD_TEXT = "비카야"
 _SHORT_ANSWER_WORDS = AFFIRMATIVES | SOFT_AFFIRMATIVES | NEGATIVES
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
-LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
+LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "15.0"))
 LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
 # 자유 창 최소 개방 시간 [TARGET] (2026-09-01): "네?" 에코·비카야 꼬리에
 # VAD 가 반짝하면 말끝 시계(0.8초)가 조기 가동돼 창이 1~1.5초 만에 닫히고,
