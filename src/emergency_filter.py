@@ -1,14 +1,9 @@
-"""긴급 명령어를 LLM 호출 '이전'에 규칙 기반으로 감지한다.
-
-안전 원칙 (CLAUDE.md): 긴급 정지는 LLM 을 거치지 않는다.
-이 모듈은 '감지'만 한다. 실제 정지는 Safety Supervisor / State Machine 이 한다.
-"""
+"""긴급 명령어를 LLM 호출 '이전'에 규칙 기반으로 감지한다."""
 from __future__ import annotations
 
 import re
 from typing import Optional
 
-# CLAUDE.md 의 긴급어 후보를 그대로 채택.
 EMERGENCY_KEYWORDS = [
     "멈춰",
     "정지",
@@ -16,18 +11,45 @@ EMERGENCY_KEYWORDS = [
     "스톱",
     "안돼",
     "위험해",
+]
+
+SOFT_KEYWORDS = [
     "잠깐",
     "천천히",
     "느리게",
 ]
+
+from .replies import EMERGENCY_REPLY  # noqa: E402  (문서 흐름상 여기에 둔다)
+
+__all__ = [
+    "EMERGENCY_KEYWORDS",
+    "SOFT_KEYWORDS",
+    "EMERGENCY_REPLY",
+    "detect_emergency",
+]
+
+_TOKEN_SPLIT = re.compile(r"[\s,.!?~…·\"'()\[\]{}<>:;]+")
+
+
+def _starts_at_token_boundary(text: str, keyword: str) -> bool:
+    """긴급어가 어절 경계에서 시작하는가."""
+    tokens = [token for token in _TOKEN_SPLIT.split(text) if token]
+    for start in range(len(tokens)):
+        joined = ""
+        for token in tokens[start:]:
+            joined += token
+            if len(joined) >= len(keyword):
+                break
+        if joined.startswith(keyword):
+            return True
+    return False
 
 
 def detect_emergency(text: str) -> Optional[str]:
     """발화에 긴급어가 있으면 매칭된 키워드를, 없으면 None 을 돌려준다."""
     if not text:
         return None
-    norm = re.sub(r"\s+", "", text)
     for keyword in EMERGENCY_KEYWORDS:
-        if keyword in norm:
+        if _starts_at_token_boundary(text, keyword):
             return keyword
     return None

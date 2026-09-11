@@ -1,6 +1,14 @@
+# VICA 음성 파이프라인 의존성.
+#
+# 주의: 이 목록은 PC(Python 3.11+)에서 만든 freeze 라 일부 핀 버전이 Jetson 의
+# Python 3.10 과 호환되지 않는다(예: numpy 2.4.x 는 3.11+ 필요). Jetson 에서는 이
+# 파일을 그대로 설치하지 말고 docs/jetson-setup.md 의 Jetson 네이티브 설치 절차를
+# 따른다. onnxruntime 은 Jetson 에서 onnxruntime-gpu(NVIDIA 휠)로 설치한다.
+#
+# LLM 은 기본 Ollama(langchain-ollama)로 호출하고, VICA_LLM_PROVIDER=openai 로
+# OpenAI(langchain-openai) 백엔드를 선택할 수 있다. Anthropic/Google 은 사용하지 않는다.
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anthropic==0.112.0
 anyio==4.14.0
 attrs==26.1.0
 audioread==3.1.0
@@ -17,7 +25,6 @@ cryptography==49.0.0
 csvw==4.0.0
 ctranslate2==4.8.0
 decorator==5.3.1
-deepagents==0.6.12
 distro==1.9.0
 dlinfo==2.0.0
 docstring_parser==0.18.0
@@ -43,13 +50,10 @@ jsonpatch==1.33
 jsonpointer==3.1.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-kokoro-onnx==0.3.9
-kokoro-tts==2.3.1
 langchain==1.3.11
-langchain-anthropic==1.4.7
-langchain-core==1.4.8
-langchain-google-genai==4.2.5
+langchain-core==1.5.5
 langchain-ollama==1.1.0
+langchain-openai==1.5.1
 langchain-protocol==0.0.18
 langgraph==1.2.6
 langgraph-checkpoint==4.1.1
@@ -69,14 +73,17 @@ networkx==3.6.1
 numba==0.65.1
 numpy==2.4.6
 ollama==0.6.2
-onnxruntime==1.27.0
-openai==2.43.0
+onnxruntime==1.27.0  # Jetson 에서는 onnxruntime-gpu 로 설치 (docs/jetson-setup.md)
+                     # [미확정] 인수인계 문서는 aarch64 cp310 마지막 버전인
+                     # 1.23.2 핀을 요구한다 — Jetson 설치 시 실측으로 확정할 것
+openwakeword==0.6.0
 orjson==3.11.9
 ormsgpack==1.12.2
 packaging==26.2
 phonemizer-fork==3.3.1
 platformdirs==4.10.0
 pooch==1.9.0
+psutil==7.2.2
 protobuf==7.35.1
 pyasn1==0.6.3
 pyasn1_modules==0.4.2

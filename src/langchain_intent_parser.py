@@ -1,38 +1,45 @@
-"""사용자 발화를 LangChain(Ollama Cloud)으로 분석해 VicaIntent 로 만든다.
-
-설계 원칙 (docs/design.md):
-- LLM 은 intent 분류와 '목적지 표현(destination_candidate)' 까지만 채운다.
-- 실제 목적지 확정(matched_destination_id)과 안전 판단은 코드가 한다.
-"""
+"""사용자 발화를 LangChain(Ollama Cloud)으로 분석해 VicaIntent 로 만든다."""
 from __future__ import annotations
 
 import os
 from typing import Optional, Sequence
 
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from .destination_matcher import match_destination
+from .handle_mode import (
+    AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from .replies import (
+    ASK_DESTINATION,
+    CANCEL_CONFIRM,
+    COMMAND_DECLINED,
+    LLM_UNAVAILABLE,
+    PAUSE_ACK,
+    RESUME_CONFIRM,
+    RETRY_PROMPT,
+    WAKE_GREETING,
+)
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
 load_dotenv()
 
-# LLM 백엔드는 환경변수로 바꿔 낀다 (코드 수정 없이 PC=클라우드 / Jetson=로컬 전환).
-#   PC(클라우드):  OLLAMA_HOST=https://ollama.com     VICA_LLM_MODEL=gemma4:cloud  OLLAMA_API_KEY=...
-#   Jetson(로컬):  OLLAMA_HOST=http://localhost:11434  VICA_LLM_MODEL=gemma4:e2b    (API 키 불필요)
+PROVIDER = os.environ.get("VICA_LLM_PROVIDER", "ollama")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
-DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
+if PROVIDER == "openai":
+    DEFAULT_MODEL = os.environ.get("VICA_OPENAI_MODEL", "gpt-5.4-mini")
+else:
+    DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
 
 
 class _IntentDraft(BaseModel):
-    """LLM 이 직접 채우는 부분만 담은 임시 스키마.
+    """LLM 이 직접 채우는 부분만 담은 임시 스키마."""
 
-    matched_destination_id / need_confirm / safety_flag 는 코드가 채운다.
-    """
-
-    intent: VicaIntentType = Field(description="navigate / question / clarify / unknown 중 하나")
+    intent: VicaIntentType = Field(
+        description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny 중 하나"
+    )
     destination_candidate: Optional[str] = Field(
         default=None,
         description="navigate 일 때, 목적지 목록의 name 중 가장 알맞은 하나. 없으면 null.",
@@ -42,7 +49,22 @@ class _IntentDraft(BaseModel):
         description="직전 로봇 제안('OO로 안내할까요?')에 사용자가 긍정(응/네/맞아)한 경우 true",
     )
     confidence: Optional[float] = Field(default=0.0, description="해석 확신도 0~1")
-    reply: str = Field(default="", description="사용자에게 들려줄 한국어 답변")
+    wait_minutes: Optional[int] = Field(
+        default=None,
+        description=(
+            "intent 가 wait 이고 사용자가 시간을 말했으면 분(minute)으로. "
+            "범위('5분에서 10분')면 큰 쪽(10)을 넣어라 — 계산·여유는 시스템이 "
+            "한다. 시간을 말하지 않았으면 null. 그 외 intent 는 null."
+        ),
+    )
+    reply: str = Field(
+        default="",
+        description=(
+            "사용자에게 들려줄 한국어 답변. intent 가 navigate 이고 "
+            "destination_candidate 를 채웠으면 빈 문자열로 둬라 (확인 문구는 "
+            "시스템이 만든다)."
+        ),
+    )
 
 
 def _format_robot_state(robot_state: Optional[RobotState]) -> str:
@@ -77,13 +99,24 @@ def _build_system_prompt(
 - question: 이동이 아니라 정보 질문("지금 몇 층이야?").
 - clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
 - unknown: 안내와 무관하거나 이해 불가.
+- cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
+- pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
+- resume: 멈춘 안내를 다시 시작하려 함 ("다시 가자", "출발해").
+- affirm / deny: 로봇이 직전에 던진 안내 제안 질문("안내가 필요하신가요?" 등)에
+  대한 수락/거절 ("어… 부탁드려요"->affirm, "괜찮아요, 됐어요"->deny).
+  목적지 확인 질문의 답이 아니라, 안내 자체를 받겠냐는 제안에 대한 답일 때만.
+- wait: 목적지 도착 후 여기서 기다려 달라는 요청 ("좀 있다 올게", "잠깐 여기 있어").
+- finish: 오늘 안내를 다 끝내려 함 ("이제 됐어 고마워", "그만 갈게"). 도착 후
+  전체 종료다. cancel(주행 중간에 이 목적지만 그만)과 구분하라.
 
 [목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
-- reply 는 짧고 친절한 한국어.
+- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish 로
+  분류하면 reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
+- 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
 [멀티턴 대화]
@@ -93,20 +126,122 @@ def _build_system_prompt(
 - 부정만 하고 목적지를 안 말하면 clarify."""
 
 
+_AFFIRMATIVES = AFFIRMATIVES
+_NEGATIVES = NEGATIVES
+_SOLO_AFFIRMATIVES = AFFIRMATIVES | SOFT_AFFIRMATIVES
+_normalize_short_reply = normalize_short_reply
+
+SHORTCUT_REPLIES = frozenset({WAKE_GREETING})
+
+
+def _pending_confirm_destination(
+    history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
+):
+    """직전 AI 발화가 어떤 목적지의 confirm_prompt 였으면 그 목적지를 돌려준다."""
+    if not history:
+        return None
+    last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    if last_ai is None:
+        return None
+    for dest in destinations:
+        if dest.confirm_prompt and dest.confirm_prompt == last_ai.content:
+            return dest
+    return None
+
+
+_COMMAND_CONFIRMS = {
+    CANCEL_CONFIRM: "cancel",
+    RESUME_CONFIRM: "resume",
+}
+
+_CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
+_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
+_WAKE_WORDS = {"비카야", "피카야", "비까야",
+               "미카야", "리카야", "비켜야", "비кая"}
+_SINO_UNITS = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
+               "육": 6, "칠": 7, "팔": 8, "구": 9}
+_NATIVE_NUM = {"한": 1, "두": 2, "세": 3, "네": 4}
+
+
+def _sino_number(token: str):
+    """한자어 수사 -> 값. "십오"=15, "이십"=20 같은 합성도 푼다. 실패면 None."""
+    if not token:
+        return None
+    if "십" in token:
+        head, _, tail = token.partition("십")
+        if head and head not in _SINO_UNITS:
+            return None
+        if tail and tail not in _SINO_UNITS:
+            return None
+        return (_SINO_UNITS[head] if head else 1) * 10 + _SINO_UNITS.get(tail, 0)
+    return _SINO_UNITS.get(token)
+
+
+def parse_wait_minutes(text: str):
+    """한국어 시간 표현에서 분(minute)을 뽑는다. 없으면 None."""
+    import re
+    t = (text or "").replace(" ", "")
+    if not t:
+        return None
+    if "반시간" in t:
+        return 30
+    values = []
+    for num, unit in re.findall(r"(\d+|[일이삼사오육칠팔구십]+|[한두세네])(분|시간)", t):
+        if num.isdigit():
+            value = int(num)
+        else:
+            value = _NATIVE_NUM.get(num) or _sino_number(num)
+        if value is None:
+            continue
+        values.append(value * (60 if unit == "시간" else 1))
+    if not values:
+        return None
+    if len(values) >= 2 or "에서" in t or "~" in t:
+        return int(max(values) * 1.5 + 0.5)
+    return values[0]
+
+
+def is_instant_utterance(user_text: str) -> bool:
+    """LLM 없이 0초에 판정되는 짧은 말인가."""
+    word = _normalize_short_reply(user_text)
+    return bool(word) and (
+        word in _SOLO_AFFIRMATIVES or word in _NEGATIVES
+        or word in _CANCEL_WORDS or word in _PAUSE_WORDS
+        or word in _WAKE_WORDS)
+
+
+def _pending_command(history: Optional[list[BaseMessage]]) -> Optional[str]:
+    """직전 AI 발화가 제어 확인 질문이었으면 해당 intent 를 돌려준다."""
+    if not history:
+        return None
+    last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    if last_ai is None:
+        return None
+    return _COMMAND_CONFIRMS.get(last_ai.content)
+
+
 def _get_structured_llm(model: str):
-    """구조화 출력(_IntentDraft) LLM 을 만든다. (클라우드=키 필요 / 로컬=키 불필요)"""
+    """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다."""
+    if PROVIDER == "openai":
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=model,
+            temperature=0,
+            timeout=15,
+            max_retries=1,
+        )
+        return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
+
     api_key = os.environ.get("OLLAMA_API_KEY", "")
     kwargs = {
         "model": model,
         "base_url": OLLAMA_HOST,
         "temperature": 0,
-        # gemma4 등 thinking 모델의 내부 추론을 끈다.
-        # intent 분류에는 불필요하고, Jetson 에서 응답이 14~20초 -> 3~5초로 줄어든다.
         "reasoning": False,
-        # 모델을 메모리에 상주시킨다 (기본 5분 후 언로드 -> 다음 발화가 ~20초 콜드스타트).
         "keep_alive": -1,
     }
-    if api_key:  # 클라우드는 인증 헤더 필요, 로컬 Ollama 는 불필요
+    if api_key:
         kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {api_key}"}}
     llm = ChatOllama(**kwargs)
     return llm.with_structured_output(_IntentDraft)
@@ -120,6 +255,63 @@ def parse_intent(
     model: str = DEFAULT_MODEL,
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
+    pending_command = _pending_command(history)
+    if pending_command is not None:
+        word = _normalize_short_reply(user_text)
+        if word in _AFFIRMATIVES:
+            return VicaIntent(
+                intent=pending_command,
+                confidence=1.0,
+                reply="",
+                need_confirm=False,
+            )
+        if word in _NEGATIVES:
+            return VicaIntent(
+                intent="unknown",
+                confidence=1.0,
+                reply=COMMAND_DECLINED,
+                need_confirm=False,
+            )
+
+    pending = _pending_confirm_destination(history, destinations)
+    if pending is not None:
+        word = _normalize_short_reply(user_text)
+        tokens = user_text.split()
+        first = _normalize_short_reply(tokens[0]) if tokens else ""
+        denied = (word in _NEGATIVES
+                  or any(_normalize_short_reply(t) in _NEGATIVES for t in tokens))
+        if not denied and (word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES):
+            return VicaIntent(
+                intent="navigate",
+                destination_candidate=pending.name,
+                matched_destination_id=pending.id,
+                confidence=1.0,
+                reply=f"{pending.name} 안내를 시작합니다.",
+                need_confirm=False,
+                safety_flag="normal",
+            )
+        if denied:
+            return VicaIntent(
+                intent="deny",
+                confidence=1.0,
+                reply="",
+                need_confirm=False,
+            )
+
+    word = _normalize_short_reply(user_text)
+    if word in _WAKE_WORDS:
+        return VicaIntent(intent="unknown", reply=WAKE_GREETING,
+                          need_confirm=False, confidence=1.0)
+    if word in _CANCEL_WORDS:
+        return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
+    if word in _PAUSE_WORDS:
+        return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
+
+    if word in _SOLO_AFFIRMATIVES:
+        return VicaIntent(intent="affirm", confidence=1.0, reply="", need_confirm=False)
+    if word in _NEGATIVES:
+        return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
+
     structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:
@@ -129,51 +321,84 @@ def parse_intent(
     try:
         draft: _IntentDraft = structured.invoke(messages)
     except Exception as exc:
-        # LLM/네트워크 실패 -> 크래시 대신 안전한 fallback 응답을 돌려준다.
-        # (긴급어는 LLM 이전 단계에서 처리되므로 이 실패의 영향을 받지 않는다.)
         import sys
 
         print(f"[LLM] 호출 실패: {exc}", file=sys.stderr)
         return VicaIntent(
             intent="unknown",
-            reply="죄송합니다. 지금은 요청을 처리할 수 없어요. 잠시 후 다시 말씀해 주세요.",
+            reply=LLM_UNAVAILABLE,
             confidence=0.0,
             need_confirm=False,
         )
-    return _finalize(draft, destinations)
+    return _finalize(draft, destinations, pending=pending,
+                     pending_command=pending_command, user_text=user_text)
 
 
-def _finalize(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> VicaIntent:
+def _finalize(
+    draft: _IntentDraft,
+    destinations: Sequence[DestinationData],
+    pending: Optional[DestinationData] = None,
+    pending_command: Optional[str] = None,
+    user_text: str = "",
+) -> VicaIntent:
     """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)"""
     result = VicaIntent(
         intent=draft.intent,
         destination_candidate=draft.destination_candidate,
-        confidence=draft.confidence or 0.0,  # LLM 이 null 을 줘도 안전하게
+        confidence=draft.confidence or 0.0,
         reply=draft.reply,
         need_confirm=False,
         safety_flag="normal",
     )
 
+    if draft.intent in ("affirm", "deny", "finish"):
+        result.reply = ""
+        result.matched_destination_id = ""
+        result.need_confirm = False
+        return result
+
+    if draft.intent == "wait":
+        result.reply = ""
+        result.need_confirm = False
+        minutes = parse_wait_minutes(user_text)
+        if minutes is None and draft.wait_minutes and draft.wait_minutes > 0:
+            minutes = draft.wait_minutes
+        result.wait_minutes = minutes if minutes else -1
+        return result
+
     if draft.intent == "navigate":
         matched = match_destination(draft.destination_candidate, list(destinations))
         if matched is None:
-            # LLM 이 목록에 없는 목적지를 골랐다 -> 되묻기로 안전하게 강등.
             result.intent = "clarify"
-            result.reply = result.reply or "어디로 안내해드릴까요?"
+            result.reply = result.reply or ASK_DESTINATION
         elif not matched.is_approachable:
-            # 접근 불가 목적지 -> 코드가 정한 안내 문구, 확인 불필요.
             result.matched_destination_id = matched.id
             result.reply = matched.unavailable_reason or matched.confirm_prompt
             result.need_confirm = False
-        elif draft.is_confirmation:
-            # 사용자가 직전 제안을 수락 -> 확인 끝, 안내 시작.
+        elif draft.is_confirmation and pending is not None and matched.id == pending.id:
             result.matched_destination_id = matched.id
             result.reply = f"{matched.name} 안내를 시작합니다."
             result.need_confirm = False
         else:
-            # 정상 목적지 -> 코드가 정한 확인 문구로 통일(LLM 자유 발화 대신).
             result.matched_destination_id = matched.id
             result.reply = matched.confirm_prompt
             result.need_confirm = True
+
+    if draft.intent in ("cancel", "pause", "resume"):
+        if draft.intent == "pause":
+            result.reply = PAUSE_ACK
+            result.need_confirm = False
+        elif pending_command == draft.intent:
+            result.reply = ""
+            result.need_confirm = False
+        else:
+            result.reply = {
+                "cancel": CANCEL_CONFIRM,
+                "resume": RESUME_CONFIRM,
+            }[draft.intent]
+            result.need_confirm = True
+
+    if not result.reply:
+        result.reply = ASK_DESTINATION if result.intent == "clarify" else RETRY_PROMPT
 
     return result

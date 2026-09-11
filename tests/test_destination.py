@@ -1,8 +1,4 @@
-"""destination_loader / destination_matcher / schema 의 작은 단위 테스트.
-
-실행 (프로젝트 루트에서):
-    .venv/bin/python -m unittest tests.test_destination -v
-"""
+"""destination_loader / destination_matcher / schema 의 작은 단위 테스트."""
 import unittest
 
 from src.destination_loader import _fill_defaults, _josa_euro, load_destinations
@@ -12,14 +8,14 @@ from src.schema import DestinationData
 
 class JosaTest(unittest.TestCase):
     def test_josa_euro(self):
-        self.assertEqual(_josa_euro("화장실"), "로")    # ㄹ 받침
-        self.assertEqual(_josa_euro("안내센터"), "로")  # 받침 없음
-        self.assertEqual(_josa_euro("식당"), "으로")    # ㅇ 받침
+        self.assertEqual(_josa_euro("화장실"), "로")
+        self.assertEqual(_josa_euro("안내센터"), "로")
+        self.assertEqual(_josa_euro("식당"), "으로")
 
 
 class FillDefaultsTest(unittest.TestCase):
     def test_auto_fill(self):
-        d = DestinationData(id="x", name="안내센터")  # confirm/arrival 비어 있음
+        d = DestinationData(id="x", name="안내센터")
         _fill_defaults(d)
         self.assertEqual(d.confirm_prompt, "안내센터로 안내해드릴까요?")
         self.assertEqual(d.arrival_message, "안내센터 앞에 도착했습니다.")
@@ -27,12 +23,12 @@ class FillDefaultsTest(unittest.TestCase):
     def test_keep_existing(self):
         d = DestinationData(id="x", name="식당", confirm_prompt="이미 있음")
         _fill_defaults(d)
-        self.assertEqual(d.confirm_prompt, "이미 있음")  # 기존 값은 유지
+        self.assertEqual(d.confirm_prompt, "이미 있음")
 
     def test_not_approachable_has_no_arrival(self):
         d = DestinationData(id="x", name="식당", is_approachable=False)
         _fill_defaults(d)
-        self.assertEqual(d.arrival_message, "")  # 갈 수 없는 곳은 도착 메시지 없음
+        self.assertEqual(d.arrival_message, "")
 
 
 class LoadTest(unittest.TestCase):
@@ -43,7 +39,6 @@ class LoadTest(unittest.TestCase):
         self.assertGreaterEqual(len(self.dests), 5)
 
     def test_no_safety_level_field(self):
-        # safety_level 은 제거됐으므로 스키마에 존재하지 않아야 한다.
         self.assertFalse(hasattr(self.dests[0], "safety_level"))
 
 
@@ -67,9 +62,33 @@ class MatchTest(unittest.TestCase):
         self.assertEqual(d.category2, "information_center")
 
     def test_no_match_returns_none(self):
-        # "배 아파" 같은 간접 표현은 matcher 가 직접 풀지 않는다 (LLM 역할).
         self.assertIsNone(match_destination("배 아파", self.dests))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlaceHint:
+    """장소 귀띔(STT initial_prompt) 생성 — '휴게실'→'조계실' 오전사 대책."""
+
+    def _dest(self, name, aliases=()):
+        from src.schema import DestinationData
+        return DestinationData(id=name, name=name, aliases=list(aliases))
+
+    def test_names_come_first_then_aliases_deduped(self):
+        """이름 전원 먼저 — 별칭 많은 목적지가 상한을 독식하지 못하게."""
+        from src.destination_loader import build_place_hint
+        ds = [self._dest("휴게실", ["휴게 공간", "휴게실"]),
+              self._dest("안내소", ["안내 데스크"])]
+        assert build_place_hint(ds) == "휴게실, 안내소, 휴게 공간, 안내 데스크"
+
+    def test_caps_length_for_whisper_prompt(self):
+        from src.destination_loader import build_place_hint
+        ds = [self._dest(f"장소{i}이름이길다란곳") for i in range(50)]
+        hint = build_place_hint(ds, max_chars=60)
+        assert len(hint) <= 60 and hint.startswith("장소0")
+
+    def test_empty_list_gives_empty_hint(self):
+        from src.destination_loader import build_place_hint
+        assert build_place_hint([]) == ""
