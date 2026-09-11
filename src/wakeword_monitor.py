@@ -114,10 +114,10 @@ LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
 # 반짝 무효화 문턱 [실측 2026-09-01]: 에코 반짝의 VAD 연속 구간은 전부
 # ≤0.14초(mic_probe, 로봇 단독 발화 조건), 진짜 발화의 최단은 0.48초
 # (실기 계측 15표본). 그 한가운데 — 이보다 짧은 "발화"는 자유 창에서
-# 없던 일로 되돌리고 6초 상한까지 계속 기다린다.
+# 없던 일로 되돌리고 LISTEN_MAX_SEC 상한까지 계속 기다린다.
 LISTEN_BLIP_VOID_SEC = float(os.environ.get("VICA_LISTEN_BLIP_VOID_SEC", "0.32"))
 # 질문(재청취) 창은 시나리오 6.4의 확인 대기 30초와 일치시킨다 — 미션이
-# 30초를 기다린다고 약속하는데 귀가 6초만 열려 있으면 안 된다.
+# 30초를 기다린다고 약속하는데 귀가 LISTEN_MAX_SEC(자유 창 상한)만큼만 열려 있으면 안 된다.
 CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
 # 발화 시작 전 보존할 말머리 여유(0.48초) — 긴 확인 창이 침묵 덩어리로
 # whisper 에 통째로 가는 것을 막는다.
