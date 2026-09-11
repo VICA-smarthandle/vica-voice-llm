@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""귀 실기 시험의 서기 — 사람이 시험하고, 프로그램은 받아 적는다."""
+
+import csv
+import datetime
+import os
+import sys
+import threading
+import time
+import unicodedata
+
+try:
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import Bool, Empty, String
+    from rcl_interfaces.msg import Log
+except ImportError:
+    sys.exit(
+        "rclpy 를 찾지 못했습니다 — 이 터미널에 ROS 를 소싱하세요:\n"
+        "  source /opt/ros/humble/setup.bash\n"
+        "  source ~/VICA-smarthandle/vica_ros2_ws/install/setup.bash\n"
+        "(서기는 토픽만 듣습니다. 음성 venv 는 필요 없습니다.)")
+
+try:
+    from vica_interfaces.msg import VicaIntent
+except ImportError:
+    VicaIntent = None
+
+_CLOSE_LABEL = {
+    "closed": "통과",
+    "empty": "빈손",
+    "empty:ghost": "유령기각",
+    "empty:reject": "환각기각",
+    "empty:short-reject": "구제기각",
+    "empty:echo": "에코기각",
+}
+
+
+def _close_label(state: str) -> str:
+    for key, label in _CLOSE_LABEL.items():
+        if state == key or state.startswith(key + " "):
+            return label
+    return state
+
+
+ORDER = [
+    ("호출", "제자리", "웨이크워드와 '네?' 가 매번 나오는가"),
+    ("조기마감", "제자리", "뜸 들여 말해도 창이 안 닫히는가 (6초 복원 확인)"),
+    ("에코", "제자리", "로봇 말이 자기 말에 끊기지 않는가 (barge-in 0)"),
+    ("짧은답", "바퀴 띄움", "네·응·어 같은 한마디가 어느 층에서 죽는가"),
+    ("거절", "제자리", "'아니'와 호출 응답이 살아났는가 (fb663d6 검증)"),
+    ("주행", "바닥 주행", "3컷 종단 — 사람접근 / 주행-도착 / 도착 후 대기"),
+]
+
+_CANCEL_TAIL = ("확인 질문에는 '아니' 로 답한다 · 에코가 '네'로 읽혀 갑자기 "
+                "출발할 수 있으니 비상정지에 손이 닿는 곳에 선다")
+
+
+def _rep(step: dict, times: int) -> list:
+    return [dict(step) for _ in range(times)]
+
+
+def _short_answer_steps() -> list:
+    """짧은 답 6단어 × 5회. 단어를 5회씩 묶는다 — 회차마다 갈아타면"""
+    steps = []
+    for word in ("네", "응", "어", "그래", "아니", "대기해줘"):
+        drives = word in ("네", "응", "어", "그래")
+        for i in range(5):
+            steps.append({
+                "제목": f"짧은 답 '{word}' ({i + 1}/5)",
+                "말": f'"비카야"  →  "화장실로 가자"  →  (질문 뒤) "{word}"',
+                "기대": f"질문 창에서 '{word}' 접수 (전사 + 의도)",
+                "주의": ("바퀴 띄움 확인 · 출발하면 '비카야 → 취소해줘' → "
+                         "질문에 '네' 로 되돌린 뒤 다음 회차") if drives
+                        else "거절이 먹으면 제자리 유지 (결함 1로 씹힐 수 있다)",
+                "정답지": word,
+            })
+    return steps
+
+
+def _decline_steps() -> list:
+    """fb663d6(재청취 기각 수리) 검증. 살아나야 할 둘과, 여전히 죽어야 할"""
+    ask = '"비카야"  →  "화장실로 가자"  →  (질문 뒤) '
+    steps = []
+    steps += _rep({
+        "제목": "거절 — 단독 '아니'",
+        "말": ask + '"아니"',
+        "기대": "의도 deny · '안내 요청이 취소되었습니다' 재생",
+        "주의": "무응답이면 수리 실패 (종전 증상 그대로)",
+        "정답지": "아니",
+    }, 4)
+    steps += _rep({
+        "제목": "거절 — 말이 붙은 '아니'",
+        "말": ask + '"아니 거기 말고"',
+        "기대": "첫 단어 판정으로 deny",
+        "주의": "",
+        "정답지": "아니 거기 말고",
+    }, 2)
+    steps += _rep({
+        "제목": "질문 창 안의 호출",
+        "말": ask + '"비카야"',
+        "기대": '"네?" 가 다시 들린다 (종전에는 무응답)',
+        "주의": "이 회차는 목적지 확인이 접히고 새 대화가 열린다",
+        "정답지": "비카야",
+    }, 2)
+    steps += _rep({
+        "제목": "잡담 — 여전히 침묵해야 한다",
+        "말": ask + '"음… 뭐였더라" 같은 아무 말',
+        "기대": "**무응답** (재청취 기각 로그만 남는다)",
+        "주의": "로봇이 대꾸하면 수리가 과한 것 — 잡담마다 말하던 옛날로 회귀",
+        "정답지": "잡담 (아무 말)",
+    }, 2)
+    return steps
+
+
+PLANS = {
+    "호출": {
+        "제목": "호출 응답 + 호출 경로 회귀 (d876ec2·50ed058 이후)",
+        "준비": ("로봇 제자리. 바퀴는 바닥이어도 된다 (주행 없음). "
+                 "9/2 에 호출 경로를 두 번 고쳤으므로 평범한 호출부터 다시 건다."),
+        "steps": _rep({
+            "제목": "호출",
+            "말": '"비카야"  (그리고 아무 말도 하지 않는다)',
+            "기대": "wake → '네?' 재생 → 6초 뒤 빈손 종료",
+            "주의": "'네?' 가 안 들리면 그 회차가 증발 사례다",
+            "정답지": "비카야 (침묵)",
+        }, 5) + _rep({
+            "제목": "연달아 부르기 (쿨다운 회귀)",
+            "말": '"비카야" → ("네?" 들은 뒤 곧바로) "비카야"',
+            "기대": "두 번 다 '네?' — 두 번째가 무응답이면 회귀다",
+            "주의": "창이 닫히길 기다리지 말고 '네?' 끝나자마자 바로 부른다",
+            "정답지": "비카야 / 비카야 (연달아)",
+        }, 3) + _rep({
+            "제목": "한 호흡 호출 (구제가 명령을 삼키는가)",
+            "말": '"비카야 화장실로 가자" (붙여서 한 번에)',
+            "기대": "호출이 걸렸다면 뒷말이 살아 확인 질문까지 가야 한다",
+            "주의": ("웨이크가 아예 안 걸리는 것은 기존 백로그(별건). "
+                     "여기서 볼 것은 걸렸을 때 뒷말이 남는가다"),
+            "정답지": "비카야 화장실로 가자 (붙여서)",
+        }, 2),
+    },
+    "조기마감": {
+        "제목": "조기 마감 — 뜸 들여도 창이 버티는가",
+        "준비": "로봇 제자리. 확인 질문에는 '아니' 로 답해 주행을 막는다.",
+        "steps": _rep({
+            "제목": "뜸 들이고 명령",
+            "말": '"비카야"  →  (속으로 둘 셋 센 뒤)  →  "화장실로 가자"',
+            "기대": "창이 2초 침묵을 견디고 명령을 접수",
+            "주의": _CANCEL_TAIL + " · 창 사건이 2.5s 내 마감이면 조기 마감",
+            "정답지": "비카야 (2초) 화장실로 가자",
+        }, 5),
+    },
+    "에코": {
+        "제목": "끼어들기 판정 — 에코엔 안 걸리고 사람에겐 걸리는가",
+        "준비": ("로봇 제자리. 앞 5회는 완전히 침묵하고, 뒤 3회는 일부러 "
+                 "끼어든다. 두 방향을 같이 재야 판정이 선다 — 침묵만 재면 "
+                 "'아무것도 안 걸리게' 만들어 놓고 통과라 부를 수 있다."),
+        "steps": _rep({
+            "제목": "멘트 중 침묵 (에코에 안 걸리는가)",
+            "말": '"비카야"  →  "화장실로 가자"  →  로봇 멘트 동안 침묵',
+            "기대": "멘트가 끝까지 재생 (특이 칸에 barge-in 0)",
+            "주의": _CANCEL_TAIL,
+            "정답지": "비카야 화장실로 가자 (이후 침묵)",
+        }, 5) + _rep({
+            "제목": "멘트 중 끼어들기 (사람에겐 걸리는가)",
+            "말": ('"비카야" → "화장실로 가자" → 로봇이 "…안내해드릴까요?"를 '
+                   '**말하는 도중에** "아니"'),
+            "기대": "로봇이 말을 끊고 듣는다 (특이 칸에 barge-in 1)",
+            "주의": ("질문이 끝난 뒤가 아니라 **말하는 중간**에 끼어들어야 한다. "
+                     "안 끊기면 문턱 3이 높다는 뜻"),
+            "정답지": "비카야 화장실로 가자 → (멘트 중) 아니",
+        }, 3),
+    },
+    "짧은답": {
+        "제목": "짧은 발화 — 한마디가 어느 층에서 죽는가",
+        "준비": "⚠ 바퀴를 띄운다. 긍정 답이 통과하면 로봇이 실제로 출발한다.",
+        "steps": _short_answer_steps(),
+    },
+    "거절": {
+        "제목": "거절·호출응답이 살아났는가 (fb663d6 검증)",
+        "준비": ("로봇 제자리. 거절이 먹으면 주행은 시작되지 않는다. "
+                 "다만 7~8회차의 호출은 확인을 접으므로 그 뒤 상태를 확인한다."),
+        "steps": _decline_steps(),
+    },
+    "주행": {
+        "제목": "3컷 종단 — 사람접근 / 주행-도착 / 도착 후 대기",
+        "준비": "바닥 주행. AMCL 초기 위치를 먼저 찍는다.",
+        "steps": [
+            {"제목": "① 사람접근 컷", "말": "핸들 앞에 서서 로봇 질문에 답한다",
+             "기대": "질문 → 수락 → 온보딩", "주의": "", "정답지": ""},
+            {"제목": "② 주행-도착 컷", "말": '"비카야"  →  "안내소로 가줘"',
+             "기대": "주행 시작 → 도착", "주의": "", "정답지": "비카야 안내소로 가줘"},
+            {"제목": "③ 도착 후 대기 컷", "말": '"비카야"  →  "대기해줘"',
+             "기대": "wait 접수", "주의": "최다 오류 지점 — 씹히면 그대로 기록",
+             "정답지": "비카야 대기해줘"},
+        ],
+    },
+}
+
+
+def _pad(text: str, width: int) -> str:
+    """한글은 터미널에서 두 칸을 먹는다 — 글자 수로 맞추면 표가 어긋난다."""
+    used = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1
+               for c in text)
+    return text + " " * max(0, width - used)
+
+
+def _print_order(current: str = "") -> None:
+    print("전체 시험 순서 (귀부터 걸러야 주행 시험이 헛돌지 않는다)")
+    for i, (key, place, why) in enumerate(ORDER, 1):
+        mark = "▶" if key == current else " "
+        print(f" {mark} {i}. {_pad(key, 10)}{_pad('[' + place + ']', 13)}{why}")
+    print()
+
+
+def _show_step(idx: int, total: int, step: dict) -> None:
+    bar = "━" * 62
+    print(f"\n{bar}")
+    print(f" [{idx}/{total}]  {step['제목']}")
+    print(f"   말할 것 : {step['말']}")
+    print(f"   기대    : {step['기대']}")
+    if step.get("주의"):
+        print(f"   주의    : {step['주의']}")
+    print(f"{bar}")
+
+
+class Scribe(Node):
+    """구독 전용 서기. 사건을 (시각, 회차, 출처, 내용) 으로 쌓는다."""
+
+    def __init__(self) -> None:
+        super().__init__("vica_ear_scribe")
+        self.lock = threading.Lock()
+        self.events = []
+        self.trial = 0
+
+        sub = self.create_subscription
+        sub(String, "/vica/wake", lambda m: self._add("wake", m.data), 10)
+        sub(String, "/vica/listen_state", lambda m: self._add("창", m.data), 10)
+        sub(String, "/vica/user_text", lambda m: self._add("전사", m.data), 10)
+        sub(String, "/vica/tts_request",
+            lambda m: self._add("tts요청", m.data[:60]), 10)
+        sub(String, "/vica/tts_done", lambda m: self._add("tts끝", m.data[:60]), 10)
+        sub(Empty, "/vica/tts_stop", lambda m: self._add("tts중단", ""), 10)
+        sub(Bool, "/vica/tts_state",
+            lambda m: self._add("tts상태", "재생" if m.data else "정지"), 10)
+        sub(Bool, "/vica/thinking",
+            lambda m: self._add("생각", "시작" if m.data else "끝"), 10)
+        sub(Bool, "/vica/listen_request",
+            lambda m: self._add("청취요청", str(m.data)), 10)
+        sub(Log, "/rosout", self._on_rosout, 10)
+        if VicaIntent is not None:
+            sub(VicaIntent, "/vica/intent", self._on_intent, 10)
+
+    def _add(self, source: str, detail: str, echo: bool = True) -> None:
+        with self.lock:
+            self.events.append((time.time(), self.trial, source, detail))
+        if echo:
+            short = detail if len(detail) <= 48 else detail[:48] + "…"
+            print(f"    · {source} {short}")
+
+    def _on_intent(self, msg) -> None:
+        dest = msg.destination_candidate or msg.matched_destination_id
+        text = f"{msg.intent}"
+        if dest:
+            text += f"→{dest}"
+        text += f" ({msg.confidence:.2f})"
+        self._add("의도", text)
+
+    def _on_rosout(self, msg: Log) -> None:
+        if "vica" not in msg.name or msg.name == "vica_ear_scribe":
+            return
+        self._add(f"log:{msg.name}", msg.msg, echo=False)
+
+
+def _windows(trial_events):
+    """listen_state 사건열에서 창(개방→마감) 목록을 복원한다."""
+    out, opened = [], None
+    for t, _, source, detail in trial_events:
+        if source != "창":
+            continue
+        if detail == "open":
+            opened = t
+        elif detail != "speech" and opened is not None:
+            out.append(f"{t - opened:.1f}s→{_close_label(detail)}")
+            opened = None
+    if opened is not None:
+        out.append("열린 채(미마감)")
+    return out
+
+
+def _summary_row(idx, start, answer, trial_events, title=""):
+    heard = [d for _, _, s, d in trial_events if s == "전사"]
+    if not heard:
+        heard = [_close_label(d) + (" " + d.split(" ", 1)[1] if " " in d else "")
+                 for _, _, s, d in trial_events
+                 if s == "창" and d.startswith("empty")]
+    intents = [d for _, _, s, d in trial_events if s == "의도"]
+    stops = sum(1 for _, _, s, _ in trial_events if s == "tts중단")
+    barge = sum(1 for _, _, s, d in trial_events
+                if s == "log:vica_wakeword_node" and "barge-in" in d)
+    wakes = sum(1 for _, _, s, _ in trial_events if s == "wake")
+    extra = []
+    if stops:
+        extra.append(f"stop×{stops}")
+    if barge:
+        extra.append(f"barge-in×{barge}")
+    if wakes > 1:
+        extra.append(f"호출×{wakes}(회차 뭉침)")
+    stamp = datetime.datetime.fromtimestamp(start).strftime("%H:%M:%S")
+    cell = lambda items: " / ".join(items) if items else "—"
+    head = f"| {idx} | {title} " if title else f"| {idx} "
+    return (f"{head}| {stamp} | {answer or '—'} | {cell(heard)} "
+            f"| {cell(_windows(trial_events))} | {cell(intents)} "
+            f"| {cell(extra)} |")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        _print_order()
+        print("쓰는 법:  python3 scripts/ear_scribe.py <시험이름>")
+        print("  대본 있는 이름: " + " / ".join(PLANS))
+        print("  그 밖의 이름은 자유 모드 (대본 없이 기록만)")
+        return
+
+    name = sys.argv[1]
+    plan = PLANS.get(name)
+    steps = plan["steps"] if plan else []
+    out_dir = os.path.expanduser("~/vica_data/ear_exams")
+    os.makedirs(out_dir, exist_ok=True)
+    base = os.path.join(
+        out_dir, f"{name}_{datetime.datetime.now():%m%d_%H%M}")
+
+    rclpy.init()
+    scribe = Scribe()
+    spin = threading.Thread(target=rclpy.spin, args=(scribe,), daemon=True)
+    spin.start()
+
+    trial_starts = {}
+    answers = {}
+
+    if plan:
+        _print_order(name)
+        print(f"■ {plan['제목']}")
+        print(f"  준비: {plan['준비']}")
+        print(f"  회차: {len(steps)}회\n")
+    print(f"[서기] 시험 '{name}' — 기록: {base}.csv / .md")
+    print("엔터=회차 시작   글+엔터=정답지 기록"
+          + ("   .+엔터=대본대로 함" if plan else "") + "   q+엔터=종료\n")
+    if VicaIntent is None:
+        print("  (vica_interfaces 미소싱 — 의도 칸은 비게 됩니다)\n")
+    if plan:
+        print("엔터를 치면 1회차 대사가 나옵니다.")
+
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            break
+        text = line.strip()
+        if text.lower() in ("q", "quit", "exit"):
+            break
+        if not text:
+            with scribe.lock:
+                scribe.trial += 1
+                n = scribe.trial
+            trial_starts[n] = time.time()
+            if steps and n <= len(steps):
+                _show_step(n, len(steps), steps[n - 1])
+            elif steps:
+                print(f"  [{n}회차 — 대본 끝, 추가 회차] 시험하세요")
+            else:
+                print(f"  [{n}회차 시작] 시험하세요")
+        else:
+            with scribe.lock:
+                n = scribe.trial
+            if n == 0:
+                print("  (아직 회차 전 — 엔터로 회차를 먼저 시작하세요)")
+                continue
+            if text == "." and steps and n <= len(steps):
+                text = steps[n - 1].get("정답지") or steps[n - 1]["말"]
+            answers[n] = (answers[n] + " / " + text) if n in answers else text
+            print(f"  [{n}회차 정답지] {answers[n]!r}")
+            if steps and n < len(steps):
+                nxt = steps[n]["제목"]
+                print(f"  (엔터 → 다음 {n + 1}/{len(steps)}: {nxt})")
+
+    with scribe.lock:
+        events = list(scribe.events)
+        last = scribe.trial
+    rclpy.shutdown()
+
+    with open(base + ".csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["epoch", "시각", "회차", "출처", "내용"])
+        for t, trial, source, detail in events:
+            stamp = datetime.datetime.fromtimestamp(t).strftime("%H:%M:%S.%f")[:-3]
+            w.writerow([f"{t:.3f}", stamp, trial, source, detail])
+
+    head_extra = "대본 | " if plan else ""
+    dash_extra = "--- | " if plan else ""
+    lines = [
+        f"### 실기 서기 — {name} ({datetime.datetime.now():%Y-%m-%d %H:%M})",
+        "",
+        (f"| 회차 | {head_extra}시각 | 정답지(사람) | 기계가 들은 것 "
+         f"| 창 사건 | 의도 | 특이 |"),
+        f"| --- | {dash_extra}--- | --- | --- | --- | --- | --- |",
+    ]
+    for n in range(1, last + 1):
+        trial_events = [e for e in events if e[1] == n]
+        title = steps[n - 1]["제목"] if steps and n <= len(steps) else ""
+        lines.append(_summary_row(
+            n, trial_starts.get(n, 0), answers.get(n, ""), trial_events, title))
+    md = "\n".join(lines) + "\n"
+    with open(base + ".md", "w") as f:
+        f.write(md)
+
+    print("\n" + md)
+    print(f"저장: {base}.csv (사건 {len(events)}개) / {base}.md (회차 {last}개)")
+
+
+if __name__ == "__main__":
+    main()

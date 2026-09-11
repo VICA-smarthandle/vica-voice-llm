@@ -1,113 +1,146 @@
-# VICA 음성/LLM 파트 — ROS2 인터페이스 명세 (로봇 팀 전달용)
+# VICA 음성·LLM ROS 2 계약
 
-작성: 2026-07-07. 음성/LLM 파트가 발행·구독하는 모든 토픽과 메시지 정의,
-그리고 로봇 팀이 구현/교체해야 할 부분을 정리한다.
+검토 기준일: 2026-07-26
 
-## 전체 그래프
+## 1. 현재 그래프
 
 ```text
-[마이크] ─ ros_stt_node ──/vica/user_text──▶ ros_node (LLM) ──/vica/intent──▶ ros_tts_node ─▶ [스피커]
-                                                 ▲                              │
-                              /vica/robot_state ─┘                              ▼
-                              (로봇 팀 발행)                        ★ state machine (로봇 팀)
+ros_wakeword_node                     ← 마이크 앞단 (상시). launch 의 기본 진입 경로
+├─ /vica/user_text ───────────────→ ros_node
+├─ /vica/emergency ───────────────→ Mission Manager + E-stop bridge
+├─ /vica/tts_stop ────────────────→ ros_tts_node (barge-in, 2026-08-24 추가)
+├─ /vica/wake ────────────────────→ Mission Manager (2026-09-10 팀 계약으로 승격)
+├─ /vica/wake_doa ────────────────→ Mission Manager (호출 접근, 2026-09-10 추가)
+└─ /vica/tts_state ←─────────────── ros_tts_node
 
-[마이크] ─ ros_emergency_node ──/vica/emergency──▶ ★ safety supervisor / state machine (로봇 팀)
-          (상시 감시, LLM 우회)
+ros_node
+├─ /vica/intent ──────────────────→ Mission Manager
+├─ /vica/tts_request ─────────────→ ros_tts_node
+└─ /vica/robot_state ←───────────── Mission Manager
+
+Mission Manager
+└─ /vica/tts_request ─────────────→ ros_tts_node
 ```
 
-★ = 현재 개발용 스텁(`ros_state_machine_stub`, `ros_robot_state_stub`)이 자리를
-차지하고 있으며, **로봇 팀의 실제 노드로 교체 대상**이다.
-
-## 토픽 목록
-
-| 토픽 | 타입 | 발행 | 구독 | 설명 |
-|---|---|---|---|---|
-| `/vica/user_text` | `std_msgs/String` | ros_stt_node | ros_node | STT 인식 결과 (한국어 문장) |
-| `/vica/intent` | `vica_interfaces/VicaIntent` | ros_node | ros_tts_node, **state machine** | LLM 의도 해석 결과 (아래 상세) |
-| `/vica/robot_state` | `vica_interfaces/RobotState` | **로봇 팀** | ros_node | 로봇 현재 상태 (질문 답변에 활용) |
-| `/vica/emergency` | `vica_interfaces/EmergencyEvent` | ros_emergency_node | **safety supervisor** | 긴급어 감지 이벤트 (LLM 우회) |
-
-QoS 는 모두 기본 프로파일 depth 10 이다.
-
-## 메시지 정의 (`vica_interfaces`)
-
-### VicaIntent — LLM 의 '제안' (이동 명령 아님)
+launch 에 들어가지 않는 대체 경로 2개 (계약은 위와 동일):
 
 ```text
-string intent                  # navigate / question / clarify / unknown
-string destination_candidate   # LLM 이 고른 목적지 표현 (없으면 "")
-string matched_destination_id  # 코드가 확정한 목적지 id (없으면 "")
-float32 confidence             # 0.0 ~ 1.0
-bool need_confirm              # true 면 사용자 확인이 아직 안 끝났다
-string reply                   # 사용자에게 들려줄 한국어 답변 (TTS 가 재생)
-string safety_flag             # normal / emergency
+ros_stt_node        개발용 push-to-talk. 마이크를 웨이크워드와 동시에 못 쓴다
+└─ /vica/user_text · /vica/tts_request
+
+ros_emergency_node  whisper 상시 감시. 웨이크워드 롤백용으로 남겨 둔다
+└─ /vica/emergency ·  /vica/tts_state ←
 ```
 
-state machine 이 이동을 시작해도 되는 조건 (모두 만족해야 함):
+## 2. Topic
+
+| 이름 | 타입 | producer | consumer | 의미 |
+| --- | --- | --- | --- | --- |
+| `/vica/user_text` | `std_msgs/msg/String` | STT | LLM node | 인식 문장 |
+| `/vica/intent` | `vica_interfaces/msg/VicaIntent` | LLM node | Mission Manager | 이동 명령이 아닌 의도 후보 |
+| `/vica/robot_state` | `vica_interfaces/msg/RobotState` | Mission Manager | LLM node | 층·건물·이동 상태 |
+| `/vica/emergency` | `vica_interfaces/msg/EmergencyEvent` | 긴급어 감시 | Mission Manager, E-stop bridge | LLM 우회 긴급 이벤트 |
+| `/vica/tts_request` | `std_msgs/msg/String` | STT, LLM, Mission Manager | TTS | `priority:text` 재생 요청 |
+| `/vica/tts_state` | `std_msgs/msg/Bool` | TTS | 긴급어 감시 | 로봇 음성 재생 중 여부 |
+| `/vica/listen_request` | `std_msgs/msg/Bool` | LLM node, Mission Manager | 웨이크워드 노드 | `true` = 방금 말한 것이 질문("~할까요?"). 질문 TTS 종료 직후 웨이크워드 없이 재청취 창을 연다 — 사용자가 "비카야" 재호출 없이 "네/아니요"로 답한다. `false` = 예약 취소. 예약은 20초 지나면 스스로 무효(질문 유실 대비) |
+| `/vica/tts_stop` | `std_msgs/msg/Empty` | 웨이크워드 노드 | TTS | **barge-in** (2026-08-24 추가): 재생 중 발화를 즉시 끊고 대기 중 비긴급 발화를 버린다. 긴급(priority=emergency) 발화는 큐에 남는다. 웨이크워드 노드가 세 경우에 보낸다 — ① 재생 중 "비카야" 호출 ② 긴급 확정 직후(로봇 침묵) ③ 질문 재생 중 사용자가 답을 시작(AEC 모드 한정, 연속 0.32초 발화) |
+| `/vica_goal_event` | `std_msgs/msg/String` (JSON) | Mission Manager | 웨이크워드 노드 | goal 생명주기 이벤트. **payload 는 JSON** — `event` 키(`goal_succeeded` 등)를 꺼내 쓴다. 평문 이벤트 이름은 계약이 아니다(핸들 노드가 2026-07-29 실기에서 겪은 함정) |
+| `/vica/wake` | `std_msgs/msg/String` | 웨이크워드 노드 | Mission Manager | "비카야" 호출 감지 신호. 2026-09-10 호출 접근 설계부터 Mission 이 실제로 구독한다(WAITING 각성·복귀 브레이크) — 팀 계약으로 승격, 임의 변경 금지 |
+| `/vica/wake_doa` | `std_msgs/msg/Float32` | 웨이크워드 노드 | Mission Manager | 호출이 온 방향(도, 0~359). 정면이 0, 핸들 쪽이 180. 칩이 방향을 못 읽으면 무발행(무음 실패) — Mission 은 대기(IDLE) 중에만 받아 그쪽으로 고개를 돌린다(호출 접근 설계 §3~4) |
+
+기본 QoS는 depth 10 reliable이다.
+
+"긴급어 감시"의 현재 구현은 `ros_wakeword_node`다(`ros_emergency_node`는 롤백용).
+`keyword`는 whisper 전사에서 정확 매칭으로 뽑으므로 값 범위는 종전과 같다 —
+브리지·래치 체인은 변경되지 않는다.
+
+`/vica/tts_state`는 문장 단위로 켜지고 꺼진다. 한 발화가 여러 번 true/false를
+낼 수 있으므로, 소비자는 첫 true를 재생 시작으로, 마지막 false를 종료로 본다.
+
+음성 저장소 내부 토픽(팀 계약 아님, 임의 변경 가능):
+
+| 이름 | 타입 | 용도 |
+| --- | --- | --- |
+| `/vica/sim/event` | `std_msgs/msg/String` | **[SIM ONLY]** 가상 로봇 상태 변화 |
+| `/vica/sim/reset` | `std_msgs/msg/Empty` | **[SIM ONLY]** 래치 해제 (실기의 관리자 앱 reset 자리) |
+
+## 3. 공용 메시지
+
+정본은 `vica_ros2_ws/src/vica_interfaces/`다. 음성 저장소에는 메시지 사본을 두지 않으며,
+`vica_ros2_ws`를 빌드하고 source한 환경에서 import한다.
+
+### `VicaIntent`
 
 ```text
-intent == "navigate"
-matched_destination_id != ""     # 목적지가 DB 에서 확정됨
-need_confirm == false            # 사용자가 확인을 마침 ("응 맞아" 등)
-safety_flag == "normal"
+string intent
+string destination_candidate
+string matched_destination_id
+float32 confidence
+bool need_confirm
+string reply
+string safety_flag
 ```
 
-이 조건을 만족해도 **최종 이동 판단은 state machine 몫**이다
-(현재 이동 가능 상태, 접근 가능 여부, safety supervisor 확인 등).
-
-### RobotState — 로봇 팀이 발행
+Mission Manager는 최소한 다음 조건과 자체 gate를 함께 검사한다.
 
 ```text
-int32 current_floor    # 층. 알 수 없으면 -1
+intent == navigate
+matched_destination_id != ""
+need_confirm == false
+safety_flag == normal
+```
+
+`intent` 허용값의 정본은 `vica_ros2_ws/src/vica_interfaces/msg/VicaIntent.msg`다.
+2026-07-27에 진행 중인 안내를 조작하는 `cancel`/`pause`/`resume`가 추가됐다
+(세 값에는 `matched_destination_id`가 필요 없다).
+
+**[GAP]** 음성 저장소의 파서는 아직 `navigate`/`question`/`clarify`/`unknown`
+네 값만 만든다 (`src/schema.py`의 `VicaIntentType`). 세 값이 실제로 필요한 시점은
+로봇 팀과 확인이 필요하다.
+
+### `RobotState`
+
+```text
+int32 current_floor
 string current_building
 bool is_moving
+bool is_paused     # 2026-07-27 정본 추가. 목적지를 기억한 채 멈춘 상태
 ```
 
-"지금 몇 층이야?" 같은 질문 답변에 쓰인다. 주기 발행(예: 1Hz) 또는 변경 시 발행.
+`is_paused`는 `is_moving=false`만으로는 구분되지 않는 "일시정지"를 나타낸다.
+**[GAP]** 음성 저장소는 아직 이 필드를 만들지도 읽지도 않는다 (`ros_robot_sim`
+포함). `cancel`/`pause`/`resume` intent 지원과 함께 다뤄야 한다.
 
-### EmergencyEvent — 긴급 정지 요청 (최우선 처리)
+### `EmergencyEvent`
 
 ```text
-string keyword        # 매칭된 긴급어 (예: "멈춰")
-string source_text    # STT 가 인식한 원본 텍스트
-float64 detected_at   # 감지 시각 (unix time)
+string keyword
+string source_text
+float64 detected_at
 ```
 
-- 마이크 상시 감시로 감지되며, **LLM 을 전혀 거치지 않는다** (감지 지연 약 1초).
-- 긴급어 목록: 멈춰, 정지, 스탑, 스톱, 안돼, 위험해, 잠깐, 천천히, 느리게
-- 이 이벤트를 받으면 safety supervisor / state machine 이 즉시 정지를 판단·실행한다.
+하드 긴급어는 `멈춰`, `정지`, `스탑`, `스톱`, `안돼`, `위험해`다. 음성 node는
+감지 이벤트만 발행하고, E-stop bridge가 `/voice_emergency_stop` 펄스로 변환한다.
 
-## 안전 계약 (음성/LLM 파트가 보장하는 것)
+## 4. 안전 경계
 
-- `/cmd_vel`, `/cmd_vel_safe` 를 발행하지 않는다.
-- Nav2 goal 을 직접 보내지 않는다.
-- 모터/속도/회전/정지 명령을 실행하지 않는다.
-- `VicaIntent` 는 제안일 뿐이며, 실제 이동·정지의 결정과 실행은
-  로봇 팀의 state machine / safety supervisor 가 한다.
+- 음성·LLM은 `/cmd_vel*`, Nav2 action과 CAN을 발행하지 않는다.
+- `/vica/intent`는 Mission gate 입력이며 Goal 자체가 아니다.
+- `/vica/emergency`의 실제 정지 권한은 중앙 E-stop 래치와 Safety Supervisor에 있다.
+- 음성·STT에는 E-stop reset 권한이 없다.
+- TTS 재생 중 감시 억제는 자가 오탐 방지 기능이며 물리 E-stop을 대체하지 않는다.
 
-## 로봇 팀이 할 일
-
-1. **state machine 노드**: `/vica/intent` 와 `/vica/emergency` 구독,
-   위 조건 검사 후 Nav2 goal 생성 여부 결정. (`src/ros_state_machine_stub.py` 참고 후 교체)
-2. **robot_state 발행**: `/vica/robot_state` 를 실제 값으로 발행.
-   (`src/ros_robot_state_stub.py` 교체)
-3. launch 파일(`launch/vica_voice.launch.py`)에서 스텁 2개를 제거하고 실제 노드 연결.
-
-## 빌드/실행
+## 5. 실행 전제
 
 ```bash
-# 메시지 패키지 빌드 (최초 1회)
 source /opt/ros/humble/setup.bash
-cd ros2_ws && colcon build --packages-select vica_interfaces && cd ..
-
-# 음성 파트 실행
-source ros2_ws/install/setup.bash
-ros2 launch launch/vica_voice.launch.py        # LLM + TTS + 긴급 감시 + (스텁)
-# 별도 터미널: .venv/bin/python -m src.ros_stt_node   (push-to-talk 마이크)
-
-# 동작 확인
-ros2 topic echo /vica/intent
-ros2 topic echo /vica/emergency   # "멈춰!" 외치면 수신됨
+cd ../vica_ros2_ws
+colcon build --packages-select vica_interfaces
+source install/setup.bash
+cd ../vica-voice-llm
+ros2 launch launch/vica_voice.launch.py
 ```
 
-주의: `ros2 topic echo` 는 발행자가 아직 없으면 즉시 종료한다. 노드를 먼저 띄울 것.
+push-to-talk STT는 별도 터미널에서 `.venv/bin/python -m src.ros_stt_node`로 실행한다.
+개발 stub은 없으므로 Mission Manager와 `vica_safety`를 별도로 기동해야 한다.
+실제 음성·Mission·E-stop 종단은 `[미검증]`이다.

@@ -1,9 +1,4 @@
-"""pydantic 스키마 <-> ROS2 커스텀 메시지(vica_interfaces) 변환.
-
-이 모듈은 vica_interfaces 를 import 하므로 ROS2 노드에서만 사용한다.
-사용 전 `source ros2_ws/install/setup.bash` 가 필요하다.
-CLI(main.py)는 이 모듈을 import 하지 않는다.
-"""
+"""pydantic 스키마 <-> ROS2 커스텀 메시지(vica_interfaces) 변환."""
 from __future__ import annotations
 
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
@@ -32,6 +27,7 @@ def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
     msg.need_confirm = intent.need_confirm
     msg.reply = intent.reply
     msg.safety_flag = intent.safety_flag
+    msg.wait_minutes = int(intent.wait_minutes)
     return msg
 
 
@@ -45,6 +41,7 @@ def msg_to_intent(msg: VicaIntentMsg) -> VicaIntent:
         need_confirm=msg.need_confirm,
         reply=msg.reply,
         safety_flag=msg.safety_flag,
+        wait_minutes=msg.wait_minutes,
     )
 
 

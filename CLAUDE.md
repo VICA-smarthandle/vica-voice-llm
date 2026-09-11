@@ -2,6 +2,12 @@
 
 항상 한국어로 답변한다. 사용자는 LLM/API/STT 개발 입문자이므로 짧고 명확하게 설명하고, 작은 단계로 안내한다.
 
+> **⚠️ 새 세션은 `docs/jetson-handoff.md` 를 먼저 읽는다** (2026-07-29 갱신).
+> 웨이크워드 마이크 앞단(P1-a·b)과 가상 로봇 시뮬레이션·계측이 이미 통합돼
+> 있고, 확정 결정(전 구간 STT 검증 등)·성능 수치·Jetson 설치 함정·다음 작업
+> 우선순위가 그 문서에 있다. 아래 로드맵의 Phase 1~4 서술은 그보다 오래됐다
+> (예: Phase 4 의 "openWakeWord 는 별도 실험에서 검증" → 검증 완료·통합됨).
+
 ## Project Goal
 
 VICA는 시각장애인 사용자를 위한 자율 안내 로봇이다. 이 저장소는 VICA의 음성/LLM 파트를 개발한다.
@@ -191,9 +197,11 @@ Always-on Emergency Monitor
 
 초기 구현은 `emergency_filter.py`의 rule-based keyword detection으로 충분하다. openWakeWord는 별도 실험 파일에서 한국어 긴급어 모델 성능을 먼저 검증한다.
 
-### Phase 5: FastAPI + SQLite Destination Backend
+### Phase 5: FastAPI + SQLite Destination Backend (제거됨)
 
-테스트용 관리자 백엔드를 별도 세션에서 만들어도 된다.
+> 이 테스트용 백엔드는 제거되었다. 목적지는 `config/destinations.yaml` 단일 소스로
+> 읽고(`src/destination_loader.py`), 목적지·pose 편집은 관리자 앱(VICA_Supervisor)이
+> 담당한다. 아래 설계는 기록용으로만 남긴다.
 
 추천 구조:
 
@@ -253,7 +261,7 @@ Nav2 goal 생성 여부 결정
 5. `src/langchain_intent_parser.py`를 만든다.
 6. `src/main.py`에서 GPT parser 대신 LangChain parser를 사용하도록 조정한다.
 7. emergency filter는 LangChain 호출 전에 유지한다.
-8. FastAPI + SQLite backend가 준비되면 destination tool을 YAML 조회에서 API 조회로 교체한다.
+8. 목적지는 `config/destinations.yaml` 단일 소스로 유지한다 (테스트용 API 백엔드는 제거됨).
 
 ## Testing Rules
 

@@ -87,7 +87,7 @@ destinations:
     owner: ""
     authorization: "public"
     is_approachable: false
-    unavailable_reason: "현재 로봇이 접근할 수 없는 목적지입니다."
+    unavailable_reason: "현재 로봇이 접근할 수 없는 목적지입니다. 현재 식당 공사중입니다. 공사는 2026년 9월 30일까지입니다."
     pose:
       frame_id: "map"
       x: 0.0
@@ -121,11 +121,6 @@ destinations:
     confirm_prompt: "행정대학건물 3층 305호 교실로 안내해드릴까요?"
     arrival_message: "행정대학건물 3층 305호 교실 앞에 도착했습니다."
 
-  # ---- 이하 확장 목적지 (2026-07-07) ----
-  # confirm_prompt / arrival_message 는 비워두면 destination_loader 가
-  # name 으로 자동 생성한다. pose 는 calibration 단계에서 채운다.
-
-  # ===== 공학관: 학과 사무실 =====
   - id: "engineering_4f_room_401_cs_dept_office"
     name: "컴퓨터공학과 사무실"
     aliases:
@@ -174,7 +169,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # ===== 공학관: 교수 연구실 =====
   - id: "engineering_4f_room_402_prof_kim_minjun_office"
     name: "김민준 교수님 연구실"
     aliases:
@@ -242,7 +236,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # ===== 공학관: 시설 =====
   - id: "engineering_1f_lobby"
     name: "공학관 1층 로비"
     aliases:
@@ -297,7 +290,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # 접근 제한 예시: 권한(restricted) + 접근 불가
   - id: "engineering_b1_server_room"
     name: "공학관 지하 서버실"
     aliases:
@@ -313,7 +305,6 @@ destinations:
     unavailable_reason: "서버실은 관계자 외 출입 금지 구역이라 안내할 수 없습니다."
     confirm_prompt: "공학관 지하 서버실은 관계자 외 출입 금지 구역입니다."
 
-  # ===== 별빛관 =====
   - id: "starlight_2f_room_201_seminar"
     name: "별빛관 2층 세미나실"
     aliases:
@@ -371,7 +362,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # ===== 중앙도서관 =====
   - id: "library_1f_information_desk"
     name: "중앙도서관 1층 안내데스크"
     aliases:
@@ -400,7 +390,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # ===== 학생회관 (실외 경로 = 접근 불가 예시) =====
   - id: "student_union_1f_convenience_store"
     name: "학생회관 1층 편의점"
     aliases:
@@ -431,7 +420,6 @@ destinations:
     unavailable_reason: "학생회관은 실외 이동 경로라 현재 로봇이 안내할 수 없습니다."
     confirm_prompt: "학생회관 2층 학생식당은 현재 안내할 수 없습니다."
 
-  # ===== 행정대학건물 =====
   - id: "administration_1f_admin_support_office"
     name: "행정대학건물 1층 행정지원실"
     aliases:
@@ -478,7 +466,6 @@ destinations:
     authorization: "public"
     is_approachable: true
 
-  # 임시 폐쇄 예시 (공사)
   - id: "administration_2f_auditorium"
     name: "행정대학건물 2층 대강당"
     aliases:

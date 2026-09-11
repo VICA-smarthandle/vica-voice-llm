@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""고정 멘트를 CLOVA Voice 로 구워 캐시(wav)로 만든다."""
+from __future__ import annotations
+
+import argparse
+import io
+import os
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+ENDPOINT = "https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts"
+TARGET_RATE = 16000
+TARGET_PEAK_DBFS = -3.0
+
+SAMPLE_SENTENCES = [
+    "네? 무엇을 도와드릴까요?",
+    "별빛관 1층 화장실로 안내해드릴까요?",
+    "안전을 위해 멈추겠습니다. 관리자를 호출했습니다.",
+]
+
+
+def _keys() -> tuple[str, str]:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+    cid = os.environ.get("VICA_CLOVA_CLIENT_ID", "")
+    secret = os.environ.get("VICA_CLOVA_CLIENT_SECRET", "")
+    if not cid or not secret:
+        raise SystemExit(
+            "CLOVA 키가 없다 — .env 에 VICA_CLOVA_CLIENT_ID / "
+            "VICA_CLOVA_CLIENT_SECRET 를 넣을 것 (모듈 주석의 준비 절차)")
+    return cid, secret
+
+
+def synthesize(text: str, voice: str, cid: str, secret: str,
+               speed: int = 0, emotion: int | None = None) -> tuple[np.ndarray, int]:
+    """CLOVA Voice 호출 → float32 mono 오디오. 실패는 예외로 그대로 낸다."""
+    params = {"speaker": voice, "text": text, "format": "wav", "speed": str(speed)}
+    if emotion is not None:
+        params["emotion"] = str(emotion)
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=urllib.parse.urlencode(params).encode(),
+        headers={
+            "X-NCP-APIGW-API-KEY-ID": cid,
+            "X-NCP-APIGW-API-KEY": secret,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    wav, rate = sf.read(io.BytesIO(raw), dtype="float32")
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    return wav, rate
+
+
+def to_asset(wav: np.ndarray, rate: int) -> np.ndarray:
+    """assets 규격으로: 16 kHz 리샘플 + -3 dBFS 피크 정규화."""
+    if rate != TARGET_RATE:
+        n = int(len(wav) * TARGET_RATE / rate)
+        wav = np.interp(np.linspace(0, len(wav), n, endpoint=False),
+                        np.arange(len(wav)), wav).astype(np.float32)
+    peak = float(np.abs(wav).max()) or 1.0
+    return wav * (10 ** (TARGET_PEAK_DBFS / 20) / peak)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="mode", required=True)
+    p_sample = sub.add_parser("sample", help="시청회용 — 보이스 비교 굽기")
+    p_sample.add_argument("--voices", default="nara,mijin,jinho",
+                          help="쉼표 구분 보이스 코드 (프리미엄 목록은 NCP 문서)")
+    p_sample.add_argument("--out", default=str(ROOT / "clova_samples"))
+    p_all = sub.add_parser("all", help="확정 보이스로 등록 멘트 전체 굽기")
+    p_all.add_argument("--voice", required=True)
+    p_bench = sub.add_parser("bench", help="왕복 지연 측정 (실시간 후보 판정용)")
+    p_bench.add_argument("--voice", default="nara")
+    p_bench.add_argument("--repeats", type=int, default=5)
+    args = ap.parse_args()
+
+    cid, secret = _keys()
+
+    if args.mode == "sample":
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        for voice in args.voices.split(","):
+            voice = voice.strip()
+            for i, text in enumerate(SAMPLE_SENTENCES, 1):
+                wav, rate = synthesize(text, voice, cid, secret)
+                path = out / f"{voice}_{i}.wav"
+                sf.write(path, to_asset(wav, rate), TARGET_RATE, subtype="PCM_16")
+                print(f"구움: {path}  ('{text[:20]}…')")
+        print(f"\n시청: 재생 장치로 {out}/*.wav 를 차례로 들어볼 것")
+        return
+
+    if args.mode == "bench":
+        import statistics
+        import time
+        cases = [("짧음", "네? 무엇을 도와드릴까요?"),
+                 ("중간", "별빛관 1층 화장실로 안내해드릴까요?"),
+                 ("김", "안녕하세요? 저는 시각장애인 안내로봇 비카입니다! "
+                        "저와 함께 목적지까지 동행해보시는건 어떠세요?")]
+        print(f"{'문장':<4} {'글자':>4} {'중앙값':>8} {'최소':>8} {'최대':>8} 실패")
+        for label, text in cases:
+            times, fails = [], 0
+            for _ in range(args.repeats):
+                t0 = time.monotonic()
+                try:
+                    synthesize(text, args.voice, cid, secret)
+                    times.append(time.monotonic() - t0)
+                except Exception:
+                    fails += 1
+            if times:
+                print(f"{label:<4} {len(text):>4} {statistics.median(times):>7.2f}s"
+                      f" {min(times):>7.2f}s {max(times):>7.2f}s {fails}")
+            else:
+                print(f"{label:<4} {len(text):>4} 전부 실패 ({fails})")
+        return
+
+    from src.ment_cache import ASSETS_DIR, CACHED_MENTS
+    for filename, text in CACHED_MENTS.items():
+        wav, rate = synthesize(text, args.voice, cid, secret)
+        path = ASSETS_DIR / filename
+        sf.write(path, to_asset(wav, rate), TARGET_RATE, subtype="PCM_16")
+        print(f"구움: {path.name}  ({len(wav)/rate:.1f}s)  '{text[:28]}…'")
+    print("\n완료 — git diff 로 바뀐 wav 를 확인하고, 실기 청취 후 커밋할 것")
+
+
+if __name__ == "__main__":
+    main()
