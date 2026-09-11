@@ -215,9 +215,10 @@ class TestShortAnswerRescue:
 
     def test_free_window_short_burst_stays_ghost(self):
         """자유 창(호출 직후)은 짧은 답 구제 없음 + 반짝 무효화(9/1) —
-        짧은 소리는 없던 일이 되고 창은 6초 상한까지 기다렸다 빈손으로 닫힌다."""
+        짧은 소리는 없던 일이 되고 창은 15초 상한까지 기다렸다 빈손으로
+        닫힌다(2026-09-11: 6초 -> 15초)."""
         texts, states = [], []
-        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 90, text="네.")
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 220, text="네.")
         m = WakewordMonitor(
             on_emergency=lambda e: None,
             on_user_text=texts.append,
@@ -228,7 +229,7 @@ class TestShortAnswerRescue:
         )
         run_frames(m, 2, LOUD)                              # "비카야" → 창 열림
         run_frames(m, 1, self.LOUD1, t0=0.3, vad=True)      # 0.08초 반짝
-        run_frames(m, 75, QUIET, t0=0.3 + 0.08)   # 6초 상한(반짝 무효화) 경과
+        run_frames(m, 220, QUIET, t0=0.3 + 0.08)  # 15초 상한(반짝 무효화) 경과
         assert texts == []
         assert any(st.startswith("empty") for st in states)
 
@@ -332,15 +333,16 @@ class TestFreeWindowMinOpen:
         assert texts == ["화장실로 가자"]
 
     def test_truly_silent_call_closes_after_min_open(self):
-        """정말 아무 말 없으면 최소 개방이 지나고 닫힌다 — 영구 개방은 아니다."""
+        """정말 아무 말 없으면 최소 개방이 지나고 닫힌다 — 영구 개방은 아니다
+        (2026-09-11: 상한 6초 -> 15초)."""
         texts, states = [], []
-        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 90, text="X")
+        fake = Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 220, text="X")
         m = WakewordMonitor(
             on_emergency=lambda e: None, on_user_text=texts.append,
             on_wake=lambda: None, on_listen_state=states.append,
             predict=fake.predict, transcribe=fake.transcribe)
         run_frames(m, 2, LOUD, t0=5.0)
         run_frames(m, 1, LOUD, t0=5.16, vad=True)            # 반짝 → 무효화
-        run_frames(m, 78, QUIET, t0=5.24, vad=False)         # 6초 상한 경과
+        run_frames(m, 220, QUIET, t0=5.24, vad=False)        # 15초 상한 경과
         assert texts == []
         assert any(s.startswith("empty") for s in states)

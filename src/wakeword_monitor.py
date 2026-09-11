@@ -103,7 +103,7 @@ WAKE_WORD_TEXT = "비카야"
 _SHORT_ANSWER_WORDS = AFFIRMATIVES | SOFT_AFFIRMATIVES | NEGATIVES
 # 청취 창 시간값 — 사용감을 정하는 파라미터라 환경변수로 조정하고, 확정은
 # 실사용 측정으로 한다 [TARGET] (시나리오 2-1.4절과 같은 취급).
-LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "6.0"))
+LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "15.0"))
 LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
 # 자유 창 최소 개방 시간 [TARGET] (2026-09-01): "네?" 에코·비카야 꼬리에
 # VAD 가 반짝하면 말끝 시계(0.8초)가 조기 가동돼 창이 1~1.5초 만에 닫히고,
@@ -114,10 +114,10 @@ LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
 # 반짝 무효화 문턱 [실측 2026-09-01]: 에코 반짝의 VAD 연속 구간은 전부
 # ≤0.14초(mic_probe, 로봇 단독 발화 조건), 진짜 발화의 최단은 0.48초
 # (실기 계측 15표본). 그 한가운데 — 이보다 짧은 "발화"는 자유 창에서
-# 없던 일로 되돌리고 6초 상한까지 계속 기다린다.
+# 없던 일로 되돌리고 LISTEN_MAX_SEC 상한까지 계속 기다린다.
 LISTEN_BLIP_VOID_SEC = float(os.environ.get("VICA_LISTEN_BLIP_VOID_SEC", "0.32"))
 # 질문(재청취) 창은 시나리오 6.4의 확인 대기 30초와 일치시킨다 — 미션이
-# 30초를 기다린다고 약속하는데 귀가 6초만 열려 있으면 안 된다.
+# 30초를 기다린다고 약속하는데 귀가 LISTEN_MAX_SEC(자유 창 상한)만큼만 열려 있으면 안 된다.
 CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
 # 발화 시작 전 보존할 말머리 여유(0.48초) — 긴 확인 창이 침묵 덩어리로
 # whisper 에 통째로 가는 것을 막는다.
@@ -762,9 +762,17 @@ class WakewordMonitor:
         # 창 안 호출 구제: 이 창에서 호출 소리를 들었고 전사가 한 덩어리 짧은
         # 말이면, 글자가 무엇이든 호출로 본다. 소리가 정본이고 글자는 보조다.
         # 환각 검사보다 먼저 둔다 — 호출을 '감사합니다' 따위로 적어도 살린다.
+        # 단, 질문 창의 정답은 원래 짧다("그래"·"아니"·"아니요") — 2026-09-11
+        # 실기: 소리 모델이 그 창 안에서 스치듯 반짝하면 이 구제가 정답을
+        # "비카야"로 갈아치워 접근 질문이 접혔다(오전 7회·오후 3회). 정답
+        # 어휘면 구제보다 답을 먼저 믿는다.
         if self._listen_heard_wake and _looks_like_short_call(text):
-            self._on_listen_state(f"wake-rescue {text[:20]!r}")
-            text = WAKE_WORD_TEXT
+            if (self._listen_is_followup
+                    and normalize_short_reply(text) in _SHORT_ANSWER_WORDS):
+                self._on_listen_state(f"answer-beats-rescue {text[:20]!r}")
+            else:
+                self._on_listen_state(f"wake-rescue {text[:20]!r}")
+                text = WAKE_WORD_TEXT
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
         # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):

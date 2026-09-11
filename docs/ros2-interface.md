@@ -44,7 +44,7 @@ ros_emergency_node  whisper 상시 감시. 웨이크워드 롤백용으로 남�
 | `/vica/tts_state` | `std_msgs/msg/Bool` | TTS | 긴급어 감시 | 로봇 음성 재생 중 여부 |
 | `/vica/listen_request` | `std_msgs/msg/Bool` | LLM node, Mission Manager | 웨이크워드 노드 | `true` = 방금 말한 것이 질문("~할까요?"). 질문 TTS 종료 직후 웨이크워드 없이 재청취 창을 연다 — 사용자가 "비카야" 재호출 없이 "네/아니요"로 답한다. `false` = 예약 취소. 예약은 20초 지나면 스스로 무효(질문 유실 대비) |
 | `/vica/tts_stop` | `std_msgs/msg/Empty` | 웨이크워드 노드 | TTS | **barge-in** (2026-08-24 추가): 재생 중 발화를 즉시 끊고 대기 중 비긴급 발화를 버린다. 긴급(priority=emergency) 발화는 큐에 남는다. 웨이크워드 노드가 세 경우에 보낸다 — ① 재생 중 "비카야" 호출 ② 긴급 확정 직후(로봇 침묵) ③ 질문 재생 중 사용자가 답을 시작(AEC 모드 한정, 연속 0.32초 발화) |
-| `/vica_goal_event` | `std_msgs/msg/String` (JSON) | Mission Manager | 웨이크워드 노드, 청각 안내 | goal 생명주기 이벤트. **payload 는 JSON** — `event` 키(`goal_succeeded` 등)를 `cue_logic.parse_goal_event` 로 꺼내 쓴다. 평문 이벤트 이름은 계약이 아니다(핸들 노드가 2026-07-29 실기에서 겪은 함정) |
+| `/vica_goal_event` | `std_msgs/msg/String` (JSON) | Mission Manager | 웨이크워드 노드 | goal 생명주기 이벤트. **payload 는 JSON** — `event` 키(`goal_succeeded` 등)를 꺼내 쓴다. 평문 이벤트 이름은 계약이 아니다(핸들 노드가 2026-07-29 실기에서 겪은 함정) |
 | `/vica/wake` | `std_msgs/msg/String` | 웨이크워드 노드 | Mission Manager | "비카야" 호출 감지 신호. 2026-09-10 호출 접근 설계부터 Mission 이 실제로 구독한다(WAITING 각성·복귀 브레이크) — 팀 계약으로 승격, 임의 변경 금지 |
 | `/vica/wake_doa` | `std_msgs/msg/Float32` | 웨이크워드 노드 | Mission Manager | 호출이 온 방향(도, 0~359). 정면이 0, 핸들 쪽이 180. 칩이 방향을 못 읽으면 무발행(무음 실패) — Mission 은 대기(IDLE) 중에만 받아 그쪽으로 고개를 돌린다(호출 접근 설계 §3~4) |
 

@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 # 유통기한 (2026-08-26 실기: 밀린 말이 뒤늦게 나와 소음이 됐다).
-# 회전 멘트는 지나가면 무의미, 거리류 narration 도 상황이 변하면 무의미하다.
-# 확인 질문·답변·긴급은 상태 결정적 정보라 낡아도 말한다.
-TURN_TTL_SEC = 3.0
+# 거리류 narration 은 상황이 변하면 무의미하다. 확인 질문·답변·긴급은 상태
+# 결정적 정보라 낡아도 말한다. (회전 멘트 특례는 2026-09-11 회전 안내 제거와
+# 함께 뺐다.)
 NARRATION_TTL_SEC = 6.0
 
 EMERGENCY = "emergency"
@@ -165,12 +165,8 @@ class TtsQueue:
             return out
 
     def _prune_expired(self, now: float) -> None:
-        from .replies import TURN_LEFT, TURN_RIGHT
-
         def alive(item: Utterance) -> bool:
             age = now - item.queued_at
-            if item.text in (TURN_LEFT, TURN_RIGHT):
-                return age <= TURN_TTL_SEC
             if item.priority == NARRATION:
                 return age <= NARRATION_TTL_SEC
             return True  # emergency·일반 response 는 낡아도 말한다

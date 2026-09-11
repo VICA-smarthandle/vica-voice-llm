@@ -125,7 +125,7 @@ def main() -> None:
     speak_for(PHASE_BC_SEC)
     b1 = time.time()
 
-    beep = audio_out.prepare(audio_cue.arrived(), audio_cue.SAMPLE_RATE,
+    beep = audio_out.prepare(audio_cue.sequence((784.0, 1047.0), 0.15), audio_cue.SAMPLE_RATE,
                              dev_rate, dev_channels)
     play_wave(beep)   # 구간 전환 알림음
     time.sleep(1.0)

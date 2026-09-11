@@ -150,10 +150,6 @@ HANDLE_LOST = "손잡이를 잡아 주세요."
 # 한 번 말로 알려준다 (2026-08-05 결정).
 WAKE_GREETING = "네?"
 
-# 회전 안내. 사용자의 안전과 직결되므로 축약하지 않고 매번 같은 문장을 말한다.
-# 방향을 잘못 알면 넘어질 수 있다.
-TURN_LEFT = "좌회전 할게요."
-TURN_RIGHT = "우회전 할게요."
 
 
 def expects_answer(reply: str) -> bool:
