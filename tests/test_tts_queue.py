@@ -231,23 +231,6 @@ def test_build_request_unknown_priority_falls_back():
 # ---- 유통기한 (2026-08-26 실기: 밀린 말이 뒤늦게 나오는 문제) -------------------
 
 
-def test_turn_ment_expires_in_queue():
-    """회전 멘트는 3초 지나면 재생하지 않는다 — 회전이 끝난 뒤엔 소음이다."""
-    from src.replies import TURN_LEFT
-    q = TtsQueue()
-    q.push(RESPONSE, TURN_LEFT, now=0.0)
-    assert q.pop(now=4.0) is None
-    assert TURN_LEFT in q.take_expired()
-
-
-def test_fresh_turn_ment_plays():
-    from src.replies import TURN_RIGHT
-    q = TtsQueue()
-    q.push(RESPONSE, TURN_RIGHT, now=0.0)
-    item = q.pop(now=1.0)
-    assert item is not None and item.text == TURN_RIGHT
-
-
 def test_narration_expires_after_six_seconds():
     q = TtsQueue()
     q.push(NARRATION, "목적지까지 약 3미터 남았습니다.", now=0.0)

@@ -28,7 +28,7 @@
 - `src.ros_node`: LLM 의도 해석과 `VicaIntent` 발행
 - `src.ros_tts_node`: `/vica/tts_request` 우선순위 재생
 - `src.ros_wakeword_node`: 마이크 앞단 — 호출어 감지 + 상시 긴급어 감시
-- `src.ros_audio_cue_node`: 회전·도착 청각 안내
+- `src.ros_audio_cue_node`: 도착 청각 안내
 
 마이크 앞단이 웨이크워드로 바뀌었다(2026-08-04). 시각장애인 사용자는 push-to-talk
 엔터를 칠 수 없고 핸들에 버튼을 더 달 수 없어, 호출어가 유일한 진입 경로다.
@@ -103,7 +103,7 @@ TTS는 `/vica/tts_request`의 `"<priority>:<text>"` 형식을 파싱해 큐로 �
 | `src/ros_wakeword_node.py` | **마이크 앞단** — 호출어 + 상시 긴급어 감시 |
 | `src/wakeword_monitor.py` | 상시 감시 엔진 (관문 → whisper 검증) |
 | `src/wakeword_gate.py` | 관문 판정과 긴급어 정확 매칭 (순수 로직) |
-| `src/ros_audio_cue_node.py` | 회전·도착 청각 안내 |
+| `src/ros_audio_cue_node.py` | 도착 청각 안내 |
 | `src/ros_node.py` | LLM, 목적지 검증, intent·TTS 요청 |
 | `src/ros_tts_node.py` | TTS 큐 재생과 상태 발행 |
 | `src/ros_stt_node.py` | push-to-talk STT (개발용, launch 에 없음) |

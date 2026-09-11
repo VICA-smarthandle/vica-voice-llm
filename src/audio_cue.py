@@ -27,8 +27,6 @@ SAMPLE_RATE = 44100
 DEFAULT_VOLUME = 0.4
 
 WAKE_ACK_HZ = 880.0
-TURN_LEFT_HZ = 660.0
-TURN_RIGHT_HZ = 990.0
 ARRIVED_HZ = (784.0, 1047.0)
 
 CUE_SEC = 0.15
@@ -74,14 +72,6 @@ def thinking_loop() -> np.ndarray:
 
 def wake_ack() -> np.ndarray:
     return tone(WAKE_ACK_HZ, WAKE_SEC)
-
-
-def turn_left() -> np.ndarray:
-    return tone(TURN_LEFT_HZ, CUE_SEC)
-
-
-def turn_right() -> np.ndarray:
-    return tone(TURN_RIGHT_HZ, CUE_SEC)
 
 
 def arrived() -> np.ndarray:

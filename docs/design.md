@@ -83,7 +83,7 @@ src/
 ├── ros_wakeword_node.py        마이크 앞단 (호출 + 긴급, launch 기본)
 │   ├── wakeword_monitor.py     상시 감시 엔진
 │   └── wakeword_gate.py        관문·정확 매칭 (순수 로직)
-├── ros_audio_cue_node.py       회전·도착 청각 안내
+├── ros_audio_cue_node.py       도착 청각 안내
 │   ├── cue_logic.py            판정 (순수 로직)
 │   └── audio_cue.py            안내음 생성·재생
 ├── ros_node.py                 LLM 해석 → /vica/intent

@@ -30,20 +30,11 @@ def test_tone_does_not_clip():
     assert float(np.max(np.abs(wave))) <= 1.0
 
 
-def test_left_is_lower_than_right():
-    """좌우를 음높이로 구분한다 — 낮으면 왼쪽, 높으면 오른쪽."""
-    assert _peak_freq(audio_cue.turn_left()) < _peak_freq(audio_cue.turn_right())
-
-
 def test_arrived_is_two_rising_tones():
-    """도착음은 회전음과 뚜렷이 구분돼야 한다 (단음 아닌 상행 2음)."""
+    """도착음은 단음이 아닌 상행 2음이다 — 다른 알림음과 구분된다."""
     wave = audio_cue.arrived()
     half = len(wave) // 2
     assert _peak_freq(wave[:half]) < _peak_freq(wave[half:])
-
-
-def test_arrived_is_longer_than_a_turn_cue():
-    assert len(audio_cue.arrived()) > len(audio_cue.turn_left())
 
 
 def test_degenerate_input_returns_empty_wave():
