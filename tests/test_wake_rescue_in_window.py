@@ -71,6 +71,74 @@ def _run(text: str, wake_frames: set[int]):
     return out, texts, wakes, states
 
 
+def _run_followup(text: str, wake_frames: set[int]):
+    """재청취(질문) 창을 열고, 그 창 안에서 호출 소리를 낸다.
+
+    `_run` 과 달리 창은 arm_followup + set_muted(False) 로 연다(진짜 "비카야"
+    없이). 첫 호출을 프레임에 쓰지 않으므로 `wake_frames` 는 창이 열린 뒤의
+    절대 프레임 번호다. 발화는 5프레임(0.4초)이라 짧은 답 구제
+    (short_rescue, LISTEN_MIN_SPEECH_SEC=0.16초) 상한 밖 — 그 경로를 건드리지
+    않고 창 안 호출 구제만 재현한다.
+    """
+    texts, states = [], []
+    fake = Fake(text, wake_frames)
+    m = WakewordMonitor(
+        on_emergency=lambda e: None,
+        on_user_text=texts.append,
+        on_wake=lambda: None,
+        on_listen_state=states.append,
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+    )
+    m.arm_followup(now=0.0)
+    m.set_muted(False, now=0.0)   # 질문 TTS 종료 → 재청취 창
+    t = 0.0
+    for i in range(2):
+        m.process_frame(QUIET, now=t, vad=False)
+        t += 0.08
+    for i in range(5):
+        m.process_frame(LOUD, now=t, vad=True)
+        t += 0.08
+    out = None
+    for i in range(40):
+        r = m.process_frame(QUIET, now=t + i * 0.08, vad=False)
+        if r is not None:
+            out = r
+            break
+    return out, texts, states
+
+
+class TestFollowupAnswerBeatsRescue:
+    """질문 창의 정답 어휘는 창 안 호출 구제보다 우선한다 (2026-09-11 실기).
+
+    질문(재청취) 창의 정답은 원래 짧다 — "그래", "아니", "아니요". 호출 소리
+    모델이 그 창 안에서 스치듯 반짝하면(_listen_heard_wake) 기존 구제
+    규칙이 그 정답을 글자와 무관하게 "비카야"로 갈아치워, 미션이 열려
+    있던 접근 질문을 접었다(오전 7회·오후 3회, 로그: wake-rescue '아니.').
+    """
+
+    def test_short_answer_survives_wake_blip(self):
+        out, texts, states = _run_followup("아니요.", wake_frames={0, 1})
+        assert out == "user_text"
+        assert texts == ["아니요."]
+        assert not any(s.startswith("wake-rescue") for s in states)
+        assert any(s.startswith("answer-beats-rescue") for s in states)
+
+    def test_non_answer_short_call_is_still_rescued(self):
+        """정답 어휘가 아닌 짧은 말(진짜 비카야 오전사)은 기존대로 구제한다."""
+        out, texts, states = _run_followup("이깨야.", wake_frames={0, 1})
+        assert out == "user_text"
+        assert texts == [WAKE_WORD_TEXT]
+        assert any(s.startswith("wake-rescue") for s in states)
+
+    def test_free_window_short_answer_word_is_still_rescued(self):
+        """자유 창은 정답 어휘 예외가 없다 — heard_wake 면 그대로 구제한다."""
+        out, texts, _, states = _run("그래.", wake_frames={2, 3})
+        assert out == "user_text"
+        assert texts == [WAKE_WORD_TEXT]
+        assert any(s.startswith("wake-rescue") for s in states)
+
+
 class TestRescue:
     def test_misheard_call_is_rescued_by_sound(self):
         """'비켜야'로 적혀도 호출 소리를 들었으면 호출이다."""

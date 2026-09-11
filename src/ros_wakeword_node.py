@@ -258,6 +258,11 @@ class WakewordNode(Node):
             # 어느 관문에서 막혔는지 남긴다 — 이 줄이 없어서 "말을 안 한
             # 것"과 "말했는데 문턱을 못 넘은 것"이 구분되지 않았다(9/2).
             self.get_logger().info(f"🔇 {state}")
+        if state.startswith("answer-beats-rescue"):
+            # 질문 창의 정답이 창 안 호출 구제를 이겼다 — 소리 모델이 질문
+            # 창에서 얼마나 자주 헛반짝하는지 다음 실기에서 세려고 남긴다
+            # (2026-09-11 실기: 오전 7회·오후 3회 헛반짝이 정답을 삼켰다).
+            self.get_logger().info(f"🛡️ {state}")
         if ":" in state:
             # 기각 사유(유령 문턱·환각·빈 전사) — 이전엔 followup 기각이
             # 무로그라 "대기해가 왜 죽었나"를 사후 진단할 수 없었다(2026-08-31).

@@ -762,9 +762,17 @@ class WakewordMonitor:
         # 창 안 호출 구제: 이 창에서 호출 소리를 들었고 전사가 한 덩어리 짧은
         # 말이면, 글자가 무엇이든 호출로 본다. 소리가 정본이고 글자는 보조다.
         # 환각 검사보다 먼저 둔다 — 호출을 '감사합니다' 따위로 적어도 살린다.
+        # 단, 질문 창의 정답은 원래 짧다("그래"·"아니"·"아니요") — 2026-09-11
+        # 실기: 소리 모델이 그 창 안에서 스치듯 반짝하면 이 구제가 정답을
+        # "비카야"로 갈아치워 접근 질문이 접혔다(오전 7회·오후 3회). 정답
+        # 어휘면 구제보다 답을 먼저 믿는다.
         if self._listen_heard_wake and _looks_like_short_call(text):
-            self._on_listen_state(f"wake-rescue {text[:20]!r}")
-            text = WAKE_WORD_TEXT
+            if (self._listen_is_followup
+                    and normalize_short_reply(text) in _SHORT_ANSWER_WORDS):
+                self._on_listen_state(f"answer-beats-rescue {text[:20]!r}")
+            else:
+                self._on_listen_state(f"wake-rescue {text[:20]!r}")
+                text = WAKE_WORD_TEXT
         # 유령 방어: 무음 환각 단골 문구 전체 일치면 발화가 없었던 것으로 본다
         # (stt_guard 3겹 중 수배 전단. 신뢰도 필터는 transcribe_listen 안에 있다).
         if not text or is_hallucination(text):
