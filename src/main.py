@@ -18,7 +18,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from .destination_loader import load_destinations
 from .emergency_filter import EMERGENCY_REPLY, detect_emergency
-from .langchain_intent_parser import parse_intent
+from .langchain_intent_parser import get_backend_manager, parse_intent
 from .replies import USAGE_GUIDE
 
 EXIT_WORDS = {"종료", "그만", "exit", "quit"}
@@ -90,7 +90,8 @@ def run(use_tts: bool = True, use_stt: bool = False) -> None:
             history[:] = history[-MAX_HISTORY:]
             continue
 
-        # 2) 일반 발화는 LLM intent 파서로 해석한다.
+        # 2) 일반 발화는 LLM intent 파서로 해석한다. CLI 엔 타이머가 없어 여기서 tick.
+        get_backend_manager().tick()
         intent = parse_intent(text, destinations, history=history, robot_state=robot_state)
         print(f"VICA > {intent.reply}")
         print(
