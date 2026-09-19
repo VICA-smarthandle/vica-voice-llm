@@ -341,3 +341,9 @@ class TestHelpers:
     ])
     def test_parse_goal_event(self, data, event):
         assert parse_goal_event(data) == event
+
+
+def test_robot_state_has_is_paused_default_false():
+    from src.schema import RobotState
+    assert RobotState().is_paused is False
+    assert RobotState(is_paused=True).is_paused is True
