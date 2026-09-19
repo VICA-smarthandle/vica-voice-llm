@@ -237,10 +237,10 @@ Expected: `ImportError`/`ModuleNotFoundError: No module named 'src.llm_backend'`
 `src/llm_backend.py`:
 
 ```python
-"""클라우드→로컬 LLM 자동 자동 전환(폴백) 담당 모듈. ROS·LangChain 을 모르는 순수 로직.
+"""클라우드→로컬 LLM 자동 전환(폴백) 담당 모듈. ROS·LangChain 을 모르는 순수 로직.
 
 정본 설계: docs/superpowers/specs/2026-09-19-llm-local-fallback-design.md
-비유: 한전(클라우드)과 발전기(로컬) 사이의 자동 자동 전환 스위치. 스위치는 전기가
+비유: 한전(클라우드)과 발전기(로컬) 사이의 자동 전환 스위치. 스위치는 전기가
 지나가는 자리, 즉 LLM 호출 바로 앞에 둔다.
 
 규칙 요약:
