@@ -35,7 +35,8 @@ from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import (
-    SHORTCUT_REPLIES, is_instant_utterance, parse_intent)
+    SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent)
+from .llm_backend import BackendState, parse_goal_event
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -89,6 +90,15 @@ class LlmIntentNode(Node):
         self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
         self.create_subscription(String, "/vica/wake", self._on_wake_signal, 10)
 
+        # ----- 클라우드→로컬 자동 전환 (2026-09-19 설계) ------------------------
+        # 관리자는 파서와 같은 싱글턴이다. 주행 사건·로봇 상태를 흘려 넣고,
+        # 별도 스레드가 1초마다 tick(클라우드 확인·복귀)과 생존 신호를 맡는다.
+        # 스레드로 두는 이유: LLM 호출(3~6초) 동안에도 생존 신호가 끊기면 안 된다.
+        self._backend = get_backend_manager()
+        self._cloud_alive_pub = self.create_publisher(Bool, "/vica/llm_cloud_alive", 10)
+        self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
+        threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
+
         self.get_logger().info(
             "VICA LLM intent node 시작 (구독: /vica/user_text, /vica/robot_state | 발행: /vica/intent)"
         )
@@ -104,6 +114,10 @@ class LlmIntentNode(Node):
                 f"LLM 워밍업 완료 ({time.monotonic() - started:.1f}초)")
         except Exception as exc:
             self.get_logger().warning(f"LLM 워밍업 실패(무시 가능): {exc}")
+        # 워밍업 중 클라우드가 실패했으면 관리자는 이미 LOCAL 이다. 그 경우 로컬
+        # 모델을 지금 미리 올려 첫 발화가 적재 7초를 기다리지 않게 한다.
+        if self._backend.state is BackendState.LOCAL:
+            self._backend.warm_local_async()
 
     def _on_listen_request(self, msg: Bool) -> None:
         # 이 노드 자신이 낸 요청도 같은 토픽으로 돌아온다 — 효과는 같다.
@@ -116,8 +130,30 @@ class LlmIntentNode(Node):
         self._followup_until = 0.0
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
-        """로봇 상태 메시지를 받아 최신값으로 보관한다."""
+        """로봇 상태 메시지를 받아 최신값으로 보관한다. 전환 담당 모듈에도 넘긴다."""
         self._robot_state = msg_to_robot_state(msg)
+        self._backend.on_robot_state(msg.is_moving, msg.is_paused)
+
+    def _on_goal_event(self, msg: String) -> None:
+        """미션 매니저의 주행 사건 → 전환 담당 모듈(주행 중엔 클라우드로 안 돌아간다)."""
+        event = parse_goal_event(msg.data)
+        if event:
+            self._backend.on_goal_event(event)
+
+    def _backend_loop(self) -> None:
+        """1 Hz: 클라우드 확인·복귀 판정, CLOUD 상태면 생존 신호 발행."""
+        alive = Bool(data=True)
+        while rclpy.ok():
+            try:
+                before = self._backend.state
+                after = self._backend.tick()
+                if before is not after:
+                    self.get_logger().info(f"[LLM] 백엔드 {before.value} → {after.value}")
+                if self._backend.heartbeat_enabled:
+                    self._cloud_alive_pub.publish(alive)
+            except Exception as exc:  # 루프는 죽지 않는다
+                self.get_logger().warning(f"[LLM] 백엔드 루프 오류(무시): {exc}")
+            time.sleep(1.0)
 
     def _on_user_text(self, msg: String) -> None:
         """발화를 받아 VicaIntent 를 만들어 발행한다."""
