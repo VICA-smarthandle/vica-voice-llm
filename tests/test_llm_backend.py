@@ -223,6 +223,29 @@ class TestProbeAndReturn:
         assert mgr.cloud_ready is False
         assert logs[-1][0] == "error"
 
+    def test_auth_failed_logs_error_only_once_while_result_is_unchanged(self):
+        """F7: 30초마다 같은 401 을 반복 보고하면 진단 로그가 도배된다."""
+        mgr, _, _, _, clock, logs = switched(ProbeResult.AUTH_FAILED)
+        clock.advance(30)
+        mgr.tick()
+        assert len([lv for lv, _ in logs if lv == "error"]) == 1
+        clock.advance(30)
+        mgr.tick()  # 결과 그대로(AUTH_FAILED) — 오류 로그가 늘면 안 된다
+        assert len([lv for lv, _ in logs if lv == "error"]) == 1
+
+    def test_probe_attempts_counts_every_call_not_only_alive_streak(self):
+        """F4: DEAD 로 한 번 실패한 뒤 ALIVE 로 성공하면 "확인 2회째"여야 한다."""
+        mgr, _, _, probe, clock, logs = switched(ProbeResult.DEAD)
+        clock.advance(30)
+        mgr.tick()
+        assert probe.calls == 1
+        assert mgr.cloud_ready is False
+        probe.result = ProbeResult.ALIVE
+        clock.advance(30)
+        mgr.tick()
+        assert probe.calls == 2
+        assert ("info", "[LLM] 클라우드 살아남(확인 2회째). 주행 끝나면 복귀") in logs
+
     def test_local_invoke_while_local(self):
         mgr, cloud, local, *_ = switched()
         cloud.calls.clear()

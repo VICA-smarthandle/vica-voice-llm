@@ -377,7 +377,10 @@ def _cloud_probe() -> ProbeResult:
 def _log(level: str, msg: str) -> None:
     import sys
 
-    print(msg, file=sys.stderr)
+    if level == "info":
+        print(msg, file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
 
 
 _MANAGER: Optional[LlmBackendManager] = None
@@ -547,9 +550,12 @@ def parse_intent(
         # 클라우드→로컬까지 실패했거나 폴백이 꺼진 상태의 실패.
         # 크래시 대신 안전한 fallback 응답을 돌려준다.
         # (긴급어는 LLM 이전 단계에서 처리되므로 이 실패의 영향을 받지 않는다.)
-        import sys
-
-        print(f"[LLM] 호출 실패: {exc}", file=sys.stderr)
+        if model is not None:
+            _log("error", f"[LLM] 호출 실패(모델 {model}): {exc}")
+        elif not get_backend_manager().has_local:
+            _log("error", f"[LLM] 호출 실패(클라우드만, 폴백 꺼짐): {exc}")
+        else:
+            _log("error", f"[LLM] 호출 실패(로컬까지): {exc}")
         return VicaIntent(
             intent="unknown",
             reply=LLM_UNAVAILABLE,

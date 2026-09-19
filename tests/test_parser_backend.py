@@ -45,12 +45,28 @@ def test_parse_intent_uses_manager_and_falls_back(monkeypatch):
     assert mgr.state is BackendState.LOCAL
 
 
-def test_parse_intent_unavailable_when_both_fail(monkeypatch):
+def test_parse_intent_unavailable_when_both_fail(monkeypatch, capsys):
     mgr = _manager(cloud_fail=True, local=False)
     monkeypatch.setattr(parser, "get_backend_manager", lambda: mgr)
     intent = parse_intent("화장실로 안내해줘", [DEST])
     assert intent.intent == "unknown"
     assert intent.reply == LLM_UNAVAILABLE
+    assert "폴백 꺼짐" in capsys.readouterr().err
+
+
+def test_parse_intent_logs_local_failure_when_local_also_raises(monkeypatch, capsys):
+    def cloud(messages):
+        raise Boom("cloud down")
+
+    def local(messages):
+        raise Boom("local down")
+
+    mgr = LlmBackendManager(cloud, local, lambda: ProbeResult.DEAD, logger=lambda *_: None)
+    monkeypatch.setattr(parser, "get_backend_manager", lambda: mgr)
+    intent = parse_intent("화장실로 안내해줘", [DEST])
+    assert intent.intent == "unknown"
+    assert intent.reply == LLM_UNAVAILABLE
+    assert "로컬까지" in capsys.readouterr().err
 
 
 def test_explicit_model_bypasses_manager(monkeypatch):

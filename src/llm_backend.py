@@ -109,6 +109,8 @@ class LlmBackendManager:
         self.next_probe_at = 0.0
         self.last_return_at: Optional[float] = None
         self.probe_ok_streak = 0
+        self.probe_attempts = 0
+        self._last_probe_result: Optional[ProbeResult] = None
 
     # ----- 조회 ---------------------------------------------------------
     @property
@@ -135,7 +137,8 @@ class LlmBackendManager:
                 if not self.has_local:
                     raise
                 self._switch_to_local(exc)
-        assert self._local is not None
+        if self._local is None:
+            raise RuntimeError("LOCAL 상태인데 로컬 백엔드가 없다")
         return self._local(messages)
 
     # ----- 내부 ---------------------------------------------------------
@@ -158,6 +161,8 @@ class LlmBackendManager:
             self.state = BackendState.LOCAL
             self.cloud_ready = False
             self.probe_ok_streak = 0
+            self.probe_attempts = 0
+            self._last_probe_result = None
             self.next_probe_at = now + self.probe_interval
 
     # ----- 주기 확인·복귀 ---------------------------------------------
@@ -169,20 +174,25 @@ class LlmBackendManager:
         if due:
             result = self._probe()          # 잠금 밖에서 부른다 — 최대 3초 걸린다
             with self._lock:
+                self.probe_attempts += 1
                 self.next_probe_at = now + self.probe_interval
                 if result is ProbeResult.ALIVE:
                     self.probe_ok_streak += 1
                     if not self.cloud_ready:
                         self.cloud_ready = True
-                        self._log("info", f"[LLM] 클라우드 살아남(확인 {self.probe_ok_streak}회째). "
+                        self._log("info", f"[LLM] 클라우드 살아남(확인 {self.probe_attempts}회째). "
                                           "주행 끝나면 복귀")
                 elif result is ProbeResult.AUTH_FAILED:
                     self.cloud_ready = False
                     self.probe_ok_streak = 0
-                    self._log("error", "[LLM] 클라우드는 닿지만 인증 실패 — 키를 확인하세요. 복귀 보류")
+                    # 30초마다 같은 401 을 반복 보고하면 진단 로그가 도배된다 —
+                    # 결과가 바뀔 때만(첫 발생·복구 뒤 재발) 오류를 남긴다.
+                    if result != self._last_probe_result:
+                        self._log("error", "[LLM] 클라우드는 닿지만 인증 실패 — 키를 확인하세요. 복귀 보류")
                 else:
                     self.cloud_ready = False
                     self.probe_ok_streak = 0
+                self._last_probe_result = result
         self._maybe_return("tick")
         return self.state
 
