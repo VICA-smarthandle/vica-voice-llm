@@ -1,0 +1,99 @@
+"""파서가 전환 담당 모듈를 거치는지, 명시 모델은 우회하는지 (LLM 없이 검증)."""
+import pytest
+
+from src import langchain_intent_parser as parser
+from src.langchain_intent_parser import _IntentDraft, parse_intent
+from src.llm_backend import BackendState, LlmBackendManager, ProbeResult
+from src.replies import LLM_UNAVAILABLE
+from src.schema import DestinationData
+
+DEST = DestinationData(
+    id="starlight_1f_restroom",
+    name="별빛관 1층 화장실",
+    confirm_prompt="별빛관 1층 화장실로 안내해드릴까요?",
+)
+DRAFT = _IntentDraft(intent="navigate", destination_candidate="별빛관 1층 화장실")
+
+
+class Boom(Exception):
+    pass
+
+
+def _manager(cloud_fail: bool, local: bool = True) -> LlmBackendManager:
+    def cloud(messages):
+        if cloud_fail:
+            raise Boom("cloud down")
+        return DRAFT
+
+    return LlmBackendManager(cloud, (lambda m: DRAFT) if local else None,
+                             lambda: ProbeResult.DEAD, logger=lambda *_: None)
+
+
+@pytest.fixture(autouse=True)
+def _reset():
+    parser.reset_backend_manager()
+    yield
+    parser.reset_backend_manager()
+
+
+def test_parse_intent_uses_manager_and_falls_back(monkeypatch):
+    mgr = _manager(cloud_fail=True)
+    monkeypatch.setattr(parser, "get_backend_manager", lambda: mgr)
+    intent = parse_intent("화장실로 안내해줘", [DEST])
+    assert intent.intent == "navigate"
+    assert intent.matched_destination_id == "starlight_1f_restroom"
+    assert mgr.state is BackendState.LOCAL
+
+
+def test_parse_intent_unavailable_when_both_fail(monkeypatch):
+    mgr = _manager(cloud_fail=True, local=False)
+    monkeypatch.setattr(parser, "get_backend_manager", lambda: mgr)
+    intent = parse_intent("화장실로 안내해줘", [DEST])
+    assert intent.intent == "unknown"
+    assert intent.reply == LLM_UNAVAILABLE
+
+
+def test_explicit_model_bypasses_manager(monkeypatch):
+    called = []
+
+    class Direct:
+        def invoke(self, messages):
+            called.append("direct")
+            return DRAFT
+
+    monkeypatch.setattr(parser, "_get_structured_llm", lambda model, **kw: Direct())
+    monkeypatch.setattr(parser, "get_backend_manager",
+                        lambda: (_ for _ in ()).throw(AssertionError("관리자를 부르면 안 된다")))
+    intent = parse_intent("화장실로 안내해줘", [DEST], model="gemma4-e2b-text")
+    assert called == ["direct"]
+    assert intent.intent == "navigate"
+
+
+def test_manager_is_built_once(monkeypatch):
+    built = []
+
+    class Direct:
+        def invoke(self, messages):
+            return DRAFT
+
+    monkeypatch.setattr(parser, "_get_structured_llm",
+                        lambda model, **kw: built.append(model) or Direct())
+    monkeypatch.setattr(parser, "FALLBACK_MODEL", "")
+    a = parser.get_backend_manager()
+    b = parser.get_backend_manager()
+    assert a is b
+    assert built == [parser.DEFAULT_MODEL]
+    assert a.has_local is False  # 폴백 모델이 비면 로컬 없음 = 옛 동작
+
+
+def test_manager_has_local_when_fallback_set(monkeypatch):
+    class Direct:
+        def invoke(self, messages):
+            return DRAFT
+
+    monkeypatch.setattr(parser, "_get_structured_llm", lambda model, **kw: Direct())
+    monkeypatch.setattr(parser, "FALLBACK_MODEL", "gemma4-e2b-text")
+    monkeypatch.setattr(parser, "_build_local_structured", lambda: Direct())
+    mgr = parser.get_backend_manager()
+    assert mgr.has_local is True
+    assert mgr.state is BackendState.CLOUD
