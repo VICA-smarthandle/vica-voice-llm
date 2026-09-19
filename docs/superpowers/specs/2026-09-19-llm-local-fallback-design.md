@@ -99,7 +99,8 @@ ROS 를 모르는 순수 로직. 시계·백엔드·접속 확인 함수를 주�
 - `heartbeat_enabled` → `state == CLOUD`.
 - `warm_local_async()`: 백그라운드 스레드로 로컬 모델을 적재한다(`/api/generate`,
   `keep_alive=-1`, 기존 `scripts/warmup_llm.py` 와 같은 요청). 시작 워밍업이 실패해
-  처음부터 `LOCAL` 일 때만 호출한다. 운행 중 대피는 재호출 자체가 적재를 겸한다.
+  처음부터 `LOCAL` 일 때만 호출한다. 시작 워밍업이 실패하면 `invoke` 의 자동
+  전환이 이미 `LOCAL` 로 바꿔 두므로, 노드는 그 상태를 보고 이것을 부른다.
 
 내부 규칙:
 
