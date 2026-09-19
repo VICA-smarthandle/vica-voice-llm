@@ -83,5 +83,19 @@ def generate_launch_description() -> LaunchDescription:
                     ["destinations_yaml:=", destinations_yaml],
                 ],
             ),
+            # 로컬 LLM 폴백용 Ollama 서버 (2026-09-19 설계 §4.4). 다른 노드처럼 같이
+            # 뜨고 같이 꺼진다. 포트 11434 를 이미 누가 쓰면 바인드 실패로 끝나고
+            # 그 서버를 쓴다 — launch 는 이 종료를 치명으로 보지 않는다.
+            # 모델은 미리 올리지 않는다(필요할 때 적재). 올라온 뒤엔 내리지 않는다.
+            ExecuteProcess(
+                cmd=["ollama", "serve"],
+                name="ollama_serve",
+                output="screen",
+                additional_env={
+                    "OLLAMA_KEEP_ALIVE": "-1",
+                    "OLLAMA_NUM_PARALLEL": "1",
+                    "OLLAMA_MAX_LOADED_MODELS": "1",
+                },
+            ),
         ]
     )
