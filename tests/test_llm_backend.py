@@ -266,3 +266,77 @@ class TestStartLocal:
         mgr, *_ = make(local=False)
         mgr.start_local("워밍업 실패")
         assert mgr.state is BackendState.CLOUD
+
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from src.llm_backend import http_probe, ollama_warm, parse_goal_event
+
+
+class _Handler(BaseHTTPRequestHandler):
+    status = 200
+    seen: list = []
+
+    def do_GET(self):
+        self.send_response(self.status)
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        _Handler.seen.append(json.loads(self.rfile.read(length)))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *a):  # 시험 출력 잡음 제거
+        pass
+
+
+@pytest.fixture
+def server():
+    srv = HTTPServer(("127.0.0.1", 0), _Handler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    yield srv
+    srv.shutdown()
+
+
+class TestHelpers:
+    @pytest.mark.parametrize("status, result", [
+        (200, ProbeResult.ALIVE), (401, ProbeResult.AUTH_FAILED),
+        (403, ProbeResult.AUTH_FAILED), (429, ProbeResult.DEAD), (503, ProbeResult.DEAD),
+    ])
+    def test_http_probe_status(self, server, status, result):
+        _Handler.status = status
+        url = f"http://127.0.0.1:{server.server_port}/v1/models"
+        assert http_probe(url, headers={"Authorization": "Bearer x"}) is result
+
+    def test_http_probe_dead_when_unreachable(self):
+        assert http_probe("http://127.0.0.1:9/v1/models", timeout_sec=0.5) is ProbeResult.DEAD
+
+    def test_ollama_warm_posts_keep_alive(self, server):
+        _Handler.status = 200
+        _Handler.seen.clear()
+        logs = []
+        ollama_warm(f"http://127.0.0.1:{server.server_port}", "gemma4-e2b-text",
+                    logger=lambda lv, m: logs.append((lv, m)))
+        assert _Handler.seen == [{"model": "gemma4-e2b-text", "keep_alive": -1}]
+        assert logs == [("info", "[LLM] 로컬 모델 예열 완료: gemma4-e2b-text")]
+
+    def test_ollama_warm_failure_is_logged_not_raised(self):
+        logs = []
+        ollama_warm("http://127.0.0.1:9", "m", timeout_sec=0.5,
+                    logger=lambda lv, m: logs.append((lv, m)))
+        assert logs[0][0] == "warning"
+
+    @pytest.mark.parametrize("data, event", [
+        ('{"event": "goal_succeeded", "map_id": "x"}', "goal_succeeded"),
+        ('{"map_id": "x"}', None),
+        ("not json", None),
+        ("", None),
+    ])
+    def test_parse_goal_event(self, data, event):
+        assert parse_goal_event(data) == event

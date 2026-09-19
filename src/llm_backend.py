@@ -226,3 +226,54 @@ class LlmBackendManager:
                 self.probe_ok_streak = 0
                 self.last_return_at = self._clock()
                 self._log("info", f"[LLM] {trigger} → 클라우드 복귀")
+
+
+# ----- 도우미(네트워크·JSON) ------------------------------------------------
+def http_probe(url: str, headers: Optional[dict] = None, timeout_sec: float = 3.0) -> ProbeResult:
+    """GET 한 번으로 클라우드가 닿는지 본다. 토큰을 쓰지 않는다.
+
+    200 → ALIVE, 401/403 → AUTH_FAILED, 그 밖의 HTTP 오류·연결 불가·timeout → DEAD.
+    """
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            return ProbeResult.ALIVE if resp.status == 200 else ProbeResult.DEAD
+    except urllib.error.HTTPError as err:
+        return ProbeResult.AUTH_FAILED if err.code in (401, 403) else ProbeResult.DEAD
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return ProbeResult.DEAD
+
+
+def ollama_warm(host: str, model: str, timeout_sec: float = 180.0,
+                logger: Callable[[str, str], None] = _stderr_logger) -> None:
+    """로컬 Ollama 에 모델을 미리 올린다(keep_alive=-1). 실패해도 예외를 올리지 않는다.
+
+    scripts/warmup_llm.py 와 같은 요청이다. 서버가 아직 안 떴을 수 있으니 timeout 을 길게 둔다.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"{host.rstrip('/')}/api/generate",
+        data=json.dumps({"model": model, "keep_alive": -1}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=timeout_sec).read()
+        logger("info", f"[LLM] 로컬 모델 예열 완료: {model}")
+    except Exception as exc:  # 네트워크·서버 부재 — 노드는 계속 가야 한다
+        logger("warning", f"[LLM] 로컬 모델 예열 실패(무시 가능): {exc}")
+
+
+def parse_goal_event(data: str) -> Optional[str]:
+    """/vica_goal_event 의 JSON 문자열에서 event 이름만 꺼낸다. 아니면 None."""
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("event")
+    return event if isinstance(event, str) and event else None
