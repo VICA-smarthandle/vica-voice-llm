@@ -18,7 +18,6 @@
 | 전환 담당 모듈 | 그 스위치 역할을 하는 코드 `src/llm_backend.py` 의 `LlmBackendManager` |
 | 왔다 갔다 반복(플래핑) | 인터넷이 붙었다 끊겼다를 반복해 스위치가 계속 넘어가는 상태. 복귀 후 5분 안에 또 끊기면 다음 확인을 더 늦게 해서 막는다 |
 | 접속 확인(probe) | 로컬 상태에서 30초마다 "클라우드 살아 있나" 문만 두드리는 것. 답을 시키지 않아 요금 0 |
-| 생존 신호(heartbeat) | 클라우드로 잘 돌 때만 1초마다 내는 "이상 없음" 신호. 끊기면 앱 진단에 경고 |
 | 미리 올리기(예열·warm) | 로컬 모델을 메모리에 먼저 실어 첫 답이 늦지 않게 하는 것 |
 | 백엔드 | 답을 만드는 쪽 — 클라우드 GPT 또는 로컬 gemma |
 | 가짜 백엔드·가짜 시계 | 시험용 대역. 진짜 GPT·시간 대신 쓴다 |
@@ -31,7 +30,6 @@
 - 확인 간격: 기본 30초, 복귀 후 300초 안 재실패 시 2배(30→60→120→240→300), 300초 밖이면 30.
 - 복귀 조건: `LOCAL` ∧ `cloud_ready` ∧ ¬`run_active` ∧ ¬`is_moving` ∧ ¬`is_paused`.
 - 주행 시작 사건: `goal_sent`·`goal_accepted`·`return_home_sent`. 종료 사건: `goal_succeeded`·`goal_failed`·`goal_rejected`·`goal_canceled`·`return_home_succeeded`·`return_home_failed`·`return_home_canceled`·`state_idle`. `goal_paused` 는 유지.
-- 생존 신호 토픽 `/vica/llm_cloud_alive`(std_msgs/Bool, True), CLOUD 상태일 때만 1 Hz. 진단 결함 코드 `LLM_CLOUD_OFFLINE`, 컴포넌트 `voice`, 등급 WARN, `optional: true`.
 - 사용자 멘트는 추가하지 않는다(멘트 최소주의). 전환·복귀는 로그로만.
 - 로그 문구(정확히): `[LLM] 클라우드 실패({분류}: {예외}) → 로컬({모델})로 대피. 같은 발화 재처리` / `[LLM] 클라우드 살아남(확인 {n}회째). 주행 끝나면 복귀` / `[LLM] {계기} → 클라우드 복귀`.
 - commit 은 GOVERNANCE §4 에 따라 **사용자가 허락한 경우에만** 실행한다. 허락 전에는 각 Task 의 커밋 단계를 건너뛰고 변경을 쌓아 둔다.
@@ -1177,6 +1175,11 @@ git commit -m "feat(voice): RobotState 에 is_paused 를 싣는다 — 전환 �
 
 ### Task 6: ROS 노드 — 주행 사건 구독, 백엔드 루프, 생존 신호
 
+> **09-19 실기 결정**: 생존 신호(`/vica/llm_cloud_alive`)와 앱 진단 표시는 철회했다(감시
+> 노드가 부품 단위로만 결함을 올려 문구가 전달되지 않았고, 사용자는 통신 단절 시
+> 앱도 끊기므로 경고 불필요로 결정했다). 아래 코드의 `_cloud_alive_pub`·heartbeat
+> 부분은 기록용이며 현재 코드에는 없다.
+
 **Files:**
 - Modify: `src/ros_node.py` (import·`__init__`·`_on_robot_state`·`_warmup_llm`·신규 메서드)
 
@@ -1490,6 +1493,9 @@ git commit -m "docs(voice): 로컬 폴백 모델 조립 스크립트·Modelfile�
 
 ### Task 10: ROS 진단 항목 (`vica_ros2_ws`, worktree)
 
+> **09-19 실기 결정으로 철회** — ROS 저장소 변경은 하지 않는다. 브랜치
+> `feat/llm-cloud-probe` 는 기록용으로만 남는다.
+
 **Files:**
 - Modify: `src/vica_system_monitor/config/probes.yaml` (`topic_probe_names` 목록 + 정의 블록)
 - Modify: `src/vica_system_monitor/vica_system_monitor/fault_catalog.py` (`CATALOG` 의 voice 구역, `VOICE_NODE_SILENT` 항목 뒤)
@@ -1585,7 +1591,6 @@ git commit -m "feat(monitor): 음성 LLM 클라우드 생존 신호 프로브 �
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 topic hz /vica/llm_cloud_alive          # ≈ 1.0 Hz
 curl -s localhost:11434/api/version           # {"version":"0.30.6"}
 ollama ps                                     # 비어 있음(필요할 때 적재)
 ```
@@ -1601,8 +1606,6 @@ ollama ps                                     # 비어 있음(필요할 때 적�
 | 끊긴 뒤 첫 답까지 | ≤ 12초 | |
 | 그다음 발화 답 | ≤ 4초 | |
 | 로그 | `[LLM] 클라우드 실패(연결 오류: …) → 로컬(gemma4-e2b-text)로 대피. 같은 발화 재처리` | |
-| `ros2 topic hz /vica/llm_cloud_alive` | 신호 없음 | |
-| 앱 진단 | `LLM_CLOUD_OFFLINE` 노란 경고 | |
 | `free -m` 가용 / `ollama ps` | 기록 | |
 
 - [ ] **Step 3: 주행 중 복구**
@@ -1628,7 +1631,6 @@ ollama ps                                     # 비어 있음(필요할 때 적�
 - 복구 로그 `[LLM] 클라우드 살아남(확인 n회째)` 의 n 은 LOCAL 진입 후 몇 번째 확인인지다.
 - 네트워크 없이 기동했을 때 `[LLM] 로컬 모델 예열 완료: gemma4-e2b-text (재시도 n회)` 가 보이면 부팅 경주를 재시도가 덮은 것이다. `ollama ps` 로 상주 확인.
 - 자원: 장면마다 `free -m` 가용·스왑, `tegrastats` 한 줄, `top -p $(pgrep -x ollama)` 의 유휴 CPU(0 % 근처여야 한다).
-- 앱 경고는 뜨는 데 ~10초(창 10초 + raise_confirm 3), 사라지는 데 ~10초가 걸린다.
 
 - [ ] **Step 6: 기록과 정리**
 

@@ -92,10 +92,10 @@ class LlmIntentNode(Node):
 
         # ----- 클라우드→로컬 자동 전환 (2026-09-19 설계) ------------------------
         # 관리자는 파서와 같은 싱글턴이다. 주행 사건·로봇 상태를 흘려 넣고,
-        # 별도 스레드가 1초마다 tick(클라우드 확인·복귀)과 생존 신호를 맡는다.
-        # 스레드로 두는 이유: LLM 호출(3~6초) 동안에도 생존 신호가 끊기면 안 된다.
+        # 별도 스레드가 1초마다 tick(클라우드 확인·복귀 판정)을 맡는다. 앱 진단
+        # 표시는 두지 않는다(2026-09-19 실기 결정: 통신이 끊기면 앱도 끊긴다,
+        # 상태는 로그로만).
         self._backend = get_backend_manager()
-        self._cloud_alive_pub = self.create_publisher(Bool, "/vica/llm_cloud_alive", 10)
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
         threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
 
@@ -141,16 +141,13 @@ class LlmIntentNode(Node):
             self._backend.on_goal_event(event)
 
     def _backend_loop(self) -> None:
-        """1 Hz: 클라우드 확인·복귀 판정, CLOUD 상태면 생존 신호 발행."""
-        alive = Bool(data=True)
+        """1 Hz: 클라우드 확인·복귀 판정."""
         while rclpy.ok():
             try:
                 before = self._backend.state
                 after = self._backend.tick()
                 if before is not after:
                     self.get_logger().info(f"[LLM] 백엔드 {before.value} → {after.value}")
-                if self._backend.heartbeat_enabled:
-                    self._cloud_alive_pub.publish(alive)
             except Exception as exc:  # 루프는 죽지 않는다
                 self.get_logger().warning(f"[LLM] 백엔드 루프 오류(무시): {exc}")
             time.sleep(1.0)

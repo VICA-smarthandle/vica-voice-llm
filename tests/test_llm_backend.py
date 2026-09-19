@@ -93,7 +93,6 @@ class TestInvoke:
         mgr, cloud, local, *_ = make()
         assert mgr.invoke(MSGS) == "cloud:ok"
         assert mgr.state is BackendState.CLOUD
-        assert mgr.heartbeat_enabled is True
         assert local.calls == []
 
     def test_cloud_fail_retries_same_messages_on_local(self):
@@ -101,7 +100,6 @@ class TestInvoke:
         assert mgr.invoke(MSGS) == "local:ok"
         assert local.calls == [MSGS]  # 같은 발화를 그대로 재처리
         assert mgr.state is BackendState.LOCAL
-        assert mgr.heartbeat_enabled is False
         assert logs[-1][0] == "warning"
         assert logs[-1][1] == (
             "[LLM] 클라우드 실패(연결 오류: boom) → 로컬(gemma4-e2b-text)로 대피. 같은 발화 재처리")
@@ -180,7 +178,6 @@ class TestProbeAndReturn:
         assert mgr.tick() is BackendState.CLOUD  # 주행 중이 아니므로 즉시 복귀
         assert ("info", "[LLM] 클라우드 살아남(확인 1회째). 주행 끝나면 복귀") in logs
         assert logs[-1] == ("info", "[LLM] tick → 클라우드 복귀")
-        assert mgr.heartbeat_enabled is True
 
     def test_alive_but_run_active_waits_for_end_event(self):
         mgr, _, _, _, clock, logs = switched()

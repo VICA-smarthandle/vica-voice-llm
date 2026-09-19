@@ -11,7 +11,6 @@
 | 전환 담당 모듈 | 그 스위치 역할을 하는 코드 `src/llm_backend.py` 의 `LlmBackendManager` |
 | 왔다 갔다 반복(플래핑) | 인터넷이 붙었다 끊겼다를 반복해 스위치가 계속 넘어가는 상태. 복귀 후 5분 안에 또 끊기면 다음 확인을 더 늦게 해서 막는다 |
 | 접속 확인(probe) | 로컬 상태에서 30초마다 "클라우드 살아 있나" 문만 두드리는 것. 답을 시키지 않아 요금 0 |
-| 생존 신호(heartbeat) | 클라우드로 잘 돌 때만 1초마다 내는 "이상 없음" 신호. 끊기면 앱 진단에 경고 |
 | 미리 올리기(예열·warm) | 로컬 모델을 메모리에 먼저 실어 첫 답이 늦지 않게 하는 것 |
 | 백엔드 | 답을 만드는 쪽 — 클라우드 GPT 또는 로컬 gemma |
 | 가짜 백엔드·가짜 시계 | 시험용 대역. 진짜 GPT·시간 대신 쓴다 |
@@ -38,7 +37,7 @@ Realtime 도입(별도 스파이크), 멘트 추가(멘트 최소주의 — 대�
 | 1 | 전환·복귀 판정 | 시작 점검 + 운행 중 실패 감지로 전환, 30초 주기 확인으로 자동 복귀 |
 | 2 | 로컬 모델 대기 | 필요할 때 적재. 한 번 올라오면 내리지 않음(대기 0.44 GB) |
 | 3 | Ollama 서버 기동 | 음성 launch 가 다른 노드처럼 함께 띄움(sudo 없음) |
-| 4 | 전환 알림 | 로그 + 앱 진단 화면. 사용자 멘트 없음 |
+| 4 | 전환 알림 | 로그만. 앱 진단 표시 없음(09-19 실기에서 사용자 결정: 통신이 끊기면 앱도 끊긴다). 사용자 멘트 없음 |
 | 5 | 복귀 시점 | 클라우드가 살아나도 해당 주행은 로컬로 마친다. 주행이 끝난 뒤에만 복귀 |
 
 5번의 "주행이 끝남"은 도착뿐 아니라 실패·거부·취소·귀가 완료·대기(`state_idle`)를
@@ -66,11 +65,7 @@ Realtime 도입(별도 스파이크), 멘트 추가(멘트 최소주의 — 대�
 /vica/user_text ─▶ ros_node ─▶ parse_intent ─▶ LlmBackendManager ─┬─▶ ChatOpenAI (cloud)
                      │                              ▲              └─▶ ChatOllama (local)
 /vica_goal_event ────┘ (주행 시작/종료)             │
-/vica/robot_state ───┘ (is_moving·is_paused)        │ 1 Hz tick: 생존 신호 발행·클라우드 확인
-                                                    ▼
-                                      /vica/llm_cloud_alive (cloud 상태일 때만 1 Hz)
-                                                    ▼
-                          vica_system_monitor probe → LLM_CLOUD_OFFLINE → 앱 진단 화면
+/vica/robot_state ───┘ (is_moving·is_paused)        │ 1 Hz tick: 클라우드 확인·복귀 판정
 ```
 
 ### 4.1 새 모듈 `src/llm_backend.py` — `LlmBackendManager`
@@ -138,14 +133,7 @@ ROS 를 모르는 순수 로직. 시계·백엔드·접속 확인 함수를 주�
 - 구독 추가: `/vica_goal_event`(String, JSON) → `event` 키를 관리자에 전달.
 - `/vica/robot_state` 콜백에서 `is_moving`·`is_paused` 를 관리자에도 전달.
   (`ros_convert`·`schema.RobotState` 에 `is_paused` 를 추가한다 — 현재 빠져 있다.)
-- 1 Hz 타이머: `manager.tick()` 호출 → `heartbeat_enabled` 면
-  `/vica/llm_cloud_alive`(std_msgs/Bool, True) 발행.
-
-  **생존 신호(heartbeat)란**: 음성 LLM 노드가 "지금 클라우드로 정상 동작 중"이라는
-  뜻으로 1초에 한 번 보내는 짧은 메시지다. 내용(True)에는 의미가 없고 **오고
-  있는지**만 본다. 로컬로 대피하면 발행을 멈추고, 진단 노드는 이 토픽이 조용해지면
-  "클라우드 LLM 오프라인"으로 판정한다. 이렇게 하는 이유는 진단 노드의 기존
-  프로브가 토픽 값이 아니라 **주기**만 검사하기 때문이다(값을 읽는 프로브는 없다).
+- 1 Hz 타이머: `manager.tick()` 호출.
 - 시작 워밍업 실패 시 관리자를 `LOCAL` 로 두고 `warm_local_async()`.
 - 로그 예:
 
@@ -185,27 +173,10 @@ VICA_LLM_CLOUD_PROBE_SEC=30               # LOCAL 상태의 클라우드 확인 
 
 ### 4.6 진단(ROS 저장소)
 
-`config/probes.yaml` topic 프로브 1개:
-
-```yaml
-voice_llm_cloud:
-  component: voice
-  topic: /vica/llm_cloud_alive
-  msg_type: std_msgs/msg/Bool
-  qos: default
-  min_hz: 0.5
-  max_hz: 2.0
-  fault_code: LLM_CLOUD_OFFLINE
-  optional: true    # 경고 등급. 주행과 무관 — 로봇 안 모델로 안내 중
-```
-
-`fault_catalog.py` 항목 1개: 컴포넌트 `voice`, 등급 WARN,
-상세 "LLM이 클라우드에 닿지 않아 로봇 안의 모델로 안내 중입니다. 답이 2~3초 느려질
-수 있습니다.", 조치 "인터넷 연결을 확인해 주세요. 주행이 끝나면 자동으로 클라우드로
-돌아갑니다."
-
-새 토픽 계약은 `/vica/llm_cloud_alive` 하나다. 생산자 음성 노드, 소비자 진단 노드.
-생존 신호가 있을 때(주기 0.5~2 Hz) 정상, 없을 때 `LLM_CLOUD_OFFLINE` 경고.
+진단 항목은 두지 않는다. 09-19 실기 결과, 감시 노드는 결함을 부품(voice) 단위로만
+앱에 올려 개별 문구를 전달하지 못했고, 사용자는 "통신이 끊기면 앱도 끊기므로
+별도 경고는 불필요"로 결정했다. 상태는 노드 로그(`[LLM] …`)로만 남긴다. ROS
+저장소 변경은 없다.
 
 ## 5. 오류 처리 요약
 
@@ -248,10 +219,10 @@ worktree 에서 `vica_system_monitor` 의 기존 `test_probe_config` 실행(PYTH
 
 | 장면 | 합격선 |
 | --- | --- |
-| 평소 | 클라우드 답변, `ros2 topic hz /vica/llm_cloud_alive` ≈ 1, 앱 진단 초록 |
-| 대화 중 네트워크 끊기 | 그 발화 로컬 답 12초 안, 이후 4초 안. 앱에 `LLM_CLOUD_OFFLINE` 경고 |
+| 평소 | 클라우드 답변 |
+| 대화 중 네트워크 끊기 | 그 발화 로컬 답 12초 안, 이후 4초 안 |
 | 주행 중 네트워크 복구 | 도착 전 계속 로컬. 로그 "복귀 가능" 만 |
-| 도착 뒤 | 다음 발화 클라우드. 경고 60초 안 해제 |
+| 도착 뒤 | 다음 발화 클라우드 |
 | 네트워크 없이 노드 시작 | 처음부터 로컬, 첫 발화 12초 안 |
 
 기록: 발화당 응답 초·`free -m` 가용·스왑. 스택 없이 잰 3.0초·0.46 GB 대비 증가폭.
@@ -259,8 +230,7 @@ worktree 에서 `vica_system_monitor` 의 기존 `test_probe_config` 실행(PYTH
 ## 7. 되돌리기와 머지
 
 - 되돌리기: `.env` 의 `VICA_LLM_FALLBACK_MODEL` 을 비운다. 코드 변경 없이 옛 동작.
-- 머지: 6.3 통과 뒤 사용자가 시점을 정한다. 음성·ROS 두 저장소를 같은 날 머지한다
-  (생존 신호 토픽은 소비자가 없어도 무해하므로 순서는 무관).
+- 머지: 6.3 통과 뒤 사용자가 시점을 정한다. 음성 저장소만 머지한다.
 
 ## 8. `[미검증]`
 
@@ -279,9 +249,6 @@ worktree 에서 `vica_system_monitor` 의 기존 `test_probe_config` 실행(PYTH
   `src/schema.py`·`src/ros_convert.py`(`is_paused`), `launch/vica_voice.launch.py`,
   `.env.example`, `docs/jetson-setup.md`
 
-ROS 저장소(`feat/llm-cloud-probe`, worktree):
-
-- 수정 `src/vica_system_monitor/config/probes.yaml`,
-  `src/vica_system_monitor/vica_system_monitor/fault_catalog.py`
+ROS 저장소: 변경 없음(09-19 실기 결정으로 철회).
 
 앱: 변경 없음.

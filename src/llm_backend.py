@@ -117,10 +117,6 @@ class LlmBackendManager:
     def has_local(self) -> bool:
         return self._local is not None
 
-    @property
-    def heartbeat_enabled(self) -> bool:
-        return self.state is BackendState.CLOUD
-
     # ----- 호출 ---------------------------------------------------------
     def invoke(self, messages: Sequence[Any]) -> Any:
         """현재 상태의 백엔드로 호출한다. 클라우드 실패는 로컬 재호출로 받는다.
