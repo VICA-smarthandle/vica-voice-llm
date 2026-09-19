@@ -1,0 +1,161 @@
+"""클라우드→로컬 LLM 자동 자동 전환(폴백) 담당 모듈. ROS·LangChain 을 모르는 순수 로직.
+
+정본 설계: docs/superpowers/specs/2026-09-19-llm-local-fallback-design.md
+비유: 한전(클라우드)과 발전기(로컬) 사이의 자동 자동 전환 스위치. 스위치는 전기가
+지나가는 자리, 즉 LLM 호출 바로 앞에 둔다.
+
+규칙 요약:
+- CLOUD 에서 클라우드 호출이 실패하면 **같은 messages 를 로컬로 재호출**하고 LOCAL 로.
+- LOCAL 에서는 probe_interval 마다 클라우드를 확인한다(토큰 소모 없음).
+- 살아나도 바로 안 돌아간다. 주행이 끝나고(run_active False) 멈춰 있을 때만 CLOUD 로.
+- 복귀 뒤 flap_window 안에 또 실패하면 확인 간격을 2배씩 늘린다(상한 있음).
+"""
+from __future__ import annotations
+
+import enum
+import json
+import sys
+import threading
+import time
+from typing import Any, Callable, Optional, Sequence
+
+
+class BackendState(enum.Enum):
+    CLOUD = "cloud"
+    LOCAL = "local"
+
+
+class ProbeResult(enum.Enum):
+    ALIVE = "alive"          # 클라우드에 닿고 인증도 됨
+    DEAD = "dead"            # 연결 불가·timeout·5xx·429
+    AUTH_FAILED = "auth"     # 닿지만 401/403 — 키 문제. 복귀하지 않는다
+
+
+class FailureKind(enum.Enum):
+    CONNECTION = "연결 오류"
+    SERVER = "서버 오류"
+    AUTH = "인증 실패"
+    REQUEST = "요청 오류"
+
+
+RUN_START_EVENTS = frozenset({"goal_sent", "goal_accepted", "return_home_sent"})
+RUN_END_EVENTS = frozenset({
+    "goal_succeeded", "goal_failed", "goal_rejected", "goal_canceled",
+    "return_home_succeeded", "return_home_failed", "return_home_canceled",
+    "state_idle",
+})
+
+
+def classify_failure(exc: BaseException) -> FailureKind:
+    """예외를 네 갈래로 나눈다. openai 패키지를 import 하지 않고 모양으로 판별한다.
+
+    - openai.APIStatusError 계열은 status_code 를 가진다.
+    - openai.APIConnectionError / APITimeoutError 는 클래스 이름으로 본다
+      (Exception 직계라 isinstance 로는 못 잡는다).
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (401, 403):
+            return FailureKind.AUTH
+        if status == 429 or status >= 500:
+            return FailureKind.SERVER
+        return FailureKind.REQUEST
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return FailureKind.CONNECTION
+    if type(exc).__name__ in ("APIConnectionError", "APITimeoutError"):
+        return FailureKind.CONNECTION
+    return FailureKind.REQUEST
+
+
+def _stderr_logger(level: str, msg: str) -> None:
+    print(f"[{level}] {msg}", file=sys.stderr)
+
+
+class LlmBackendManager:
+    """CLOUD/LOCAL 자동 전환 스위치. 스레드 두 개(노드 콜백·백엔드 루프)가 만지므로 잠근다."""
+
+    def __init__(
+        self,
+        cloud: Callable[[Sequence[Any]], Any],
+        local: Optional[Callable[[Sequence[Any]], Any]],
+        probe: Callable[[], ProbeResult],
+        *,
+        warm_local: Optional[Callable[[], None]] = None,
+        clock: Callable[[], float] = time.monotonic,
+        logger: Callable[[str, str], None] = _stderr_logger,
+        local_name: str = "local",
+        probe_interval_sec: float = 30.0,
+        probe_interval_max_sec: float = 300.0,
+        flap_window_sec: float = 300.0,
+    ) -> None:
+        self._cloud = cloud
+        self._local = local
+        self._probe = probe
+        self._warm_local = warm_local
+        self._clock = clock
+        self._log = logger
+        self._local_name = local_name
+        self._interval_min = probe_interval_sec
+        self._interval_max = probe_interval_max_sec
+        self._flap_window = flap_window_sec
+        self._lock = threading.RLock()
+
+        self.state = BackendState.CLOUD
+        self.cloud_ready = False
+        self.run_active = False
+        self.is_moving = False
+        self.is_paused = False
+        self.probe_interval = probe_interval_sec
+        self.next_probe_at = 0.0
+        self.last_return_at: Optional[float] = None
+        self.probe_ok_streak = 0
+
+    # ----- 조회 ---------------------------------------------------------
+    @property
+    def has_local(self) -> bool:
+        return self._local is not None
+
+    @property
+    def heartbeat_enabled(self) -> bool:
+        return self.state is BackendState.CLOUD
+
+    # ----- 호출 ---------------------------------------------------------
+    def invoke(self, messages: Sequence[Any]) -> Any:
+        """현재 상태의 백엔드로 호출한다. 클라우드 실패는 로컬 재호출로 받는다.
+
+        로컬까지 실패하면 예외를 그대로 올린다 — 파서가 LLM_UNAVAILABLE 로 받는다.
+        로컬이 없으면(폴백 꺼짐) 클라우드 예외를 그대로 올린다 = 예전 동작.
+        """
+        with self._lock:
+            use_cloud = self.state is BackendState.CLOUD
+        if use_cloud:
+            try:
+                return self._cloud(messages)
+            except Exception as exc:
+                if not self.has_local:
+                    raise
+                self._switch_to_local(exc)
+        assert self._local is not None
+        return self._local(messages)
+
+    # ----- 내부 ---------------------------------------------------------
+    def _switch_to_local(self, exc: BaseException) -> None:
+        kind = classify_failure(exc)
+        level = "error" if kind in (FailureKind.AUTH, FailureKind.REQUEST) else "warning"
+        self._log(level, f"[LLM] 클라우드 실패({kind.value}: {exc}) → 로컬({self._local_name})로 대피. "
+                         "같은 발화 재처리")
+        self._enter_local()
+
+    def _enter_local(self) -> None:
+        with self._lock:
+            now = self._clock()
+            if self.last_return_at is not None and now - self.last_return_at < self._flap_window:
+                self.probe_interval = min(self.probe_interval * 2, self._interval_max)
+                self._log("warning", f"[LLM] 복귀 {now - self.last_return_at:.0f}초 만에 재실패 — "
+                                     f"클라우드 확인 간격 {self.probe_interval:.0f}초로")
+            else:
+                self.probe_interval = self._interval_min
+            self.state = BackendState.LOCAL
+            self.cloud_ready = False
+            self.probe_ok_streak = 0
+            self.next_probe_at = now + self.probe_interval
