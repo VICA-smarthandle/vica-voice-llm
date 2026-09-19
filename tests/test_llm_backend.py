@@ -302,6 +302,7 @@ def server():
     th.start()
     yield srv
     srv.shutdown()
+    srv.server_close()
 
 
 class TestHelpers:
