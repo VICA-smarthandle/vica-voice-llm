@@ -416,6 +416,8 @@ git commit -m "feat(voice): LLM 전환 담당 모듈 — 클라우드 실패 시
 
 ### Task 2: 확인·복귀·왔다 갔다 반복 규칙 (`tick`·`on_goal_event`·`on_robot_state`)
 
+> **최종 수리(2026-09-19, 커밋 5716952)**: `start_local()` 은 운영 코드가 부르지 않아 제거했다. 시작 워밍업이 실패하면 `invoke()` 의 자동 전환이 이미 `LOCAL` 로 바꿔 두고, 노드는 그 상태를 보고 `warm_local_async()` 만 부른다. 아래 코드 블록의 `start_local`·`TestStartLocal` 은 기록용이며 현재 코드에는 없다.
+
 **Files:**
 - Modify: `src/llm_backend.py` (Task 1 의 클래스에 메서드 추가)
 - Test: `tests/test_llm_backend.py`
@@ -1616,6 +1618,17 @@ ollama ps                                     # 비어 있음(필요할 때 적�
 네트워크 끊은 채 음성 스택 재기동 → 로그 워밍업의 대피 로그
 `[LLM] 클라우드 실패(연결 오류: …) → 로컬(gemma4-e2b-text)로 대피. 같은 발화 재처리`
 → `ollama ps` 에 모델 적재됨 → 첫 발화 ≤ 12초.
+
+**실기 관찰 목록(최종 검토 2026-09-19에서 추가)**
+
+- 전제: `env | grep OLLAMA_` 가 비어 있어야 launch 의 `ollama serve` 가 바인드된다. 이미 서버가 떠 있으면 `[ollama_serve-N]: process has died … exit code 1` 한 줄은 정상이고, `ros2 node list` 에 `vica_llm`·`vica_tts`·`vica_wakeword` 가 남아 있어야 한다.
+- 끊는 방법은 두 가지를 다 잰다: (a) 랜선/와이파이 완전 off, (b) 와이파이는 붙은 채 공유기 상위만 끊기. (b) 에서 첫 답이 6초를 훌쩍 넘기면 DNS 매달림(timeout 밖)이다.
+- 첫 대피 발화의 최악 경로는 클라우드 timeout 6초 + 적재 7초 + 추론 3초 = 16초다. 12초를 넘기면 결함이 아니라 스펙 산수 — 합격선을 16초로 고치거나 결정 2(필요할 때 적재)를 재검토한다.
+- 대피 로그의 분류가 "요청 오류"로 나오면 예외 모양이 예상과 달랐다는 뜻(`classify_failure` 개선 근거). 대피 자체는 된다.
+- 복구 로그 `[LLM] 클라우드 살아남(확인 n회째)` 의 n 은 LOCAL 진입 후 몇 번째 확인인지다.
+- 네트워크 없이 기동했을 때 `[LLM] 로컬 모델 예열 완료: gemma4-e2b-text (재시도 n회)` 가 보이면 부팅 경주를 재시도가 덮은 것이다. `ollama ps` 로 상주 확인.
+- 자원: 장면마다 `free -m` 가용·스왑, `tegrastats` 한 줄, `top -p $(pgrep -x ollama)` 의 유휴 CPU(0 % 근처여야 한다).
+- 앱 경고는 뜨는 데 ~10초(창 10초 + raise_confirm 3), 사라지는 데 ~10초가 걸린다.
 
 - [ ] **Step 6: 기록과 정리**
 
