@@ -118,6 +118,14 @@ class TestInvoke:
             mgr.invoke(MSGS)
         assert mgr.state is BackendState.CLOUD
 
+    def test_set_logger_redirects_subsequent_logs(self):
+        mgr, cloud, local, _, _, old_logs = make(cloud_fail=APIConnectionError("boom"))
+        new_logs: list = []
+        mgr.set_logger(lambda level, msg: new_logs.append((level, msg)))
+        assert mgr.invoke(MSGS) == "local:ok"
+        assert any("대피" in msg for _, msg in new_logs)
+        assert old_logs == []
+
 
 class TestClassify:
     @pytest.mark.parametrize("exc, kind", [

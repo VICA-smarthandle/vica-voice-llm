@@ -96,6 +96,10 @@ class LlmIntentNode(Node):
         # 표시는 두지 않는다(2026-09-19 실기 결정: 통신이 끊기면 앱도 끊긴다,
         # 상태는 로그로만).
         self._backend = get_backend_manager()
+        # 전환 담당 모듈의 [LLM] 로그를 노드 로거로 보낸다 — 화면뿐 아니라
+        # ~/.ros/log 파일에도 남아 실기 뒤에 대피·복귀 시각을 되짚을 수 있다(09-19 실기 교훈).
+        _ros_log = self.get_logger()
+        self._backend.set_logger(lambda level, msg: getattr(_ros_log, level, _ros_log.info)(msg))
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
         threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
 

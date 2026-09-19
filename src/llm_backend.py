@@ -117,6 +117,11 @@ class LlmBackendManager:
     def has_local(self) -> bool:
         return self._local is not None
 
+    def set_logger(self, logger: Callable[[str, str], None]) -> None:
+        """로그 출력 함수를 바꾼다(ROS 노드가 자기 로거로 갈아 끼울 때). level 은 "info"/"warning"/"error"."""
+        with self._lock:
+            self._log = logger
+
     # ----- 호출 ---------------------------------------------------------
     def invoke(self, messages: Sequence[Any]) -> Any:
         """현재 상태의 백엔드로 호출한다. 클라우드 실패는 로컬 재호출로 받는다.
