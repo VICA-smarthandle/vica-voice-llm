@@ -3,6 +3,12 @@
 정본: docs/superpowers/specs/2026-09-19-llm-local-fallback-design.md §4.1·§6.1.
 가짜 백엔드·접속 확인 함수·시계로 규칙을 고정한다.
 """
+import json
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 from src.llm_backend import (
@@ -11,6 +17,9 @@ from src.llm_backend import (
     LlmBackendManager,
     ProbeResult,
     classify_failure,
+    http_probe,
+    ollama_warm,
+    parse_goal_event,
 )
 
 
@@ -330,8 +339,43 @@ class TestHelpers:
     def test_ollama_warm_failure_is_logged_not_raised(self):
         logs = []
         ollama_warm("http://127.0.0.1:9", "m", timeout_sec=0.5,
+                    max_attempts=1, retry_sec=0,
                     logger=lambda lv, m: logs.append((lv, m)))
         assert logs[0][0] == "warning"
+
+    def test_ollama_warm_retries_until_server_is_up(self):
+        """F2: launch 가 `ollama serve` 와 동시에 예열을 시작하면 포트가 아직
+        안 열려 있어 최초 요청은 연결 거부로 실패한다. 서버가 뜰 때까지
+        재시도해야 예열이 성공한다(기존엔 재시도가 없어 첫 실패로 끝났다)."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()  # 포트 번호만 확보 — 아직 아무도 듣지 않는다
+
+        logs = []
+
+        def _run():
+            ollama_warm(f"http://127.0.0.1:{port}", "gemma4-e2b-text",
+                        retry_sec=0.05, max_attempts=40,
+                        logger=lambda lv, m: logs.append((lv, m)))
+
+        th = threading.Thread(target=_run)
+        th.start()
+        time.sleep(0.15)  # ollama_warm 이 연결 거부로 몇 번 재시도하는 동안 기다린다
+
+        _Handler.status = 200
+        _Handler.seen.clear()
+        srv = HTTPServer(("127.0.0.1", port), _Handler)
+        srv_th = threading.Thread(target=srv.serve_forever, daemon=True)
+        srv_th.start()
+        try:
+            th.join(timeout=5)
+            assert not th.is_alive()
+            assert _Handler.seen == [{"model": "gemma4-e2b-text", "keep_alive": -1}]
+            assert logs and "재시도" in logs[-1][1]
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
     @pytest.mark.parametrize("data, event", [
         ('{"event": "goal_succeeded", "map_id": "x"}', "goal_succeeded"),

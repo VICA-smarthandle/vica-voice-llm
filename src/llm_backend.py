@@ -250,25 +250,54 @@ def http_probe(url: str, headers: Optional[dict] = None, timeout_sec: float = 3.
         return ProbeResult.DEAD
 
 
+def _is_connection_failure(exc: BaseException) -> bool:
+    """재시도할 가치가 있는 실패인가. 서버가 응답은 했지만 실패한 경우(HTTPError 등)는
+    재시도해도 똑같으므로 제외한다."""
+    import urllib.error
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return isinstance(exc, (urllib.error.URLError, ConnectionError, OSError, TimeoutError))
+
+
 def ollama_warm(host: str, model: str, timeout_sec: float = 180.0,
+                retry_sec: float = 3.0, max_attempts: int = 20,
                 logger: Callable[[str, str], None] = _stderr_logger) -> None:
     """로컬 Ollama 에 모델을 미리 올린다(keep_alive=-1). 실패해도 예외를 올리지 않는다.
 
-    scripts/warmup_llm.py 와 같은 요청이다. 서버가 아직 안 떴을 수 있으니 timeout 을 길게 둔다.
+    scripts/warmup_llm.py 와 같은 요청이다. launch 는 `ollama serve` 와 이 예열을
+    동시에 띄우므로, 서버가 포트를 열기 전이면 연결이 1초 안에 거부된다 —
+    timeout 을 길게 둬도 그 실패는 못 막는다(연결 거부는 즉시 실패이지 느린 실패가
+    아니다). 대신 연결류 실패(URLError·ConnectionError·OSError·TimeoutError,
+    HTTPError 는 제외)만 retry_sec 간격으로 최대 max_attempts 번 재시도해 서버가
+    뜨는 기동 경쟁을 넘긴다. 그 밖의 실패(모델 없음 등 HTTPError)는 재시도해도
+    똑같으므로 바로 멈춘다.
     """
     import urllib.request
 
-    req = urllib.request.Request(
-        f"{host.rstrip('/')}/api/generate",
-        data=json.dumps({"model": model, "keep_alive": -1}).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            resp.read()
-        logger("info", f"[LLM] 로컬 모델 예열 완료: {model}")
-    except Exception as exc:  # 네트워크·서버 부재 — 노드는 계속 가야 한다
-        logger("warning", f"[LLM] 로컬 모델 예열 실패(무시 가능): {exc}")
+    req_body = json.dumps({"model": model, "keep_alive": -1}).encode()
+
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(
+            f"{host.rstrip('/')}/api/generate",
+            data=req_body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                resp.read()
+        except Exception as exc:  # 네트워크·서버 부재 — 노드는 계속 가야 한다
+            if _is_connection_failure(exc) and attempt < max_attempts:
+                time.sleep(retry_sec)
+                continue
+            logger("warning", f"[LLM] 로컬 모델 예열 실패(무시 가능): {exc}")
+            return
+        else:
+            if attempt == 1:
+                logger("info", f"[LLM] 로컬 모델 예열 완료: {model}")
+            else:
+                logger("info", f"[LLM] 로컬 모델 예열 완료: {model} (재시도 {attempt - 1}회)")
+            return
 
 
 def parse_goal_event(data: str) -> Optional[str]:

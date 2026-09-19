@@ -137,3 +137,49 @@ def test_manager_falls_back_to_cloud_only_when_local_build_fails(monkeypatch):
     assert calls[0]["timeout"] == 15
     assert calls[0]["max_retries"] == 1
     assert parser.get_backend_manager() is mgr
+
+
+class _RecordingStructured:
+    def invoke(self, messages):
+        return DRAFT
+
+
+class _RecordingChatOllama:
+    """ChatOllama 대역. 생성 인자를 기록하고 with_structured_output 은 그대로 통과."""
+
+    calls: list = []
+
+    def __init__(self, **kwargs):
+        _RecordingChatOllama.calls.append(kwargs)
+
+    def with_structured_output(self, schema):
+        return _RecordingStructured()
+
+
+def test_build_local_structured_sets_local_timeout(monkeypatch):
+    """F1: 로컬 호출에 timeout 이 없으면 Ollama 가 멈출 때 영원히 기다린다."""
+    _RecordingChatOllama.calls = []
+    monkeypatch.setattr(parser, "ChatOllama", _RecordingChatOllama)
+    monkeypatch.setattr(parser, "FALLBACK_MODEL", "gemma4-e2b-text")
+    parser._build_local_structured()
+    assert _RecordingChatOllama.calls[0]["client_kwargs"] == {"timeout": parser.LOCAL_TIMEOUT_SEC}
+    assert _RecordingChatOllama.calls[0]["reasoning"] is False
+    assert _RecordingChatOllama.calls[0]["keep_alive"] == -1
+    assert _RecordingChatOllama.calls[0]["temperature"] == 0
+
+
+def test_ollama_branch_applies_cloud_timeout(monkeypatch):
+    """F3: ollama 분기도 openai 처럼 timeout 이 걸려야 클라우드가 멈춰도 무한 대기하지 않는다."""
+    _RecordingChatOllama.calls = []
+    monkeypatch.setattr(parser, "PROVIDER", "ollama")
+    monkeypatch.setattr(parser, "ChatOllama", _RecordingChatOllama)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    parser._get_structured_llm("gemma4:cloud", timeout=6, max_retries=0)
+    assert _RecordingChatOllama.calls[0]["client_kwargs"] == {"timeout": 6}
+
+    monkeypatch.setenv("OLLAMA_API_KEY", "k")
+    parser._get_structured_llm("gemma4:cloud", timeout=6, max_retries=0)
+    assert _RecordingChatOllama.calls[1]["client_kwargs"] == {
+        "timeout": 6,
+        "headers": {"Authorization": "Bearer k"},
+    }

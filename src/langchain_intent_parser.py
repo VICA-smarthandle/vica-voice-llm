@@ -58,6 +58,8 @@ FALLBACK_HOST = os.environ.get("VICA_LLM_FALLBACK_HOST", "http://localhost:11434
 # 폴백이 켜졌을 때의 클라우드 대기 시간. 8월 실측 최대 1.86초의 3배. 재시도 없음.
 CLOUD_TIMEOUT_SEC = float(os.environ.get("VICA_LLM_CLOUD_TIMEOUT", "6"))
 CLOUD_PROBE_SEC = float(os.environ.get("VICA_LLM_CLOUD_PROBE_SEC", "30"))
+# 로컬 Ollama 호출 상한. 스택 없이 잰 적재 7초+추론 3초의 여유 배수.
+LOCAL_TIMEOUT_SEC = float(os.environ.get("VICA_LLM_LOCAL_TIMEOUT", "45"))
 
 
 class _IntentDraft(BaseModel):
@@ -306,7 +308,8 @@ def _pending_command(history: Optional[list[BaseMessage]]) -> Optional[str]:
 def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
     """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다.
 
-    timeout/max_retries 는 openai 경로에만 쓴다. 폴백이 켜지면 관리자가
+    timeout 은 openai·ollama 두 경로 모두에 적용한다. max_retries 는 openai 에만
+    쓴다(ollama 경로는 재시도 개념이 없다). 폴백이 켜지면 관리자가
     (CLOUD_TIMEOUT_SEC, 0) 을 넘긴다 — 로컬이 받아 주므로 오래 기다릴 이유가 없다.
     로봇 대화에서 무한 대기는 곧 침묵이다. 기본값(15, 1)은 실측 꼬리(1.86초)의
     여유 배수에서 끊고, 실패는 parse_intent 의 LLM_UNAVAILABLE 폴백이 받는다.
@@ -335,20 +338,27 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
         # 모델을 메모리에 상주시킨다 (기본 5분 후 언로드 -> 다음 발화가 ~20초 콜드스타트).
         "keep_alive": -1,
     }
+    client_kwargs: dict = {"timeout": timeout}
     if api_key:  # 클라우드는 인증 헤더 필요, 로컬 Ollama 는 불필요
-        kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {api_key}"}}
+        client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+    kwargs["client_kwargs"] = client_kwargs
     llm = ChatOllama(**kwargs)
     return llm.with_structured_output(_IntentDraft)
 
 
 def _build_local_structured():
-    """로컬 Ollama 구조화 LLM. 09-19 실측: gemma4-e2b-text 8/8, 발화당 3.0초."""
+    """로컬 Ollama 구조화 LLM. 09-19 실측: gemma4-e2b-text 8/8, 발화당 3.0초.
+
+    client_kwargs 의 timeout 이 없으면 ollama 클라이언트 기본값(None)이 적용돼
+    Ollama 가 멈춰도 무한정 기다린다 — LOCAL_TIMEOUT_SEC 으로 상한을 둔다.
+    """
     llm = ChatOllama(
         model=FALLBACK_MODEL,
         base_url=FALLBACK_HOST,
         temperature=0,
         reasoning=False,
         keep_alive=-1,
+        client_kwargs={"timeout": LOCAL_TIMEOUT_SEC},
     )
     return llm.with_structured_output(_IntentDraft)
 
