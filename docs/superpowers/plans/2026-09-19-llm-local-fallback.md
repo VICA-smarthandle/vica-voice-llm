@@ -845,7 +845,7 @@ git commit -m "feat(voice): 클라우드 확인·로컬 예열·주행 사건 �
 `tests/test_parser_backend.py`:
 
 ```python
-"""파서가 전환 담당 모듈를 거치는지, 명시 모델은 우회하는지 (LLM 없이 검증)."""
+"""파서가 전환 담당 모듈을 거치는지, 명시 모델은 우회하는지 (LLM 없이 검증)."""
 import pytest
 
 from src import langchain_intent_parser as parser
@@ -1106,7 +1106,7 @@ Expected: `.env` 에 폴백 모델이 없으니 `(폴백 꺼짐)`
 
 ```bash
 git add src/langchain_intent_parser.py tests/test_parser_backend.py
-git commit -m "feat(parser): parse_intent 가 전환 담당 모듈를 거친다 — 명시 모델은 우회"
+git commit -m "feat(parser): parse_intent 가 전환 담당 모듈을 거친다 — 명시 모델은 우회"
 ```
 
 ---
