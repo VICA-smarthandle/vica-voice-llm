@@ -214,13 +214,6 @@ class LlmBackendManager:
             self.is_paused = bool(is_paused)
         self._maybe_return("robot_state")
 
-    def start_local(self, reason: str) -> None:
-        """시작 워밍업 실패 등으로 처음부터 로컬로 갈 때."""
-        if not self.has_local:
-            return
-        self._log("warning", f"[LLM] {reason} → 처음부터 로컬({self._local_name})")
-        self._enter_local()
-
     def warm_local_async(self) -> None:
         """로컬 모델 적재를 백그라운드로 시작한다(없으면 아무것도 안 함)."""
         if self._warm_local is None:

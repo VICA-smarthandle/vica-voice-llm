@@ -279,32 +279,24 @@ class TestFlapping:
         assert mgr.probe_interval == 30
 
 
-class TestStartLocal:
-    def test_start_local_enters_local_and_warms(self):
+class TestWarmLocalAsync:
+    """start_local 은 운영 코드가 부르지 않아 제거했다(F6) — 노드는 상태를 직접 보고
+    warm_local_async() 만 부른다 (src/ros_node.py 의 `if self._backend.state is
+    BackendState.LOCAL: ...warm_local_async()` 패턴)."""
+
+    def test_warm_local_async_runs_callable_in_thread(self):
         warmed = []
-        mgr, cloud, local, probe, clock, logs = make(warm_local=lambda: warmed.append(1))
-        mgr.start_local("워밍업 실패")
-        assert mgr.state is BackendState.LOCAL
-        assert mgr.heartbeat_enabled is False
+        mgr, *_ = make(warm_local=lambda: warmed.append(1))
         mgr.warm_local_async()
-        import time as _t
         for _ in range(50):
             if warmed:
                 break
-            _t.sleep(0.01)
+            time.sleep(0.01)
         assert warmed == [1]
 
-    def test_start_local_without_local_is_noop(self):
-        mgr, *_ = make(local=False)
-        mgr.start_local("워밍업 실패")
-        assert mgr.state is BackendState.CLOUD
-
-
-import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-from src.llm_backend import http_probe, ollama_warm, parse_goal_event
+    def test_warm_local_async_without_warm_local_is_noop(self):
+        mgr, *_ = make()  # warm_local 인자를 안 줌
+        mgr.warm_local_async()  # 예외 없이 조용히 아무 일도 안 함
 
 
 class _Handler(BaseHTTPRequestHandler):
