@@ -133,3 +133,136 @@ class TestClassify:
             assert mgr.invoke(MSGS) == "local:ok"
             assert mgr.state is BackendState.LOCAL
             assert logs[-1][0] == "error"
+
+
+def switched(probe_result=ProbeResult.ALIVE, **kw):
+    """클라우드 실패 한 번으로 LOCAL 이 된 관리자를 돌려준다."""
+    probe = FakeProbe(probe_result)
+    mgr, cloud, local, _, clock, logs = make(
+        cloud_fail=APIConnectionError("boom"), probe=probe, **kw)
+    mgr.invoke(MSGS)
+    assert mgr.state is BackendState.LOCAL
+    return mgr, cloud, local, probe, clock, logs
+
+
+class TestProbeAndReturn:
+    def test_no_probe_before_interval(self):
+        mgr, _, _, probe, clock, _ = switched()
+        clock.advance(29)
+        mgr.tick()
+        assert probe.calls == 0
+
+    def test_probe_after_interval_and_reschedule_on_dead(self):
+        mgr, _, _, probe, clock, _ = switched(ProbeResult.DEAD)
+        clock.advance(30)
+        mgr.tick()
+        assert probe.calls == 1
+        assert mgr.cloud_ready is False
+        clock.advance(29)
+        mgr.tick()
+        assert probe.calls == 1  # 다음 30초까지 재확인 없음
+        clock.advance(1)
+        mgr.tick()
+        assert probe.calls == 2
+
+    def test_alive_sets_ready_and_returns_when_idle(self):
+        mgr, _, _, _, clock, logs = switched()
+        clock.advance(30)
+        assert mgr.tick() is BackendState.CLOUD  # 주행 중이 아니므로 즉시 복귀
+        assert ("info", "[LLM] 클라우드 살아남(확인 1회째). 주행 끝나면 복귀") in logs
+        assert logs[-1] == ("info", "[LLM] tick → 클라우드 복귀")
+        assert mgr.heartbeat_enabled is True
+
+    def test_alive_but_run_active_waits_for_end_event(self):
+        mgr, _, _, _, clock, logs = switched()
+        mgr.on_goal_event("goal_sent")
+        clock.advance(30)
+        assert mgr.tick() is BackendState.LOCAL
+        assert mgr.cloud_ready is True
+        mgr.on_goal_event("goal_paused")  # 일시정지는 주행 유지
+        assert mgr.state is BackendState.LOCAL
+        mgr.on_goal_event("goal_succeeded")
+        assert mgr.state is BackendState.CLOUD
+        assert logs[-1] == ("info", "[LLM] goal_succeeded → 클라우드 복귀")
+
+    @pytest.mark.parametrize("end_event", [
+        "goal_succeeded", "goal_failed", "goal_rejected", "goal_canceled",
+        "return_home_succeeded", "return_home_failed", "return_home_canceled", "state_idle",
+    ])
+    def test_every_end_event_opens_return(self, end_event):
+        mgr, _, _, _, clock, _ = switched()
+        mgr.on_goal_event("return_home_sent" if end_event.startswith("return") else "goal_accepted")
+        clock.advance(30)
+        mgr.tick()
+        assert mgr.state is BackendState.LOCAL
+        mgr.on_goal_event(end_event)
+        assert mgr.state is BackendState.CLOUD
+
+    @pytest.mark.parametrize("moving, paused", [(True, False), (False, True)])
+    def test_moving_or_paused_blocks_return(self, moving, paused):
+        mgr, _, _, _, clock, _ = switched()
+        mgr.on_robot_state(is_moving=moving, is_paused=paused)
+        clock.advance(30)
+        assert mgr.tick() is BackendState.LOCAL
+        mgr.on_robot_state(is_moving=False, is_paused=False)  # 멈추면 복귀
+        assert mgr.state is BackendState.CLOUD
+
+    def test_auth_failed_probe_never_returns(self):
+        mgr, _, _, _, clock, logs = switched(ProbeResult.AUTH_FAILED)
+        clock.advance(30)
+        assert mgr.tick() is BackendState.LOCAL
+        assert mgr.cloud_ready is False
+        assert logs[-1][0] == "error"
+
+    def test_local_invoke_while_local(self):
+        mgr, cloud, local, *_ = switched()
+        cloud.calls.clear()
+        assert mgr.invoke(MSGS) == "local:ok"
+        assert cloud.calls == []  # LOCAL 에선 클라우드를 부르지 않는다
+
+
+class TestFlapping:
+    def test_interval_doubles_when_refailing_within_window(self):
+        mgr, cloud, local, probe, clock, _ = switched()
+        seen = []
+        for expected in (60, 120, 240, 300, 300):
+            clock.advance(mgr.probe_interval)
+            mgr.tick()                       # ALIVE → 복귀
+            assert mgr.state is BackendState.CLOUD
+            clock.advance(10)                # 복귀 10초 만에 또 실패
+            cloud.fail_with = APIConnectionError("again")
+            mgr.invoke(MSGS)
+            seen.append(mgr.probe_interval)
+            assert mgr.probe_interval == expected
+        assert seen == [60, 120, 240, 300, 300]
+
+    def test_interval_resets_when_refailing_after_window(self):
+        mgr, cloud, local, probe, clock, _ = switched()
+        clock.advance(30)
+        mgr.tick()
+        assert mgr.state is BackendState.CLOUD
+        clock.advance(301)                   # 창(300초) 밖
+        cloud.fail_with = APIConnectionError("again")
+        mgr.invoke(MSGS)
+        assert mgr.probe_interval == 30
+
+
+class TestStartLocal:
+    def test_start_local_enters_local_and_warms(self):
+        warmed = []
+        mgr, cloud, local, probe, clock, logs = make(warm_local=lambda: warmed.append(1))
+        mgr.start_local("워밍업 실패")
+        assert mgr.state is BackendState.LOCAL
+        assert mgr.heartbeat_enabled is False
+        mgr.warm_local_async()
+        import time as _t
+        for _ in range(50):
+            if warmed:
+                break
+            _t.sleep(0.01)
+        assert warmed == [1]
+
+    def test_start_local_without_local_is_noop(self):
+        mgr, *_ = make(local=False)
+        mgr.start_local("워밍업 실패")
+        assert mgr.state is BackendState.CLOUD

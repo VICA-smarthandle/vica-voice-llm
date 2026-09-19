@@ -1,7 +1,7 @@
-"""클라우드→로컬 LLM 자동 자동 전환(폴백) 담당 모듈. ROS·LangChain 을 모르는 순수 로직.
+"""클라우드→로컬 LLM 자동 전환(폴백) 담당 모듈. ROS·LangChain 을 모르는 순수 로직.
 
 정본 설계: docs/superpowers/specs/2026-09-19-llm-local-fallback-design.md
-비유: 한전(클라우드)과 발전기(로컬) 사이의 자동 자동 전환 스위치. 스위치는 전기가
+비유: 한전(클라우드)과 발전기(로컬) 사이의 자동 전환 스위치. 스위치는 전기가
 지나가는 자리, 즉 LLM 호출 바로 앞에 둔다.
 
 규칙 요약:
@@ -159,3 +159,70 @@ class LlmBackendManager:
             self.cloud_ready = False
             self.probe_ok_streak = 0
             self.next_probe_at = now + self.probe_interval
+
+    # ----- 주기 확인·복귀 ---------------------------------------------
+    def tick(self, now: Optional[float] = None) -> BackendState:
+        """1초쯤마다 부른다. LOCAL 이면 간격에 맞춰 클라우드를 확인하고 복귀를 시도한다."""
+        with self._lock:
+            now = self._clock() if now is None else now
+            due = self.state is BackendState.LOCAL and now >= self.next_probe_at
+        if due:
+            result = self._probe()          # 잠금 밖에서 부른다 — 최대 3초 걸린다
+            with self._lock:
+                self.next_probe_at = now + self.probe_interval
+                if result is ProbeResult.ALIVE:
+                    self.probe_ok_streak += 1
+                    if not self.cloud_ready:
+                        self.cloud_ready = True
+                        self._log("info", f"[LLM] 클라우드 살아남(확인 {self.probe_ok_streak}회째). "
+                                          "주행 끝나면 복귀")
+                elif result is ProbeResult.AUTH_FAILED:
+                    self.cloud_ready = False
+                    self.probe_ok_streak = 0
+                    self._log("error", "[LLM] 클라우드는 닿지만 인증 실패 — 키를 확인하세요. 복귀 보류")
+                else:
+                    self.cloud_ready = False
+                    self.probe_ok_streak = 0
+        self._maybe_return("tick")
+        return self.state
+
+    def on_goal_event(self, event: str) -> None:
+        """미션 매니저의 /vica_goal_event 사건 이름. 주행 시작/종료를 추적한다."""
+        with self._lock:
+            if event in RUN_START_EVENTS:
+                self.run_active = True
+                return
+            if event in RUN_END_EVENTS:
+                self.run_active = False
+        if event in RUN_END_EVENTS:
+            self._maybe_return(event)
+
+    def on_robot_state(self, is_moving: bool, is_paused: bool) -> None:
+        """/vica/robot_state 의 보조 신호. 노드 재시작으로 run_active 를 놓친 경우의 안전띠."""
+        with self._lock:
+            self.is_moving = bool(is_moving)
+            self.is_paused = bool(is_paused)
+        self._maybe_return("robot_state")
+
+    def start_local(self, reason: str) -> None:
+        """시작 워밍업 실패 등으로 처음부터 로컬로 갈 때."""
+        if not self.has_local:
+            return
+        self._log("warning", f"[LLM] {reason} → 처음부터 로컬({self._local_name})")
+        self._enter_local()
+
+    def warm_local_async(self) -> None:
+        """로컬 모델 적재를 백그라운드로 시작한다(없으면 아무것도 안 함)."""
+        if self._warm_local is None:
+            return
+        threading.Thread(target=self._warm_local, daemon=True, name="llm-warm-local").start()
+
+    def _maybe_return(self, trigger: str) -> None:
+        with self._lock:
+            if (self.state is BackendState.LOCAL and self.cloud_ready
+                    and not self.run_active and not self.is_moving and not self.is_paused):
+                self.state = BackendState.CLOUD
+                self.cloud_ready = False
+                self.probe_ok_streak = 0
+                self.last_return_at = self._clock()
+                self._log("info", f"[LLM] {trigger} → 클라우드 복귀")
