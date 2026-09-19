@@ -71,29 +71,69 @@ def test_explicit_model_bypasses_manager(monkeypatch):
 
 def test_manager_is_built_once(monkeypatch):
     built = []
+    calls = []
 
     class Direct:
         def invoke(self, messages):
             return DRAFT
 
-    monkeypatch.setattr(parser, "_get_structured_llm",
-                        lambda model, **kw: built.append(model) or Direct())
+    def stub(model, **kw):
+        built.append(model)
+        calls.append(kw)
+        return Direct()
+
+    monkeypatch.setattr(parser, "_get_structured_llm", stub)
     monkeypatch.setattr(parser, "FALLBACK_MODEL", "")
     a = parser.get_backend_manager()
     b = parser.get_backend_manager()
     assert a is b
     assert built == [parser.DEFAULT_MODEL]
     assert a.has_local is False  # 폴백 모델이 비면 로컬 없음 = 옛 동작
+    assert calls[0]["timeout"] == 15
+    assert calls[0]["max_retries"] == 1
 
 
 def test_manager_has_local_when_fallback_set(monkeypatch):
+    calls = []
+
     class Direct:
         def invoke(self, messages):
             return DRAFT
 
-    monkeypatch.setattr(parser, "_get_structured_llm", lambda model, **kw: Direct())
+    def stub(model, **kw):
+        calls.append(kw)
+        return Direct()
+
+    monkeypatch.setattr(parser, "_get_structured_llm", stub)
     monkeypatch.setattr(parser, "FALLBACK_MODEL", "gemma4-e2b-text")
     monkeypatch.setattr(parser, "_build_local_structured", lambda: Direct())
     mgr = parser.get_backend_manager()
     assert mgr.has_local is True
     assert mgr.state is BackendState.CLOUD
+    assert calls[0]["timeout"] == parser.CLOUD_TIMEOUT_SEC
+    assert calls[0]["max_retries"] == 0
+
+
+def test_manager_falls_back_to_cloud_only_when_local_build_fails(monkeypatch):
+    calls = []
+
+    class Direct:
+        def invoke(self, messages):
+            return DRAFT
+
+    def stub(model, **kw):
+        calls.append(kw)
+        return Direct()
+
+    def boom_local():
+        raise RuntimeError("no ollama")
+
+    monkeypatch.setattr(parser, "FALLBACK_MODEL", "gemma4-e2b-text")
+    monkeypatch.setattr(parser, "_build_local_structured", boom_local)
+    monkeypatch.setattr(parser, "_get_structured_llm", stub)
+    mgr = parser.get_backend_manager()
+    assert mgr.has_local is False
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 15
+    assert calls[0]["max_retries"] == 1
+    assert parser.get_backend_manager() is mgr

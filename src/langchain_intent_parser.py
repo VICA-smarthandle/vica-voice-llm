@@ -378,7 +378,18 @@ def get_backend_manager() -> LlmBackendManager:
     global _MANAGER
     if _MANAGER is not None:
         return _MANAGER
-    fallback_on = bool(FALLBACK_MODEL)
+    # 로컬을 먼저 만든다 — 로컬 빌드가 실패해도(모델 없음 등) 클라우드는 반드시
+    # 살려야 한다("클라우드는 되는데 로컬만 실패"에서 아예 못 쓰게 되면 폴백
+    # 설계 취지(가용성)와 어긋난다).
+    if FALLBACK_MODEL:
+        try:
+            local = _build_local_structured().invoke
+        except Exception as exc:
+            _log("error", f"[LLM] 로컬 백엔드 준비 실패({exc}) — 폴백 없이 클라우드만 씀")
+            local = None
+    else:
+        local = None
+    fallback_on = local is not None
     try:
         cloud_llm = _get_structured_llm(
             DEFAULT_MODEL,
@@ -389,12 +400,11 @@ def get_backend_manager() -> LlmBackendManager:
     except Exception as build_error:  # 키 없음 등 — 호출 때 실패로 드러나 로컬로 대피한다
         def cloud(messages, _err=build_error):
             raise _err
-    local = _build_local_structured().invoke if fallback_on else None
     _MANAGER = LlmBackendManager(
         cloud, local, _cloud_probe,
         warm_local=(lambda: ollama_warm(FALLBACK_HOST, FALLBACK_MODEL, logger=_log)) if fallback_on else None,
         logger=_log,
-        local_name=FALLBACK_MODEL or "-",
+        local_name=FALLBACK_MODEL if fallback_on else "-",
         probe_interval_sec=CLOUD_PROBE_SEC,
     )
     return _MANAGER
