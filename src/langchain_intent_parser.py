@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .destination_matcher import match_destination
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .replies import (
     ASK_DESTINATION,
     CANCEL_CONFIRM,
@@ -49,6 +50,16 @@ if PROVIDER == "openai":
     DEFAULT_MODEL = os.environ.get("VICA_OPENAI_MODEL", "gpt-5.4-mini")
 else:
     DEFAULT_MODEL = os.environ.get("VICA_LLM_MODEL", "gemma4:cloud")
+
+# ----- 로컬 폴백(2026-09-19 설계) --------------------------------------------
+# 비어 있으면 폴백이 꺼진다 = 예전 동작(클라우드 실패 = LLM_UNAVAILABLE).
+FALLBACK_MODEL = os.environ.get("VICA_LLM_FALLBACK_MODEL", "").strip()
+FALLBACK_HOST = os.environ.get("VICA_LLM_FALLBACK_HOST", "http://localhost:11434")
+# 폴백이 켜졌을 때의 클라우드 대기 시간. 8월 실측 최대 1.86초의 3배. 재시도 없음.
+CLOUD_TIMEOUT_SEC = float(os.environ.get("VICA_LLM_CLOUD_TIMEOUT", "6"))
+CLOUD_PROBE_SEC = float(os.environ.get("VICA_LLM_CLOUD_PROBE_SEC", "30"))
+# 로컬 Ollama 호출 상한. 스택 없이 잰 적재 7초+추론 3초의 여유 배수.
+LOCAL_TIMEOUT_SEC = float(os.environ.get("VICA_LLM_LOCAL_TIMEOUT", "45"))
 
 
 class _IntentDraft(BaseModel):
@@ -294,8 +305,15 @@ def _pending_command(history: Optional[list[BaseMessage]]) -> Optional[str]:
     return _COMMAND_CONFIRMS.get(last_ai.content)
 
 
-def _get_structured_llm(model: str):
-    """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다."""
+def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
+    """구조화 출력(_IntentDraft) LLM 을 만든다. 백엔드는 PROVIDER 가 정한다.
+
+    timeout 은 openai·ollama 두 경로 모두에 적용한다. max_retries 는 openai 에만
+    쓴다(ollama 경로는 재시도 개념이 없다). 폴백이 켜지면 관리자가
+    (CLOUD_TIMEOUT_SEC, 0) 을 넘긴다 — 로컬이 받아 주므로 오래 기다릴 이유가 없다.
+    로봇 대화에서 무한 대기는 곧 침묵이다. 기본값(15, 1)은 실측 꼬리(1.86초)의
+    여유 배수에서 끊고, 실패는 parse_intent 의 LLM_UNAVAILABLE 폴백이 받는다.
+    """
     if PROVIDER == "openai":
         # 지연 import — ollama 만 쓰는 환경에 openai 패키지를 요구하지 않는다.
         from langchain_openai import ChatOpenAI
@@ -303,10 +321,8 @@ def _get_structured_llm(model: str):
         llm = ChatOpenAI(
             model=model,
             temperature=0,
-            # 로봇 대화에서 무한 대기는 곧 침묵이다. 실측 꼬리(1.86초)의 여유
-            # 배수에서 끊고, 실패는 parse_intent 의 LLM_UNAVAILABLE 폴백이 받는다.
-            timeout=15,
-            max_retries=1,
+            timeout=timeout,
+            max_retries=max_retries,
         )
         # strict=True: 스키마를 서버가 문법 수준에서 강제한다 (실측 준수 18/18).
         return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
@@ -322,10 +338,95 @@ def _get_structured_llm(model: str):
         # 모델을 메모리에 상주시킨다 (기본 5분 후 언로드 -> 다음 발화가 ~20초 콜드스타트).
         "keep_alive": -1,
     }
+    client_kwargs: dict = {"timeout": timeout}
     if api_key:  # 클라우드는 인증 헤더 필요, 로컬 Ollama 는 불필요
-        kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {api_key}"}}
+        client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+    kwargs["client_kwargs"] = client_kwargs
     llm = ChatOllama(**kwargs)
     return llm.with_structured_output(_IntentDraft)
+
+
+def _build_local_structured():
+    """로컬 Ollama 구조화 LLM. 09-19 실측: gemma4-e2b-text 8/8, 발화당 3.0초.
+
+    client_kwargs 의 timeout 이 없으면 ollama 클라이언트 기본값(None)이 적용돼
+    Ollama 가 멈춰도 무한정 기다린다 — LOCAL_TIMEOUT_SEC 으로 상한을 둔다.
+    """
+    llm = ChatOllama(
+        model=FALLBACK_MODEL,
+        base_url=FALLBACK_HOST,
+        temperature=0,
+        reasoning=False,
+        keep_alive=-1,
+        client_kwargs={"timeout": LOCAL_TIMEOUT_SEC},
+    )
+    return llm.with_structured_output(_IntentDraft)
+
+
+def _cloud_probe() -> ProbeResult:
+    """토큰을 쓰지 않는 접속 확인. openai 는 /models, ollama 클라우드는 /api/version."""
+    if PROVIDER == "openai":
+        base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        key = os.environ.get("OPENAI_API_KEY", "")
+        return http_probe(f"{base}/models", headers={"Authorization": f"Bearer {key}"})
+    key = os.environ.get("OLLAMA_API_KEY", "")
+    headers = {"Authorization": f"Bearer {key}"} if key else None
+    return http_probe(f"{OLLAMA_HOST.rstrip('/')}/api/version", headers=headers)
+
+
+def _log(level: str, msg: str) -> None:
+    import sys
+
+    if level == "info":
+        print(msg, file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+
+
+_MANAGER: Optional[LlmBackendManager] = None
+
+
+def get_backend_manager() -> LlmBackendManager:
+    """전환 담당 모듈 싱글턴. 처음 부를 때 만든다(시험이 임포트만으로 클라이언트를 만들지 않게)."""
+    global _MANAGER
+    if _MANAGER is not None:
+        return _MANAGER
+    # 로컬을 먼저 만든다 — 로컬 빌드가 실패해도(모델 없음 등) 클라우드는 반드시
+    # 살려야 한다("클라우드는 되는데 로컬만 실패"에서 아예 못 쓰게 되면 폴백
+    # 설계 취지(가용성)와 어긋난다).
+    if FALLBACK_MODEL:
+        try:
+            local = _build_local_structured().invoke
+        except Exception as exc:
+            _log("error", f"[LLM] 로컬 백엔드 준비 실패({exc}) — 폴백 없이 클라우드만 씀")
+            local = None
+    else:
+        local = None
+    fallback_on = local is not None
+    try:
+        cloud_llm = _get_structured_llm(
+            DEFAULT_MODEL,
+            timeout=CLOUD_TIMEOUT_SEC if fallback_on else 15,
+            max_retries=0 if fallback_on else 1,
+        )
+        cloud = cloud_llm.invoke
+    except Exception as build_error:  # 키 없음 등 — 호출 때 실패로 드러나 로컬로 대피한다
+        def cloud(messages, _err=build_error):
+            raise _err
+    _MANAGER = LlmBackendManager(
+        cloud, local, _cloud_probe,
+        warm_local=(lambda: ollama_warm(FALLBACK_HOST, FALLBACK_MODEL, logger=_log)) if fallback_on else None,
+        logger=_log,
+        local_name=FALLBACK_MODEL if fallback_on else "-",
+        probe_interval_sec=CLOUD_PROBE_SEC,
+    )
+    return _MANAGER
+
+
+def reset_backend_manager() -> None:
+    """시험용. 다음 get_backend_manager() 가 새로 만든다."""
+    global _MANAGER
+    _MANAGER = None
 
 
 def parse_intent(
@@ -333,7 +434,7 @@ def parse_intent(
     destinations: Sequence[DestinationData],
     history: Optional[list[BaseMessage]] = None,
     robot_state: Optional[RobotState] = None,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
     # 직전 확인 질문에 대한 짧은 긍정/부정은 LLM 없이 코드가 결정한다 (아래 참고).
@@ -434,20 +535,27 @@ def parse_intent(
     if word in _NEGATIVES:
         return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
 
-    structured = _get_structured_llm(model)
     messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(user_text))
 
     try:
-        draft: _IntentDraft = structured.invoke(messages)
+        if model is not None:
+            # 벤치·수동 지정 경로(scripts/bench_models.py): 그 모델 하나로 직접 부른다.
+            draft: _IntentDraft = _get_structured_llm(model).invoke(messages)
+        else:
+            draft = get_backend_manager().invoke(messages)
     except Exception as exc:
-        # LLM/네트워크 실패 -> 크래시 대신 안전한 fallback 응답을 돌려준다.
+        # 클라우드→로컬까지 실패했거나 폴백이 꺼진 상태의 실패.
+        # 크래시 대신 안전한 fallback 응답을 돌려준다.
         # (긴급어는 LLM 이전 단계에서 처리되므로 이 실패의 영향을 받지 않는다.)
-        import sys
-
-        print(f"[LLM] 호출 실패: {exc}", file=sys.stderr)
+        if model is not None:
+            _log("error", f"[LLM] 호출 실패(모델 {model}): {exc}")
+        elif not get_backend_manager().has_local:
+            _log("error", f"[LLM] 호출 실패(클라우드만, 폴백 꺼짐): {exc}")
+        else:
+            _log("error", f"[LLM] 호출 실패(로컬까지): {exc}")
         return VicaIntent(
             intent="unknown",
             reply=LLM_UNAVAILABLE,

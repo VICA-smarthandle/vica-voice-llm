@@ -101,6 +101,8 @@ class RobotState(BaseModel):
     current_floor: Optional[int] = None
     current_building: str = ""
     is_moving: bool = False
+    # 일시정지(목적지를 기억한 채 정지). 전환 담당 모듈의 복귀 조건에 쓴다 (2026-09-19).
+    is_paused: bool = False
 
 
 def should_forward_intent(intent) -> bool:
