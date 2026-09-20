@@ -82,3 +82,10 @@ class TestBoard:
         b.on_goal_event(None, "")
         b.on_goal_event("something_else", "x")
         assert b.render() == ""
+
+
+class TestAwaitingAnswer:
+    def test_awaiting_line_appears_even_on_empty_board(self):
+        b = SituationBoard(FakeClock())
+        assert b.render() == ""
+        assert "답을 기다리는 중: 예" in b.render(awaiting_answer=True)

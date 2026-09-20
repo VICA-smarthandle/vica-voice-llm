@@ -89,7 +89,13 @@ class LlmIntentNode(Node):
         # 소리 모드(모델 전결)는 로봇이 실제로 한 말(미션 질문 포함)까지 이력에
         # 넣으므로 두 배로 둔다 — 8이면 왕복 4번이 안 된다.
         self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
-        self._history = ConversationHistory(max_messages=16 if self._intent_input == "audio" else 8)
+        # 소리 모드는 시간으로 비우지 않는다(2026-09-20 사용자 결정): 대기 중(10~30분)에도
+        # 기억이 남아야 돌아온 사용자의 "아까 어디 갔었지?"가 통한다. 비우는 때는
+        # 안내가 대기 없이 끝났을 때뿐 — 미션의 return_home_sent(_on_goal_event).
+        if self._intent_input == "audio":
+            self._history = ConversationHistory(max_messages=16, idle_reset_sec=float("inf"))
+        else:
+            self._history = ConversationHistory()
         # 상황판(소리 모드): 이동 중·마지막 도착·대기 요청 — 이력이 비어도 남는 사실.
         self._board = SituationBoard()
 
@@ -206,6 +212,11 @@ class LlmIntentNode(Node):
             self._backend.on_goal_event(event)
         ev, name = parse_goal_event_name(msg.data)
         self._board.on_goal_event(ev, name)
+        if ev == "return_home_sent" and self._intent_input == "audio" and len(self._history):
+            # 안내가 대기 없이 끝났다(종료 답·거절·무응답·대기 만료 → 홈행) = 이 사용자와의
+            # 대화 끝. 다음 사람의 "거기로 가줘"가 앞사람 목적지로 붙지 않게 여기서만 비운다.
+            self._history.clear()
+            self.get_logger().info("안내 종료(대기 없음) — 대화 기록 비움")
 
     def _backend_loop(self) -> None:
         """1 Hz: 클라우드 확인·복귀 판정."""
@@ -410,7 +421,7 @@ class LlmIntentNode(Node):
         try:
             intent, heard, dt, info = parse_intent_audio(
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
-                situation=self._board.render())
+                situation=self._board.render(awaiting_answer=time.time() < self._followup_until))
         except Exception as exc:
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "

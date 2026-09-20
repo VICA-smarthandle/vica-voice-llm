@@ -79,3 +79,10 @@ def test_len():
 def test_default_idle_reset_is_minutes_not_seconds():
     """사용자가 잠깐 생각하는 사이에 맥락이 사라지면 안 된다."""
     assert DEFAULT_IDLE_RESET_SEC >= 60.0
+
+
+def test_infinite_idle_reset_never_clears():
+    from src.history import ConversationHistory
+    h = ConversationHistory(max_messages=4, idle_reset_sec=float("inf"))
+    h.begin_turn(0.0); h.extend(["a"])
+    assert h.begin_turn(10_000_000.0) is False and len(h) == 1

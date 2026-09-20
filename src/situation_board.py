@@ -90,10 +90,16 @@ class SituationBoard:
             self.waiting_minutes = int(minutes) if minutes is not None else -1
 
     # ----- 출력 ---------------------------------------------------------
-    def render(self) -> str:
-        """프롬프트 블록. 적을 사실이 하나도 없으면 빈 문자열."""
+    def render(self, awaiting_answer: bool = False) -> str:
+        """프롬프트 블록. 적을 사실이 하나도 없으면 빈 문자열.
+
+        awaiting_answer: 로봇이 방금 질문을 하고 답을 기다리는 중(LLM 노드의 재청취 창).
+        모델이 '못 알아들었을 때 침묵할지 되물을지'를 정하는 근거다.
+        """
         now = self._clock()
         lines = []
+        if awaiting_answer:
+            lines.append("- 로봇이 방금 질문하고 답을 기다리는 중: 예 (지금 들리는 말은 그 답일 가능성이 높다)")
         if self.guiding_to:
             since = f" ({_ago(now - self.guiding_since)} 출발)" if self.guiding_since else ""
             lines.append(f"- 안내 중: {self.guiding_to}로 이동 중{since}")
@@ -108,7 +114,8 @@ class SituationBoard:
         if self.waiting_minutes is not None and not self.guiding_to:
             minutes = "시간 미정" if self.waiting_minutes < 0 else f"{self.waiting_minutes}분"
             lines.append(f"- 대기 요청: {minutes} (도착 뒤 사용자가 기다려 달라고 함)")
-        if not self.last_arrived and not self.guiding_to and not self.last_outcome and not self.returning_home:
+        if (not self.last_arrived and not self.guiding_to and not self.last_outcome
+                and not self.returning_home and not awaiting_answer):
             return ""
         return ("\n[지금 상황] (코드가 미션 신호로 확인한 사실 — 대화 이력이 비어 있어도 이것은 맞다. "
                 "\"지금 어디 가?\"·\"아까 어디 갔었지?\"·\"몇 층이야?\"는 이것과 목적지 목록의 위치로 답한다)\n"
