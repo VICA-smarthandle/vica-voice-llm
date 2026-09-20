@@ -33,9 +33,9 @@ def synth(tts, text: str) -> bytes:
     return float32_to_pcm16(audio)
 
 
-def run_case(tts, dests, text: str, history=None, label: str = "") -> None:
+def run_case(tts, dests, text: str, history=None, label: str = "", pcm=None) -> None:
     tag = label or text
-    pcm = synth(tts, text)
+    pcm = pcm if pcm is not None else synth(tts, text)
     t0 = time.monotonic()
     try:
         intent, heard, dt, info = parse_intent_audio(pcm, dests, history=history)
@@ -59,7 +59,21 @@ def main() -> None:
         confirm_prompt = dests[0].confirm_prompt
         history = [HumanMessage("화장실"), AIMessage(confirm_prompt)]
         run_case(tts, dests, "그래", history=history, label="[이력] 그래")
-    else:
+
+    # 모델 전결 케이스 (2026-09-20): 정정·미션 질문의 답·사람 말 아님.
+    if len(dests) >= 2:
+        a, b = dests[0], dests[1]
+        run_case(tts, dests, f"아니 {b.name}로 가자",
+                 history=[HumanMessage(a.name), AIMessage(a.confirm_prompt)], label=f"[정정] 아니 {b.name}로 가자")
+        arrival = [HumanMessage(a.name), AIMessage(a.confirm_prompt), HumanMessage("그래"),
+                   AIMessage(f"{a.name}로 안내를 시작합니다."),
+                   AIMessage(f"{a.name} 앞에 도착했습니다. 여기서 대기할까요?"),
+                   HumanMessage("응"), AIMessage("몇 분쯤 걸리실까요?")]
+        run_case(tts, dests, "오 분", history=arrival, label="[도착 질문] 오 분")
+        import numpy as np
+        noise = (np.random.default_rng(0).normal(0, 300, 16000 * 2)).astype("<i2").tobytes()
+        run_case(tts, dests, "", history=arrival, label="[잡음 2초]", pcm=noise)
+    if not dests:
         print("[이력 케이스 생략] 목적지 목록이 비어 있다")
 
 
