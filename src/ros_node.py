@@ -43,7 +43,7 @@ from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
-from .stt_guard import is_hallucination, strip_robot_echo
+from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
 from .tts_queue import request_for_intent
 
 
@@ -82,7 +82,10 @@ class LlmIntentNode(Node):
         self._reload_destinations_if_changed(force=True)
         self._robot_state = RobotState()  # robot_state 토픽이 오기 전 기본값
         # 멀티턴 기억. 공용 로봇이라 한동안 발화가 없으면 새 대화로 보고 비운다.
-        self._history = ConversationHistory()
+        # 소리 모드(모델 전결)는 로봇이 실제로 한 말(미션 질문 포함)까지 이력에
+        # 넣으므로 두 배로 둔다 — 8이면 왕복 4번이 안 된다.
+        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        self._history = ConversationHistory(max_messages=16 if self._intent_input == "audio" else 8)
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
@@ -101,7 +104,6 @@ class LlmIntentNode(Node):
         # 이 구독은 반드시 /vica/user_text 보다 먼저 만든다 — rclpy 단일
         # 실행기는 같은 주기에 준비된 구독을 생성 순서로 부른다. 소리가
         # 텍스트보다 먼저 처리돼야 이중 발행이 없다(항목 C).
-        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
         self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
         self._last_text_publish_t = 0.0   # 텍스트 경로가 방금 발행했으면 소리 경로를 생략한다
         # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
@@ -264,8 +266,12 @@ class LlmIntentNode(Node):
         # 표식. _on_user_audio 는 이 시각에서 2초 안이면 소리 경로를 생략한다.
         self._last_text_publish_t = time.time()
 
-    def _publish_intent(self, intent: VicaIntent, text: str) -> None:
-        """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리)."""
+    def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
+        """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리).
+
+        llm_first(소리 모드 모델 전결): 재청취 기각을 하지 않는다 — 대꾸할지 침묵할지
+        (reply 가 빈 문자열)는 모델이 정했다.
+        """
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -276,7 +282,8 @@ class LlmIntentNode(Node):
         #      무응답이 됐다(실기). 판별은 SHORTCUT_REPLIES 로 한다 — LLM 이
         #      지어낸 잡담 대꾸는 이 목록에 없으므로 종전대로 버려진다.
         #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
-        if (time.time() < self._followup_until
+        if (not llm_first
+                and time.time() < self._followup_until
                 and intent.intent in ("unknown", "clarify")
                 and not intent.need_confirm
                 and intent.reply not in SHORTCUT_REPLIES
@@ -310,14 +317,27 @@ class LlmIntentNode(Node):
         )
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
-        self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+        #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
+        #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
+        if self._intent_input == "audio":
+            self._history.extend([HumanMessage(text)])
+        else:
+            self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
 
     def _on_tts_done_text(self, msg: String) -> None:
-        """로봇이 방금 한 말을 기억한다(에코 대조용, 웨이크워드 노드와 같은 방어)."""
+        """로봇이 방금 한 말을 기억한다(에코 대조용, 웨이크워드 노드와 같은 방어).
+
+        소리 모드(모델 전결)에서는 이력에도 AI 줄로 넣는다 — 미션이 말한 질문
+        ("몇 분쯤 걸리실까요?")을 모델이 봐야 "오 분"을 그 답으로 읽는다
+        (09-20 실기 #7: 두 경로 모두 이 질문을 못 본 채 해석해 실패).
+        """
         now = time.time()
         self._robot_recent = [
             (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
         self._robot_recent.append((now, msg.data))
+        text = (msg.data or "").strip()
+        if self._intent_input == "audio" and text:
+            self._history.extend([AIMessage(text)])
 
     def _on_user_audio(self, msg: UInt8MultiArray) -> None:
         """audio 모드: 소리를 Realtime 에 보내 의도를 받는다. 관문에 걸리거나 실패하면
@@ -375,19 +395,9 @@ class LlmIntentNode(Node):
             self.get_logger().warning(f"[A/B] 긴급어 — 텍스트 경로에 위임: heard='{heard}'")
             return
 
-        # B-1) 빈 말·환각은 버린다 — 텍스트 경로가 원래대로 처리한다.
-        if heard.strip() == "" or is_hallucination(heard):
-            self.get_logger().info(f"[A/B] 소리 결과 버림(빈 말/환각): heard='{heard}'")
-            return
-
-        # B-2) 로봇 자신의 말(에코)이 섞였으면 버린다 — 웨이크워드 노드와 같은 방어.
-        now = time.time()
-        recent = [s for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
-        cleaned = strip_robot_echo(heard, recent)
-        if cleaned != heard.strip():
-            self.get_logger().info(f"[A/B] 소리 결과 버림(로봇 에코 섞임): heard='{heard}'")
-            return
-
+        # 모델 전결(2026-09-20): 빈 말·환각·에코 판정도 모델 몫이다 — 사람 말이
+        # 아니면 모델이 unknown + 빈 reply 로 답하고, 그건 침묵으로 발행된다.
+        # 텍스트 경로가 이 발화를 다시 처리하지 않도록 handled 로 표시한다.
         self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
         usage = info.get("usage") or {}
         audio_tok = usage.get("audio_tokens", 0)
@@ -395,9 +405,9 @@ class LlmIntentNode(Node):
         out_tok = usage.get("output_tokens", 0)
         self.get_logger().info(
             f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
-            f"nc={intent.need_confirm} src={info['src']} dt={dt:.2f}s "
-            f"tokens={audio_tok}/{text_tok}/{out_tok} clip={clip_sec:.2f}s")
-        self._publish_intent(intent, heard)
+            f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
+            f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} clip={clip_sec:.2f}s")
+        self._publish_intent(intent, heard, llm_first=True)
 
     def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).

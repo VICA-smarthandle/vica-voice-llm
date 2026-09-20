@@ -89,6 +89,13 @@ class _IntentDraft(BaseModel):
             "한다. 시간을 말하지 않았으면 null. 그 외 intent 는 null."
         ),
     )
+    need_confirm: Optional[bool] = Field(
+        default=None,
+        description=(
+            "소리 모드(모델 전결)에서만 쓴다: 되물어야 하면 true(새 목적지 제안·취소·"
+            "다시 출발), 확정·단답이면 false. 텍스트 경로의 _finalize 는 이 값을 무시한다."
+        ),
+    )
     reply: str = Field(
         default="",
         # navigate 의 확인 문구는 코드가 confirm_prompt 로 갈아끼우므로(_finalize),
@@ -583,15 +590,74 @@ def parse_intent(
                      pending_command=pending_command, user_text=user_text)
 
 
-AUDIO_EXTRA_INSTRUCTIONS = (
-    "\n\n[소리 입력 규칙] 지금 입력은 글자가 아니라 사용자의 목소리다. 반드시 set_intent "
-    "함수를 한 번 호출해 답한다. heard_text 에는 들린 말을 한국어로 그대로 적는다(말이 "
-    "아니면 빈 문자열, intent 는 unknown). 직전에 로봇이 확인 질문을 했다면 시스템 지시대로 "
-    "intent navigate 와 is_confirmation=true(긍정)/deny(부정)로 답한다. 확인 질문이 없을 때의 "
-    "짧은 긍정(네·응·그래·좋아)만 affirm, 짧은 부정만 deny 로 적는다. '오 분'·'한 시간'처럼 "
-    "시간만 말하면 intent wait 와 wait_minutes 를 채운다. 로봇 자신의 안내 멘트가 들리면 "
-    "unknown 으로 둔다."
-)
+# ---------------------------------------------------------------------------
+# 소리 모드 = 모델 전결 (feat/realtime-intent, 2026-09-20 사용자 결정 "아주 실험적으로")
+#
+# 소리 입력에서는 판단을 전부 모델(Realtime)에 맡기고 코드는 배달만 한다. 텍스트
+# 경로의 지름길(_shortcut_intent)·확인 대기 판정·_finalize 는 여기서 쓰지 않는다 —
+# whisper 시절의 울타리(글자를 못 믿어 코드가 모델을 덮어쓰던 규칙)가 정확히 들은
+# 말을 버렸다("아니 테스트3로 가자" → 부정어 규칙으로 취소, 09-20 실기 #19).
+#
+# 코드가 남긴 일 3가지 (판단이 아니라 사실·계약):
+#   ① 목적지 이름 → id 매핑 (미션은 id 로만 움직인다)
+#   ② 접근 불가 목적지는 기존과 같이 사유 문구로 답한다 (물리적 사실)
+#   ③ 메시지 계약상 빈 reply — affirm/deny/wait/finish·확정 navigate·확정 cancel 은
+#      상태를 아는 미션이 말한다 (VicaIntent.msg). 모델이 채워도 비운다.
+# 나머지(확인 여부·정정·시간·침묵·되묻기)는 프롬프트의 규칙이고 모델이 정한다.
+# 로봇이 실제로 소리 낸 말(미션의 질문 포함)은 LLM 노드가 /vica/tts_done 으로
+# 이력에 넣어 준다 — 모델이 "몇 분쯤 걸리실까요?"의 답을 답으로 볼 수 있게.
+# ---------------------------------------------------------------------------
+
+
+def build_audio_prompt(
+    destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None
+) -> str:
+    """소리 모드 지시문. 모델이 대화 판단자다 — 확인·정정·침묵까지 모델 몫."""
+    lines = []
+    for d in destinations:
+        aliases = ", ".join(d.aliases)
+        if d.is_approachable:
+            lines.append(f'- {d.name} (별칭: {aliases}) — 확인 질문: "{d.confirm_prompt}"')
+        else:
+            lines.append(f"- {d.name} (별칭: {aliases}) — 접근 불가")
+    dest_block = "\n".join(lines)
+    state_block = _format_robot_state(robot_state)
+    return f"""너는 시각장애인 안내 로봇 'VICA'의 대화 판단자다. 사용자의 목소리를 직접 듣고,
+로봇이 다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다.
+코드는 네 결정을 고치지 않고 그대로 미션 관리자에게 전달한다. 확인 질문·정정·침묵까지
+네가 책임진다.
+
+[대화 이력] 앞에 오는 assistant 줄은 로봇이 실제로 소리 내어 말한 문장이고, user 줄은
+그 전에 들린 사용자의 말이다. 로봇의 마지막 말이 질문이면 지금 들리는 말은 대개 그 답이다.
+
+[heard_text] 이번 소리에서 실제로 들린 말만 한국어로 그대로 적는다. 사람 말이 아니면
+(기침·소음·로봇 자신의 목소리·다른 사람들끼리의 잡담) 빈 문자열로 두고 intent=unknown,
+reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 소리에 없는 말은 없는 것이다.
+애매하면 confidence 를 낮추고, 답이 꼭 필요한 자리면 clarify 로 되묻는다.
+
+[intent 별 규칙 — need_confirm 과 reply 까지 네가 정한다]
+- navigate(새 목적지): 가고 싶은 곳을 말했다. 직접("407호 가자")도 간접("배 아파"→화장실)도 된다.
+  destination_candidate=목록의 name 그대로, need_confirm=true, reply=그 목적지의 확인 질문 문구 그대로.
+- navigate(확정): 로봇의 마지막 말이 "OO로 안내해드릴까요?"이고 사용자가 긍정(네·응·그래·맞아·좋아·어)했다.
+  destination_candidate=OO, need_confirm=false, reply="" (출발 안내는 미션이 말한다).
+- 정정: 확인 질문에 "아니 XX로 가자"처럼 다른 목적지를 말하면 XX 로 navigate, need_confirm=true, reply=XX 의 확인 질문.
+- deny: 확인 질문이나 제안에 부정만 하고 대안이 없다("아니", "아니요", "됐어"). reply="".
+- affirm: 로봇의 제안 질문("안내를 받으시겠어요?", "여기서 기다릴까요?", "여기서 대기할까요?")에 긍정. reply="".
+- wait: 도착 뒤 기다려 달라는 말이나 시간("오 분", "한 10분에서 15분", "반시간"). wait_minutes 에 분을 넣는다
+  (범위면 큰 쪽, 시간이 없으면 null). "몇 분쯤 걸리실까요?"의 답은 시간만 말해도 wait 다. reply="".
+- finish: 도착 뒤 오늘 안내를 다 끝낸다("이제 됐어 고마워", "그만 갈게"). reply="".
+- cancel: 진행 중인 안내를 그만두려 한다. 처음 말했으면 need_confirm=true, reply="{CANCEL_CONFIRM}".
+  로봇이 방금 그렇게 물었고 사용자가 긍정하면 need_confirm=false, reply="".
+- pause: 잠시 서 달라("잠깐만", "잠시 서 줘"). need_confirm=false, reply="{PAUSE_ACK}".
+- resume: 다시 출발. 처음이면 need_confirm=true, reply="{RESUME_CONFIRM}". 방금 그렇게 물었고 긍정이면 need_confirm=false, reply="".
+- question: 이동이 아닌 정보 질문. reply 에 짧은 답.
+- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 한 문장("{ASK_DESTINATION}" 등).
+- unknown: 로봇에게 한 말이 아니거나 이해 불가·잡담. reply="" (침묵). 로봇이 방금 한 질문의 답이 아니면 대꾸하지 않는다.
+
+[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
+{dest_block}
+{state_block}
+[말투] reply 는 짧고 친절한 존댓말 한 문장. 확인 질문은 목록의 문구를 그대로 쓴다."""
 
 
 def parse_intent_audio(
@@ -600,49 +666,72 @@ def parse_intent_audio(
     history: Optional[list[BaseMessage]] = None,
     robot_state: Optional[RobotState] = None,
 ) -> tuple[VicaIntent, str, float, dict]:
-    """발화 소리 -> Realtime(set_intent) -> 기존 _finalize.
+    """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
-    (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": ..., "usage": result.usage} 이고
-    src 는 분석용 표지다 — "shortcut"(코드 지름길이 들린 말만으로 확정) /
-    "model"(모델 초안을 _finalize 로 확정) / "pending-affirm"·"pending-deny"
-    (확인 대기 중 모델이 낸 affirm/deny 를 코드가 목적지 확정/거절로 바꿈) 중 하나.
-
+    (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": "llm", "usage": ...}.
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
-    들린 말(heard_text)에 지름길 어휘가 있으면 텍스트 경로와 같은 지름길이 이긴다.
     """
-    instructions = _build_system_prompt(destinations, robot_state) + AUDIO_EXTRA_INSTRUCTIONS
+    instructions = build_audio_prompt(destinations, robot_state)
     result = get_realtime_client().ask(pcm16_16k, history, instructions)
     heard = result.heard_text.strip()
-
-    if heard:
-        shortcut = _shortcut_intent(heard, history, destinations)
-        if shortcut is not None:
-            return shortcut, heard, result.latency_sec, {"src": "shortcut", "usage": result.usage}
-
     try:
         draft = _IntentDraft(**result.draft)
     except ValidationError as exc:
         raise ValueError(f"set_intent 인자가 _IntentDraft 와 맞지 않는다: {exc}") from exc
+    intent = deliver_audio_draft(draft, destinations)
+    return intent, heard, result.latency_sec, {"src": "llm", "usage": result.usage}
 
-    pending_command = _pending_command(history)
-    pending = _pending_confirm_destination(history, destinations)
-    # heard 가 빈 문자열이면(예: 소음만 잡혀 모델이 draft 만 affirm/deny 로 채운
-    # 경우) 확정하지 않는다 — 빈 말은 목적지를 확인할 수 없다.
-    if pending is not None and heard != "" and draft.intent == "affirm":
-        # 텍스트 지름길과 같은 확정 — 들린 말이 어휘 목록에 없어도 모델이 긍정으로 들었으면 믿는다.
-        return VicaIntent(
-            intent="navigate", destination_candidate=pending.name,
-            matched_destination_id=pending.id, confidence=1.0,
-            reply=f"{pending.name} 안내를 시작합니다.", need_confirm=False, safety_flag="normal",
-        ), heard, result.latency_sec, {"src": "pending-affirm", "usage": result.usage}
-    if pending is not None and heard != "" and draft.intent == "deny":
-        return (VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False),
-                heard, result.latency_sec, {"src": "pending-deny", "usage": result.usage})
 
-    intent = _finalize(draft, destinations, pending=pending,
-                       pending_command=pending_command, user_text=heard)
-    return intent, heard, result.latency_sec, {"src": "model", "usage": result.usage}
-
+def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> VicaIntent:
+    """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만."""
+    result = VicaIntent(
+        intent=draft.intent,
+        destination_candidate=draft.destination_candidate,
+        confidence=draft.confidence or 0.0,
+        reply=(draft.reply or "").strip(),
+        need_confirm=bool(draft.need_confirm),
+        safety_flag="normal",
+    )
+    if draft.intent == "navigate":
+        matched = match_destination(draft.destination_candidate, list(destinations))
+        if matched is None:
+            # 목록에 없는 이름 — id 가 없으니 미션에 보낼 수 없다. 되묻기로.
+            result.intent = "clarify"
+            result.need_confirm = False
+            result.reply = result.reply or ASK_DESTINATION
+        elif not matched.is_approachable:
+            result.matched_destination_id = matched.id
+            result.reply = matched.unavailable_reason or matched.confirm_prompt
+            result.need_confirm = False
+        else:
+            result.matched_destination_id = matched.id
+            if not result.need_confirm:
+                result.reply = ""            # 출발 안내는 미션이 말한다 (계약)
+            elif not result.reply:
+                result.reply = matched.confirm_prompt   # 모델이 비웠으면 목록 문구
+    elif draft.intent == "wait":
+        result.need_confirm = False
+        result.reply = ""
+        minutes = draft.wait_minutes
+        result.wait_minutes = minutes if minutes and minutes > 0 else -1
+    elif draft.intent in ("affirm", "deny", "finish"):
+        result.need_confirm = False
+        result.reply = ""
+        result.matched_destination_id = ""
+    elif draft.intent == "pause":
+        result.need_confirm = False
+        result.reply = result.reply or PAUSE_ACK
+    elif draft.intent in ("cancel", "resume"):
+        if result.need_confirm:
+            result.reply = result.reply or (CANCEL_CONFIRM if draft.intent == "cancel" else RESUME_CONFIRM)
+        else:
+            result.reply = ""                # 결과 발화는 미션 몫 (계약)
+    elif draft.intent == "clarify":
+        result.need_confirm = False
+        result.reply = result.reply or ASK_DESTINATION
+    else:                                    # question / unknown — 모델의 reply 그대로 (빈 말이면 침묵)
+        result.need_confirm = False
+    return result
 
 def _finalize(
     draft: _IntentDraft,

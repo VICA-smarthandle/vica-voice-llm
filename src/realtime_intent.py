@@ -5,8 +5,8 @@
 항목을 넣고 set_intent 함수 호출을 강제한다. 세션 대화 상태를 쓰지 않으므로
 우리 ConversationHistory 가 유일한 맥락이고, 세션이 길어져도 쌓이는 것이 없다.
 
-안전 경계: 이 모듈은 의도 초안(dict)만 돌려준다. 확정·발행은 파서의 _finalize 와
-LLM 노드가 한다. 긴급어는 상류(웨이크워드 노드 whisper)가 잡는다.
+안전 경계: 이 모듈은 의도 초안(dict)만 돌려준다. 발행은 파서(deliver_audio_draft:
+id 매핑·계약만)와 LLM 노드가 한다. 긴급어는 상류(웨이크워드 노드 whisper)가 잡는다.
 """
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ def build_intent_tool() -> dict:
                 "heard_text": {"type": "string", "description": "들린 말을 한국어로 그대로 적는다. 말이 아니면 빈 문자열"},
                 "destination_candidate": {"type": ["string", "null"], "description": "목적지 표현(목록의 이름 그대로)"},
                 "is_confirmation": {"type": ["boolean", "null"], "description": "직전 확인 질문에 대한 답이면 true"},
+                "need_confirm": {"type": ["boolean", "null"], "description": "되물어야 하면 true(새 목적지 제안·취소·다시 출발). 확정·단답이면 false"},
                 "confidence": {"type": "number", "description": "0~1"},
                 "wait_minutes": {"type": ["integer", "null"], "description": "대기 요청이면 분"},
                 "reply": {"type": "string", "description": "사용자에게 할 짧은 말. 없으면 빈 문자열"},

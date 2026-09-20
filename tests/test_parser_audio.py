@@ -51,53 +51,96 @@ class TestShortcutExtraction:
 
 
 class TestAudioPath:
-    def test_navigate_draft_goes_through_finalize(self, rt):
-        c = rt({"intent": "navigate", "destination_candidate": "별빛관 1층 화장실", "reply": ""},
-               "화장실로 가줘")
+    """소리 모드 = 모델 전결. 코드는 id 매핑·접근 불가·계약상 빈 reply 만 한다."""
+
+    def test_new_destination_uses_model_decision(self, rt):
+        c = rt({"intent": "navigate", "destination_candidate": "별빛관 1층 화장실",
+                "need_confirm": True, "reply": DEST.confirm_prompt, "confidence": 0.9}, "화장실로 가줘")
         intent, heard, dt, info = parse_intent_audio(PCM, [DEST])
         assert intent.intent == "navigate" and intent.matched_destination_id == DEST.id
+        assert intent.need_confirm is True and intent.reply == DEST.confirm_prompt
+        assert intent.confidence == pytest.approx(0.9)
         assert heard == "화장실로 가줘" and dt == pytest.approx(0.7)
-        assert info["src"] == "model"  # draft 가 _finalize 를 거쳐 확정됐다
-        assert info["usage"] == {"audio_tokens": 20}
-        assert "heard_text" in c.calls[0][2]  # 추가 지시문이 들어갔다
-        assert parser.AUDIO_EXTRA_INSTRUCTIONS in c.calls[0][2]
+        assert info["src"] == "llm" and info["usage"] == {"audio_tokens": 20}
+        # 지시문: 전결 규칙과 목록의 확인 문구가 들어간다
+        assert "need_confirm" in c.calls[0][2] and DEST.confirm_prompt in c.calls[0][2]
 
-    def test_wait_minutes_from_heard_text(self, rt):
-        # heard("이십 분"=20)가 draft.wait_minutes(5)를 이긴다 — 산수는 코드가 한다.
-        rt({"intent": "wait", "reply": "", "wait_minutes": 5}, "이십 분")
-        intent, heard, _, info = parse_intent_audio(PCM, [DEST])
-        assert intent.intent == "wait" and intent.wait_minutes == 20
-        assert info["src"] == "model"
-
-    def test_affirm_with_pending_becomes_navigate(self, rt):
-        # "넵"은 텍스트 지름길 어휘(AFFIRMATIVES/SOFT_AFFIRMATIVES)에 없다 —
-        # _shortcut_intent 를 비켜 가서 모델의 affirm 판정이 pending 확정
-        # 경로(코드)를 타는지를 검증한다.
-        from src.handle_mode import AFFIRMATIVES, SOFT_AFFIRMATIVES
-        assert "넵" not in (AFFIRMATIVES | SOFT_AFFIRMATIVES)
-        rt({"intent": "affirm", "reply": ""}, "넵")
-        hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt)]
-        intent, _, _, info = parse_intent_audio(PCM, [DEST], history=hist)
+    def test_confirmed_navigate_is_silent_for_mission(self, rt):
+        rt({"intent": "navigate", "destination_candidate": DEST.name, "need_confirm": False,
+            "reply": "출발합니다"}, "네")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
         assert intent.intent == "navigate" and intent.matched_destination_id == DEST.id
-        assert intent.need_confirm is False
-        assert info["src"] == "pending-affirm"
+        assert intent.need_confirm is False and intent.reply == ""   # 계약: 출발 안내는 미션이 말한다
 
-    def test_deny_with_pending_stays_deny(self, rt):
-        # "됐거든"은 NEGATIVES 에 없다 — 모델의 deny 판정이 pending 경로를 타는지 검증한다.
-        from src.handle_mode import NEGATIVES
-        assert "됐거든" not in NEGATIVES
-        rt({"intent": "deny", "reply": ""}, "됐거든")
-        hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt)]
-        intent, _, _, info = parse_intent_audio(PCM, [DEST], history=hist)
-        assert intent.intent == "deny"
-        assert info["src"] == "pending-deny"
+    def test_correction_with_negative_word_is_not_deny(self, rt):
+        # 09-20 실기 #19: 텍스트 경로는 부정어 규칙으로 '취소'했다. 전결 모드는 모델 결정 그대로.
+        rt({"intent": "navigate", "destination_candidate": DEST.name, "need_confirm": True,
+            "reply": ""}, "아니 화장실로 가자")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == "navigate" and intent.need_confirm is True
+        assert intent.reply == DEST.confirm_prompt      # 모델이 비우면 목록의 확인 문구
 
-    def test_heard_text_shortcut_wins_over_draft(self, rt):
-        # 들린 말이 호출어면 초안(unknown)과 무관하게 호출 응답
+    def test_wake_word_is_no_longer_a_shortcut(self, rt):
         rt({"intent": "unknown", "reply": ""}, "비카야")
         intent, _, _, info = parse_intent_audio(PCM, [DEST])
-        assert intent.reply == parser.WAKE_GREETING
-        assert info["src"] == "shortcut"
+        assert intent.intent == "unknown" and intent.reply == "" and info["src"] == "llm"
+
+    def test_pending_affirm_is_model_business(self, rt):
+        # 확인 대기 판정을 코드가 하지 않는다 — 모델이 affirm 이라 하면 affirm 그대로.
+        rt({"intent": "affirm", "reply": "네"}, "넵")
+        hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt)]
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST], history=hist)
+        assert intent.intent == "affirm" and intent.reply == "" and intent.need_confirm is False
+
+    def test_wait_uses_model_minutes(self, rt):
+        rt({"intent": "wait", "reply": "알겠습니다", "wait_minutes": 15}, "한 십 분에서 십오 분")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == "wait" and intent.wait_minutes == 15
+        assert intent.reply == "" and intent.need_confirm is False
+
+    def test_wait_without_minutes_is_minus_one(self, rt):
+        rt({"intent": "wait", "reply": ""}, "좀 있다 올게")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.wait_minutes == -1
+
+    @pytest.mark.parametrize("name", ["affirm", "deny", "finish"])
+    def test_mission_spoken_intents_have_blank_reply(self, rt, name):
+        rt({"intent": name, "reply": "네 알겠습니다", "need_confirm": True}, "응")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == name and intent.reply == "" and intent.need_confirm is False
+
+    def test_unknown_destination_becomes_clarify(self, rt):
+        rt({"intent": "navigate", "destination_candidate": "옥상", "need_confirm": True, "reply": ""}, "옥상 가자")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == "clarify" and intent.reply == parser.ASK_DESTINATION
+        assert intent.need_confirm is False and not intent.matched_destination_id
+
+    def test_unapproachable_destination_keeps_reason(self, rt):
+        blocked = DestinationData(id="mech", name="기계실", is_approachable=False,
+                                  unavailable_reason="기계실은 안내할 수 없습니다.")
+        rt({"intent": "navigate", "destination_candidate": "기계실", "need_confirm": True, "reply": ""}, "기계실")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST, blocked])
+        assert intent.intent == "navigate" and intent.matched_destination_id == "mech"
+        assert intent.reply == "기계실은 안내할 수 없습니다." and intent.need_confirm is False
+
+    def test_cancel_first_asks_then_confirmed_is_silent(self, rt):
+        rt({"intent": "cancel", "need_confirm": True, "reply": ""}, "취소해")
+        first, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert first.need_confirm is True and first.reply == parser.CANCEL_CONFIRM
+        rt({"intent": "cancel", "need_confirm": False, "reply": "취소했습니다"}, "응")
+        second, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert second.need_confirm is False and second.reply == ""
+
+    def test_pause_gets_default_ack(self, rt):
+        rt({"intent": "pause", "reply": ""}, "잠깐만")
+        intent, _, _, _ = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == "pause" and intent.reply == parser.PAUSE_ACK and intent.need_confirm is False
+
+    def test_history_is_handed_to_model_untouched(self, rt):
+        hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt), AIMessage("몇 분쯤 걸리실까요?")]
+        c = rt({"intent": "wait", "reply": "", "wait_minutes": 5}, "오 분")
+        parse_intent_audio(PCM, [DEST], history=hist)
+        assert c.calls[0][1] == hist
 
     def test_realtime_failure_propagates(self, rt):
         rt({}, "", fail=TimeoutError("8초"))
@@ -108,3 +151,15 @@ class TestAudioPath:
         rt({"intent": "not-an-intent", "reply": ""}, "x")
         with pytest.raises(ValueError):
             parse_intent_audio(PCM, [DEST])
+
+
+class TestAudioPrompt:
+    def test_prompt_lists_confirm_phrase_and_blocked(self):
+        blocked = DestinationData(id="mech", name="기계실", is_approachable=False)
+        text = parser.build_audio_prompt([DEST, blocked])
+        assert DEST.confirm_prompt in text and "기계실" in text and "접근 불가" in text
+        assert "이력에 있는 말을 베껴 적지 마라" in text
+
+    def test_tool_schema_has_need_confirm(self):
+        from src.realtime_intent import build_intent_tool
+        assert "need_confirm" in build_intent_tool()["parameters"]["properties"]
