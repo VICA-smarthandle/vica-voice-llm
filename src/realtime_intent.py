@@ -146,6 +146,13 @@ class RealtimeIntentClient:
             except Exception:
                 pass
 
+    def warm(self) -> float:
+        """접속을 미리 맺어 첫 발화의 콜드스타트를 없앤다. 실패는 그대로 올린다(호출부가 무시한다)."""
+        with self._lock:
+            started = time.monotonic()
+            self._ensure_conn()
+            return time.monotonic() - started
+
     # ----- 호출 --------------------------------------------------------
     def ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
         """소리 + 이력 + 지시문 → set_intent 인자. 실패·timeout 이면 예외(연결은 버린다)."""

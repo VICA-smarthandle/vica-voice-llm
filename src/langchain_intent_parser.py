@@ -586,10 +586,11 @@ def parse_intent(
 AUDIO_EXTRA_INSTRUCTIONS = (
     "\n\n[소리 입력 규칙] 지금 입력은 글자가 아니라 사용자의 목소리다. 반드시 set_intent "
     "함수를 한 번 호출해 답한다. heard_text 에는 들린 말을 한국어로 그대로 적는다(말이 "
-    "아니면 빈 문자열, intent 는 unknown). 짧은 긍정(네·응·그래·좋아)은 intent affirm, "
-    "짧은 부정(아니·아니요·싫어)은 deny 로 적고, 직전에 로봇이 확인 질문을 했으면 "
-    "is_confirmation 을 true 로 둔다. '오 분'·'한 시간'처럼 시간만 말하면 intent wait 와 "
-    "wait_minutes 를 채운다. 로봇 자신의 안내 멘트가 들리면 unknown 으로 둔다."
+    "아니면 빈 문자열, intent 는 unknown). 직전에 로봇이 확인 질문을 했다면 시스템 지시대로 "
+    "intent navigate 와 is_confirmation=true(긍정)/deny(부정)로 답한다. 확인 질문이 없을 때의 "
+    "짧은 긍정(네·응·그래·좋아)만 affirm, 짧은 부정만 deny 로 적는다. '오 분'·'한 시간'처럼 "
+    "시간만 말하면 intent wait 와 wait_minutes 를 채운다. 로봇 자신의 안내 멘트가 들리면 "
+    "unknown 으로 둔다."
 )
 
 
@@ -598,8 +599,13 @@ def parse_intent_audio(
     destinations: Sequence[DestinationData],
     history: Optional[list[BaseMessage]] = None,
     robot_state: Optional[RobotState] = None,
-) -> tuple[VicaIntent, str, float]:
-    """발화 소리 -> Realtime(set_intent) -> 기존 _finalize. (의도, 들린 말, 지연초) 를 돌려준다.
+) -> tuple[VicaIntent, str, float, dict]:
+    """발화 소리 -> Realtime(set_intent) -> 기존 _finalize.
+
+    (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": ..., "usage": result.usage} 이고
+    src 는 분석용 표지다 — "shortcut"(코드 지름길이 들린 말만으로 확정) /
+    "model"(모델 초안을 _finalize 로 확정) / "pending-affirm"·"pending-deny"
+    (확인 대기 중 모델이 낸 affirm/deny 를 코드가 목적지 확정/거절로 바꿈) 중 하나.
 
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
     들린 말(heard_text)에 지름길 어휘가 있으면 텍스트 경로와 같은 지름길이 이긴다.
@@ -611,7 +617,7 @@ def parse_intent_audio(
     if heard:
         shortcut = _shortcut_intent(heard, history, destinations)
         if shortcut is not None:
-            return shortcut, heard, result.latency_sec
+            return shortcut, heard, result.latency_sec, {"src": "shortcut", "usage": result.usage}
 
     try:
         draft = _IntentDraft(**result.draft)
@@ -620,19 +626,22 @@ def parse_intent_audio(
 
     pending_command = _pending_command(history)
     pending = _pending_confirm_destination(history, destinations)
-    if pending is not None and draft.intent == "affirm":
+    # heard 가 빈 문자열이면(예: 소음만 잡혀 모델이 draft 만 affirm/deny 로 채운
+    # 경우) 확정하지 않는다 — 빈 말은 목적지를 확인할 수 없다.
+    if pending is not None and heard != "" and draft.intent == "affirm":
         # 텍스트 지름길과 같은 확정 — 들린 말이 어휘 목록에 없어도 모델이 긍정으로 들었으면 믿는다.
         return VicaIntent(
             intent="navigate", destination_candidate=pending.name,
             matched_destination_id=pending.id, confidence=1.0,
             reply=f"{pending.name} 안내를 시작합니다.", need_confirm=False, safety_flag="normal",
-        ), heard, result.latency_sec
-    if pending is not None and draft.intent == "deny":
-        return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False), heard, result.latency_sec
+        ), heard, result.latency_sec, {"src": "pending-affirm", "usage": result.usage}
+    if pending is not None and heard != "" and draft.intent == "deny":
+        return (VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False),
+                heard, result.latency_sec, {"src": "pending-deny", "usage": result.usage})
 
     intent = _finalize(draft, destinations, pending=pending,
                        pending_command=pending_command, user_text=heard)
-    return intent, heard, result.latency_sec
+    return intent, heard, result.latency_sec, {"src": "model", "usage": result.usage}
 
 
 def _finalize(

@@ -19,6 +19,7 @@ HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변
 """
 from __future__ import annotations
 
+import array
 import os
 import threading
 import time
@@ -300,7 +301,7 @@ class WakewordNode(Node):
         msg = UInt8MultiArray()
         # size 는 표본 수(샘플), stride 는 바이트 수(pcm16 이라 표본당 2 바이트) — 단위가 다르다.
         msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm) // 2, stride=len(pcm)))
-        msg.data = list(pcm)
+        msg.data = array.array('B', pcm)
         self._pub_audio.publish(msg)
         self.get_logger().info(f"🎧 발화 소리 -> /vica/user_audio ({len(pcm)/2/16000:.2f}s)")
 
