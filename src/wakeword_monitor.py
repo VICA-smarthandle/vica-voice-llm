@@ -222,6 +222,7 @@ class WakewordMonitor:
         on_listen_empty: Optional[Callable[[], None]] = None,
         on_listen_state: Optional[Callable[[str], None]] = None,
         on_wake_doa: Optional[Callable[[float], None]] = None,
+        on_user_audio: Optional[Callable[[np.ndarray], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -253,6 +254,9 @@ class WakewordMonitor:
         # 호출이 온 방향(DOA). 로봇이 그쪽으로 고개를 돌리는 데 쓴다
         # (호출 접근 설계). 방향을 못 읽으면 부르지 않는다.
         self._on_wake_doa = on_wake_doa or (lambda doa: None)
+        # 소리→의도 직행(audio 모드, 2026-09-20 실험). None 이면 text 모드와
+        # 동일하게 아무것도 하지 않는다.
+        self._on_user_audio = on_user_audio
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -751,6 +755,12 @@ class WakewordMonitor:
             transcribe = self._transcribe_confirm
         else:
             transcribe = self._transcribe_listen or self._transcribe
+        if self._on_user_audio is not None:
+            # 소리→의도 직행(audio 모드): whisper 보다 먼저 클립을 넘긴다. 실패해도 전사는 계속.
+            try:
+                self._on_user_audio(audio)
+            except Exception:
+                pass
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
         self.last_listen_timing = {

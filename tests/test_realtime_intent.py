@@ -214,3 +214,12 @@ class TestAsk:
             client.ask(PCM, None, "x")
         assert conns[0].closed is True
         assert client._conn is None
+
+
+from src.realtime_intent import AUDIO_MSG_LABEL, pcm16_from_audio_msg
+
+
+def test_pcm16_from_audio_msg_roundtrip_and_label():
+    assert pcm16_from_audio_msg([1, 2, 3], AUDIO_MSG_LABEL) == b"\x01\x02\x03"
+    with pytest.raises(ValueError):
+        pcm16_from_audio_msg([1], "float32_48000")

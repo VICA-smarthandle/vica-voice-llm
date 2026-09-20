@@ -246,3 +246,13 @@ def reset_realtime_client() -> None:
     if _CLIENT is not None:
         _CLIENT.close()
     _CLIENT = None
+
+
+AUDIO_MSG_LABEL = "pcm16_mono_16000"
+
+
+def pcm16_from_audio_msg(data, label: str) -> bytes:
+    """/vica/user_audio 메시지의 data 와 layout.dim[0].label → pcm16 bytes. 라벨이 다르면 ValueError."""
+    if label != AUDIO_MSG_LABEL:
+        raise ValueError(f"오디오 라벨이 {AUDIO_MSG_LABEL} 이 아니다: {label!r}")
+    return bytes(data)

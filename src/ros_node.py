@@ -19,6 +19,7 @@ navigate 확정 요청의 결과는 Mission Manager 만 알 수 있으므로 그
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ import rclpy
 from langchain_core.messages import AIMessage, HumanMessage
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, String, UInt8MultiArray
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
@@ -35,8 +36,10 @@ from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import (
-    SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent)
+    SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent,
+    parse_intent_audio)
 from .llm_backend import BackendState, parse_goal_event
+from .realtime_intent import pcm16_from_audio_msg
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -101,6 +104,15 @@ class LlmIntentNode(Node):
         _ros_log = self.get_logger()
         self._backend.set_logger(lambda level, msg: getattr(_ros_log, level, _ros_log.info)(msg))
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
+
+        # ----- 소리→의도 직행 (audio 모드, 2026-09-20 실험) ------------------
+        # text(기본): /vica/user_text 로 지금처럼. audio: /vica/user_audio 를 Realtime 에
+        # 보내 의도를 받고, 같은 발화의 텍스트 경로 결과는 로그([A/B])로만 남긴다.
+        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
+        self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
+        self.get_logger().info(f"의도 입력 모드: {self._intent_input}")
+
         threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
 
         self.get_logger().info(
@@ -182,6 +194,11 @@ class LlmIntentNode(Node):
             )
             self.get_logger().warn(f"[긴급] '{keyword}' 감지 -> safety_flag=emergency")
         else:
+            if self._intent_input == "audio" and self._audio_turn.get("handled"):
+                # 이 발화는 소리 경로가 이미 처리했다. 텍스트 경로 결과는 비교 로그로만.
+                self._shadow_text(text)
+                return
+            # (audio 모드인데 소리 경로가 실패했거나 소리가 오지 않았으면 여기로 내려와 지금처럼 처리한다)
             # 1-1) LLM 응답까지는 수 초가 걸린다. 그동안 침묵하면 눈으로 확인할 수
             #      없는 사용자는 로봇이 들었는지 알 수 없다. "확인할게요" 같은
             #      말 대신 배경 운율을 응답이 나올 때까지 반복한다
@@ -203,7 +220,10 @@ class LlmIntentNode(Node):
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
                 if thinking:
                     self._thinking_pub.publish(Bool(data=False))
+        self._publish_intent(intent, text)
 
+    def _publish_intent(self, intent: VicaIntent, text: str) -> None:
+        """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리)."""
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -249,6 +269,56 @@ class LlmIntentNode(Node):
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+
+    def _on_user_audio(self, msg: UInt8MultiArray) -> None:
+        """audio 모드: 소리를 Realtime 에 보내 의도를 받는다. 실패하면 뒤따라 오는 텍스트가 처리한다."""
+        if self._intent_input != "audio":
+            return
+        self._audio_turn = {"handled": False, "t": time.time()}
+        if self._backend.state is BackendState.LOCAL:
+            self.get_logger().info("[A/B] 로컬 상태 — 소리 경로 생략, 텍스트 경로가 처리")
+            return
+        try:
+            label = msg.layout.dim[0].label if msg.layout.dim else ""
+            pcm = pcm16_from_audio_msg(msg.data, label)
+        except ValueError as exc:
+            self.get_logger().warning(f"[A/B] 소리 메시지 무시: {exc}")
+            return
+        self._reload_destinations_if_changed()
+        if self._history.begin_turn(time.time()):
+            self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
+        self._thinking_pub.publish(Bool(data=True))
+        try:
+            intent, heard, dt = parse_intent_audio(
+                pcm, self._destinations, history=self._history.messages, robot_state=self._robot_state)
+        except Exception as exc:
+            self.get_logger().warning(f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) — 텍스트 경로가 처리")
+            return
+        finally:
+            self._thinking_pub.publish(Bool(data=False))
+        self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
+        self._publish_intent(intent, heard)
+
+    def _shadow_text(self, text: str) -> None:
+        """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함)."""
+        turn = dict(self._audio_turn)
+        history = self._history.messages
+        robot_state = self._robot_state
+
+        def work():
+            started = time.monotonic()
+            try:
+                shadow = parse_intent(text, self._destinations, history=history, robot_state=robot_state)
+                text_part = f"{shadow.intent}/{shadow.matched_destination_id or '-'} {time.monotonic() - started:.2f}s"
+            except Exception as exc:
+                text_part = f"실패({type(exc).__name__}) {time.monotonic() - started:.2f}s"
+            a = turn.get("intent")
+            audio_part = (f"{a.intent}/{a.matched_destination_id or '-'} {turn.get('dt', 0.0):.2f}s"
+                          if a is not None else "?")
+            self.get_logger().info(
+                f"[A/B] audio={audio_part} | text={text_part} | heard='{turn.get('heard', '')}' | whisper='{text}'")
+
+        threading.Thread(target=work, daemon=True, name="ab-shadow").start()
 
     def _reload_destinations_if_changed(self, force: bool = False) -> None:
         """저장 노드가 YAML을 교체하면 다음 발화 전에 public catalog를 갱신한다."""

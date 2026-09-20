@@ -35,12 +35,14 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, Float32, String
+from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
+                          UInt8MultiArray)
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, apply_agc_desired_level,
                         apply_echo_tuning, echo_tuning_from_env)
+from .realtime_intent import float32_to_pcm16
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
 from .ros_convert import emergency_to_msg
@@ -141,6 +143,11 @@ class WakewordNode(Node):
             listen_hint = None
             self.get_logger().warning(f"장소 귀띔 생략 (목적지 로드 실패): {exc}")
 
+        # 소리→의도 직행(audio 모드, 2026-09-20 실험): 청취 클립을 LLM 노드로 보낸다.
+        # text 모드(기본)에서는 아무것도 발행하지 않는다 — 지금과 동일.
+        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
+
         self._monitor = WakewordMonitor(
             listen_hint=listen_hint,
             on_emergency=self._on_emergency,
@@ -151,6 +158,7 @@ class WakewordNode(Node):
             on_listen_empty=self._on_listen_empty,
             on_listen_state=self._on_listen_state,
             on_wake_doa=self._publish_wake_doa,
+            on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
@@ -286,6 +294,14 @@ class WakewordNode(Node):
         """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다."""
         self._pub_wake_doa.publish(Float32(data=float(doa)))
         self.get_logger().info(f"🧭 호출 방향 {doa:.0f}°")
+
+    def _on_user_audio(self, audio) -> None:
+        pcm = float32_to_pcm16(audio)
+        msg = UInt8MultiArray()
+        msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm), stride=len(pcm)))
+        msg.data = list(pcm)
+        self._pub_audio.publish(msg)
+        self.get_logger().info(f"🎧 발화 소리 -> /vica/user_audio ({len(pcm)/2/16000:.2f}s)")
 
     def _on_barge_in(self) -> None:
         """질문 재생 중 사용자가 답을 시작했다 — 하던 말을 끊고 듣는다."""
