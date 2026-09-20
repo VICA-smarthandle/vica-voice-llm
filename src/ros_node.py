@@ -40,6 +40,7 @@ from .langchain_intent_parser import (
     parse_intent_audio)
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
+from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -89,6 +90,8 @@ class LlmIntentNode(Node):
         # 넣으므로 두 배로 둔다 — 8이면 왕복 4번이 안 된다.
         self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
         self._history = ConversationHistory(max_messages=16 if self._intent_input == "audio" else 8)
+        # 상황판(소리 모드): 이동 중·마지막 도착·대기 요청 — 이력이 비어도 남는 사실.
+        self._board = SituationBoard()
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
@@ -201,6 +204,8 @@ class LlmIntentNode(Node):
         event = parse_goal_event(msg.data)
         if event:
             self._backend.on_goal_event(event)
+        ev, name = parse_goal_event_name(msg.data)
+        self._board.on_goal_event(ev, name)
 
     def _backend_loop(self) -> None:
         """1 Hz: 클라우드 확인·복귀 판정."""
@@ -313,6 +318,7 @@ class LlmIntentNode(Node):
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
         if should_forward_intent(intent):
             self._intent_pub.publish(intent_to_msg(intent))
+            self._board.on_intent(intent)
         else:
             self.get_logger().info("resume 확언 대기 — 발행 보류 (질문만 나감)")
 
@@ -403,7 +409,8 @@ class LlmIntentNode(Node):
         call_started = time.monotonic()
         try:
             intent, heard, dt, info = parse_intent_audio(
-                pcm, self._destinations, history=history_snapshot, robot_state=robot_state)
+                pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
+                situation=self._board.render())
         except Exception as exc:
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "

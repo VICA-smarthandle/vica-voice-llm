@@ -170,3 +170,12 @@ class TestAudioPrompt:
         text = parser.build_audio_prompt([d])
         assert "위치: 로봇관 4층" in text and "윤지영" in text
         assert "기억이 없다고 하지 마라" in text
+
+    def test_prompt_includes_situation_block(self):
+        text = parser.build_audio_prompt([DEST], situation="\n[지금 상황]\n- 마지막 도착: 407호 (3분 전)\n")
+        assert "마지막 도착: 407호" in text
+
+    def test_parse_audio_passes_situation(self, rt):
+        c = rt({"intent": "question", "reply": "407호예요."}, "아까 어디 갔었지?")
+        parse_intent_audio(PCM, [DEST], situation="\n[지금 상황]\n- 마지막 도착: 407호 (방금)\n")
+        assert "마지막 도착: 407호" in c.calls[0][2]

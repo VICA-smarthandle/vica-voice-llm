@@ -610,9 +610,14 @@ def parse_intent(
 
 
 def build_audio_prompt(
-    destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None
+    destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
+    situation: str = "",
 ) -> str:
-    """소리 모드 지시문. 모델이 대화 판단자다 — 확인·정정·침묵까지 모델 몫."""
+    """소리 모드 지시문. 모델이 대화 판단자다 — 확인·정정·침묵까지 모델 몫.
+
+    situation 은 LLM 노드의 상황판(situation_board.render) — 이동 중·마지막 도착·대기
+    요청처럼 코드가 미션 신호로 확인한 사실. 이력이 비어도 남는 기억이다.
+    """
     lines = []
     for d in destinations:
         aliases = ", ".join(d.aliases)
@@ -672,7 +677,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 
 [목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
 {dest_block}
-{state_block}
+{state_block}{situation}
 [확신이 낮을 때] 안내를 끝내거나 접는 결정(deny·finish·cancel, 확정 navigate)은 되돌리기 어렵다.
 들린 말이 짧고 불분명해 confidence 가 0.7 미만이면 그 결정을 내리지 말고 clarify 로 로봇의
 마지막 질문을 다시 한다. "그럴래?"·"그럴까?"·"어어"처럼 부드러운 긍정을 부정으로 오해하지 마라.
@@ -693,13 +698,14 @@ def parse_intent_audio(
     destinations: Sequence[DestinationData],
     history: Optional[list[BaseMessage]] = None,
     robot_state: Optional[RobotState] = None,
+    situation: str = "",
 ) -> tuple[VicaIntent, str, float, dict]:
     """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
     (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": "llm", "usage": ...}.
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
     """
-    instructions = build_audio_prompt(destinations, robot_state)
+    instructions = build_audio_prompt(destinations, robot_state, situation)
     result = get_realtime_client().ask(pcm16_16k, history, instructions)
     heard = result.heard_text.strip()
     try:
