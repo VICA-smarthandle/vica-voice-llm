@@ -29,9 +29,21 @@ _INTENTS = ["navigate", "question", "clarify", "unknown", "cancel", "pause", "re
 
 
 def float32_to_pcm16(audio) -> bytes:
-    """float32 [-1, 1] → int16 LE. 범위를 넘는 값은 자른다."""
-    arr = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
-    return (arr * 32767.0).astype("<i2").tobytes()
+    """오디오 배열 → int16 LE bytes. 정수형(int16 등)은 값 그대로, 실수형은 [-1, 1] 로 보고 스케일한다.
+
+    웨이크워드 모니터 클립은 int16(±32768) 이고 supertonic 합성음은 float32(±1.0) 이다 —
+    둘을 같은 함수로 받는다. 2026-09-20 실기에서 int16 을 ±1 로 잘라 사각파 잡음을
+    보냈던 사고의 수리.
+    """
+    arr = np.asarray(audio)
+    if arr.ndim > 1:
+        arr = arr.reshape(-1)
+    if np.issubdtype(arr.dtype, np.integer):
+        if arr.dtype == np.int16:
+            return arr.astype("<i2").tobytes()
+        return np.clip(arr, -32768, 32767).astype("<i2").tobytes()
+    farr = np.clip(arr.astype(np.float32), -1.0, 1.0)
+    return (farr * 32767.0).astype("<i2").tobytes()
 
 
 def resample_pcm16(pcm16: bytes, src_rate: int = SAMPLE_RATE_IN, dst_rate: int = SAMPLE_RATE_RT) -> bytes:

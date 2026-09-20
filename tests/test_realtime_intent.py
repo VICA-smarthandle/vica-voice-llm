@@ -26,6 +26,25 @@ class TestAudioHelpers:
         ints = np.frombuffer(pcm, dtype="<i2")
         assert list(ints) == [0, 16383, -16383, 32767, -32767]
 
+    def test_int16_input_passes_through_unchanged(self):
+        audio = np.array([0, 1000, -1000, 20000, -20000], dtype=np.int16)
+        pcm = float32_to_pcm16(audio)
+        ints = np.frombuffer(pcm, dtype="<i2")
+        assert list(ints) == [0, 1000, -1000, 20000, -20000]
+
+    def test_int32_input_is_clipped_to_int16_range(self):
+        audio = np.array([40000, -40000], dtype=np.int32)
+        pcm = float32_to_pcm16(audio)
+        ints = np.frombuffer(pcm, dtype="<i2")
+        assert list(ints) == [32767, -32768]
+
+    def test_2d_mono_input_is_flattened(self):
+        audio = np.array([[0.0], [0.5], [-0.5]], dtype=np.float32)
+        pcm = float32_to_pcm16(audio)
+        ints = np.frombuffer(pcm, dtype="<i2")
+        assert len(ints) == 3
+        assert list(ints) == [0, 16383, -16383]
+
     def test_resample_ratio_and_endpoints(self):
         src = np.linspace(-1000, 1000, 1600).astype("<i2").tobytes()  # 0.1초 @16k
         out = resample_pcm16(src, 16000, 24000)

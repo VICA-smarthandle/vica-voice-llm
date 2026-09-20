@@ -297,6 +297,8 @@ class WakewordNode(Node):
         self.get_logger().info(f"🧭 호출 방향 {doa:.0f}°")
 
     def _on_user_audio(self, audio) -> None:
+        # 클립은 int16 (mic dtype="int16") — float32_to_pcm16 은 int16 을 값 그대로
+        # 통과시킨다(±1 스케일 아님). 2026-09-20 int16→±1 절단 사고 수리.
         pcm = float32_to_pcm16(audio)
         msg = UInt8MultiArray()
         # size 는 표본 수(샘플), stride 는 바이트 수(pcm16 이라 표본당 2 바이트) — 단위가 다르다.
