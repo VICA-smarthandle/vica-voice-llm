@@ -39,16 +39,26 @@ from .langchain_intent_parser import (
     SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent,
     parse_intent_audio)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import audio_turn_applies, pcm16_from_audio_msg
+from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
+from .stt_guard import is_hallucination, strip_robot_echo
 from .tts_queue import request_for_intent
 
 
 # 재청취 창 문맥으로 보는 시간. 질문 발화(수 초) + 청취 창 + 답 처리까지
 # 덮는 넉넉한 값이다. "비카야" 직접 호출이 오면 즉시 해제된다.
 FOLLOWUP_CONTEXT_SEC = 40.0
+
+# 에코 대조 창(audio 모드). ros_wakeword_node.ROBOT_ECHO_TTL_SEC 과 같은 값(12초) —
+# 둘 다 "로봇 자신의 최근 발화를 기억해 전사에서 걷어낸다"는 같은 방어라서
+# 값이 어긋나면 안 된다. 바꿀 때는 두 파일을 함께 고친다.
+ROBOT_ECHO_TTL_SEC = 12.0
+
+# 이 길이를 넘는 클립은 소리 경로를 생략한다(항목 H) — 정상 발화 범위를
+# 크게 벗어나면 Realtime 왕복 비용·지연만 늘고, 텍스트 경로가 어차피 처리한다.
+AUDIO_CLIP_MAX_SEC = 12.0
 
 
 class LlmIntentNode(Node):
@@ -83,6 +93,23 @@ class LlmIntentNode(Node):
         # LLM 해석 중 "생각 중" 배경 운율 스위치 — TTS 노드가 반복 재생한다
         # (2026-09-01 사용자 결정: "확인할게요" 말 대신 운율 루프).
         self._thinking_pub = self.create_publisher(Bool, "/vica/thinking", 10)
+
+        # ----- 소리→의도 직행 (audio 모드, 2026-09-20 실험) ------------------
+        # text(기본): /vica/user_text 로 지금처럼. audio: /vica/user_audio 를 Realtime 에
+        # 보내 의도를 받고, 같은 발화의 텍스트 경로 결과는 로그([A/B])로만 남긴다.
+        #
+        # 이 구독은 반드시 /vica/user_text 보다 먼저 만든다 — rclpy 단일
+        # 실행기는 같은 주기에 준비된 구독을 생성 순서로 부른다. 소리가
+        # 텍스트보다 먼저 처리돼야 이중 발행이 없다(항목 C).
+        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
+        self._last_text_publish_t = 0.0   # 텍스트 경로가 방금 발행했으면 소리 경로를 생략한다
+        # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
+        self._robot_recent: list = []
+        self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
+        self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
+        self.get_logger().info(f"의도 입력 모드: {self._intent_input}")
+
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
         # 재청취 창 문맥 추적 (2026-09-01): 질문 뒤 자동으로 열린 창에서 온
@@ -105,14 +132,6 @@ class LlmIntentNode(Node):
         self._backend.set_logger(lambda level, msg: getattr(_ros_log, level, _ros_log.info)(msg))
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
 
-        # ----- 소리→의도 직행 (audio 모드, 2026-09-20 실험) ------------------
-        # text(기본): /vica/user_text 로 지금처럼. audio: /vica/user_audio 를 Realtime 에
-        # 보내 의도를 받고, 같은 발화의 텍스트 경로 결과는 로그([A/B])로만 남긴다.
-        self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
-        self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
-        self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
-        self.get_logger().info(f"의도 입력 모드: {self._intent_input}")
-
         threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
 
         self.get_logger().info(
@@ -134,6 +153,14 @@ class LlmIntentNode(Node):
         # 모델을 지금 미리 올려 첫 발화가 적재 7초를 기다리지 않게 한다.
         if self._backend.state is BackendState.LOCAL:
             self._backend.warm_local_async()
+        # audio 모드는 Realtime 접속도 미리 맺는다(항목 E) — 첫 발화가 연결까지
+        # 기다리지 않게 한다. 실패해도(네트워크 없음 등) 노드는 그대로 간다.
+        if self._intent_input == "audio":
+            try:
+                rt_dt = get_realtime_client().warm()
+                self.get_logger().info(f"Realtime 연결 예열 완료 ({rt_dt:.1f}초)")
+            except Exception as exc:
+                self.get_logger().warning(f"Realtime 연결 예열 실패(무시 가능): {exc}")
 
     def _on_listen_request(self, msg: Bool) -> None:
         # 이 노드 자신이 낸 요청도 같은 토픽으로 돌아온다 — 효과는 같다.
@@ -202,7 +229,13 @@ class LlmIntentNode(Node):
             if self._intent_input == "audio" and self._audio_turn:
                 # 긴급 검증 구제 경로 등 on_user_audio 를 거치지 않고 들어온 텍스트가
                 # 옛 소리 결과를 주워 먹지 않도록 버린다(2026-09-20 리뷰, 발화 소실 방지).
-                self.get_logger().info("[A/B] 옛 소리 결과 버림 — 이 발화는 텍스트 경로로 처리")
+                # handled 였으면 소리 경로가 결과는 냈지만 너무 오래돼(15초) 못
+                # 붙인 것이고, 아니면 소리 경로가 애초에 관문(B·C·D·H)에서
+                # 기각했다는 뜻이다 — 원인이 달라 로그를 나눈다(항목 F).
+                if self._audio_turn.get("handled"):
+                    self.get_logger().info("[A/B] 옛 소리 결과 버림")
+                else:
+                    self.get_logger().info("[A/B] 소리 경로 결과 없음 — 텍스트 경로가 처리")
                 self._audio_turn = {}
             # (audio 모드인데 소리 경로가 실패했거나 소리가 오지 않았으면 여기로 내려와 지금처럼 처리한다)
             # 1-1) LLM 응답까지는 수 초가 걸린다. 그동안 침묵하면 눈으로 확인할 수
@@ -227,6 +260,9 @@ class LlmIntentNode(Node):
                 if thinking:
                     self._thinking_pub.publish(Bool(data=False))
         self._publish_intent(intent, text)
+        # C) 소리 경로 이중 처리 방지 — 텍스트가 방금 이 발화를 발행했다는
+        # 표식. _on_user_audio 는 이 시각에서 2초 안이면 소리 경로를 생략한다.
+        self._last_text_publish_t = time.time()
 
     def _publish_intent(self, intent: VicaIntent, text: str) -> None:
         """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리)."""
@@ -276,9 +312,22 @@ class LlmIntentNode(Node):
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
 
+    def _on_tts_done_text(self, msg: String) -> None:
+        """로봇이 방금 한 말을 기억한다(에코 대조용, 웨이크워드 노드와 같은 방어)."""
+        now = time.time()
+        self._robot_recent = [
+            (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
+        self._robot_recent.append((now, msg.data))
+
     def _on_user_audio(self, msg: UInt8MultiArray) -> None:
-        """audio 모드: 소리를 Realtime 에 보내 의도를 받는다. 실패하면 뒤따라 오는 텍스트가 처리한다."""
+        """audio 모드: 소리를 Realtime 에 보내 의도를 받는다. 관문에 걸리거나 실패하면
+        뒤따라 오는 텍스트가 처리한다(handled 는 self._audio_turn 에 그대로 False 로 남는다)."""
         if self._intent_input != "audio":
+            return
+        # C) 이중 처리 방지 — 텍스트 경로가 이 발화를 방금(2초 안) 이미
+        #    발행했으면 소리 경로는 아무것도 남기지 않고 그냥 생략한다.
+        if time.time() - self._last_text_publish_t < 2.0:
+            self.get_logger().info("[A/B] 텍스트가 먼저 처리됨 — 소리 경로 생략")
             return
         self._audio_turn = {"handled": False, "t": time.time()}
         if self._backend.state is BackendState.LOCAL:
@@ -290,25 +339,74 @@ class LlmIntentNode(Node):
         except ValueError as exc:
             self.get_logger().warning(f"[A/B] 소리 메시지 무시: {exc}")
             return
+        # H) 비정상적으로 긴 클립은 소리 경로를 생략한다 — Realtime 왕복
+        #    비용·지연만 늘고, 텍스트 경로가 어차피 처리한다.
+        clip_sec = len(pcm) / 2 / 16000
+        if clip_sec > AUDIO_CLIP_MAX_SEC:
+            self.get_logger().info(f"[A/B] 클립 {clip_sec:.1f}s — 너무 길어 소리 경로 생략")
+            return
         self._reload_destinations_if_changed()
         if self._history.begin_turn(time.time()):
             self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
+        # A) 이력 스냅샷은 parse_intent_audio 호출 '직전'에 찍어 turn 에 담는다.
+        #    audio 경로가 whisper 텍스트 경로보다 느리면, 그 사이 텍스트 경로가
+        #    history 에 [Human(heard), AI(reply)] 를 먼저 쌓을 수 있다 — 그 뒤의
+        #    self._history.messages 로 그림자 비교를 하면 지금 발화를 '한 턴
+        #    미래'의 문맥으로 다시 해석하게 된다. _shadow_text 는 이 스냅샷만 쓴다.
+        history_snapshot = self._history.messages
+        robot_state = self._robot_state
+        self._audio_turn.update(history=history_snapshot, robot_state=robot_state)
         self._thinking_pub.publish(Bool(data=True))
+        call_started = time.monotonic()
         try:
-            intent, heard, dt = parse_intent_audio(
-                pcm, self._destinations, history=self._history.messages, robot_state=self._robot_state)
+            intent, heard, dt, info = parse_intent_audio(
+                pcm, self._destinations, history=history_snapshot, robot_state=robot_state)
         except Exception as exc:
-            self.get_logger().warning(f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) — 텍스트 경로가 처리")
+            self.get_logger().warning(
+                f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "
+                f"dt={time.monotonic() - call_started:.2f}s — 텍스트 경로가 처리")
             return
         finally:
             self._thinking_pub.publish(Bool(data=False))
+
+        # D) 긴급어는 텍스트 경로(_on_user_text -> detect_emergency)에 맡긴다 —
+        #    검증된 안전 경로 하나만 쓴다(fail-closed, 우회 금지).
+        if detect_emergency(heard):
+            self.get_logger().warning(f"[A/B] 긴급어 — 텍스트 경로에 위임: heard='{heard}'")
+            return
+
+        # B-1) 빈 말·환각은 버린다 — 텍스트 경로가 원래대로 처리한다.
+        if heard.strip() == "" or is_hallucination(heard):
+            self.get_logger().info(f"[A/B] 소리 결과 버림(빈 말/환각): heard='{heard}'")
+            return
+
+        # B-2) 로봇 자신의 말(에코)이 섞였으면 버린다 — 웨이크워드 노드와 같은 방어.
+        now = time.time()
+        recent = [s for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
+        cleaned = strip_robot_echo(heard, recent)
+        if cleaned != heard.strip():
+            self.get_logger().info(f"[A/B] 소리 결과 버림(로봇 에코 섞임): heard='{heard}'")
+            return
+
         self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
+        usage = info.get("usage") or {}
+        audio_tok = usage.get("audio_tokens", 0)
+        text_tok = usage.get("text_tokens", 0)
+        out_tok = usage.get("output_tokens", 0)
+        self.get_logger().info(
+            f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
+            f"nc={intent.need_confirm} src={info['src']} dt={dt:.2f}s "
+            f"tokens={audio_tok}/{text_tok}/{out_tok} clip={clip_sec:.2f}s")
         self._publish_intent(intent, heard)
 
     def _shadow_text(self, text: str, turn: dict) -> None:
-        """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함)."""
-        history = self._history.messages
-        robot_state = self._robot_state
+        """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).
+
+        history/robot_state 는 turn 이 소리 경로 호출 '직전'에 찍어 둔 스냅샷을
+        쓴다(항목 A) — turn 에 없을 때만(구조상 거의 없다) 지금 값으로 대신한다.
+        """
+        history = turn.get("history", self._history.messages)
+        robot_state = turn.get("robot_state", self._robot_state)
         destinations = self._destinations
 
         def work():
