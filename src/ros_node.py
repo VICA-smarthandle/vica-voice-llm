@@ -130,8 +130,12 @@ class LlmIntentNode(Node):
         self._backend = get_backend_manager()
         # 전환 담당 모듈의 [LLM] 로그를 노드 로거로 보낸다 — 화면뿐 아니라
         # ~/.ros/log 파일에도 남아 실기 뒤에 대피·복귀 시각을 되짚을 수 있다(09-19 실기 교훈).
-        _ros_log = self.get_logger()
-        self._backend.set_logger(lambda level, msg: getattr(_ros_log, level, _ros_log.info)(msg))
+        # rclpy 로거는 **호출한 코드 줄마다 심각도 하나**만 허용한다(rcutils_logger:
+        # "Logger severity cannot be changed between calls"). 한 줄 lambda 로 info/
+        # warning/error 를 다 보내면 두 번째 다른 심각도에서 ValueError 가 나고, 그게
+        # 구독 콜백(도착 사건 → 클라우드 복귀 로그) 안이면 노드가 통째로 죽는다
+        # (2026-09-20 18:55 실기: "그래"·"여기서 대기해"에 무응답 → 미션이 귀가).
+        self._backend.set_logger(self._backend_log)
         self.create_subscription(String, "/vica_goal_event", self._on_goal_event, 10)
 
         threading.Thread(target=self._backend_loop, daemon=True, name="llm-backend").start()
@@ -142,6 +146,16 @@ class LlmIntentNode(Node):
         # 첫 호출의 콜드스타트(연결 준비 4~6초 실측, 2026-08-28)를 사용자 대신
         # 여기서 치른다. 실패해도(네트워크 없음 등) 노드는 그대로 간다.
         threading.Thread(target=self._warmup_llm, daemon=True).start()
+
+    def _backend_log(self, level: str, msg: str) -> None:
+        """폴백 관리자의 로그를 ROS 로거로. 심각도마다 **다른 줄**에서 부른다(위 주석)."""
+        logger = self.get_logger()
+        if level == "error":
+            logger.error(msg)
+        elif level == "warning":
+            logger.warning(msg)
+        else:
+            logger.info(msg)
 
     def _warmup_llm(self) -> None:
         started = time.monotonic()
@@ -349,10 +363,12 @@ class LlmIntentNode(Node):
         if time.time() - self._last_text_publish_t < 2.0:
             self.get_logger().info("[A/B] 텍스트가 먼저 처리됨 — 소리 경로 생략")
             return
-        self._audio_turn = {"handled": False, "t": time.time()}
-        if self._backend.state is BackendState.LOCAL:
-            self.get_logger().info("[A/B] 로컬 상태 — 소리 경로 생략, 텍스트 경로가 처리")
-            return
+        turn_started = time.time()
+        self._audio_turn = {"handled": False, "t": turn_started}
+        # 텍스트 백엔드가 LOCAL(클라우드 대피 중)이어도 소리 경로는 따로 시도한다 —
+        # 18:54 실기: 그림자 텍스트 경로의 gpt 호출이 한 번 연결 오류를 내자 LOCAL 로
+        # 넘어가며 멀쩡한 Realtime 까지 그 주행 내내 꺼졌다. Realtime 이 실제로 실패하면
+        # 예외로 돌아와 아래에서 텍스트 경로에 넘긴다(그 발화는 whisper+로컬이 처리).
         try:
             label = msg.layout.dim[0].label if msg.layout.dim else ""
             pcm = pcm16_from_audio_msg(msg.data, label)
@@ -393,6 +409,12 @@ class LlmIntentNode(Node):
         #    검증된 안전 경로 하나만 쓴다(fail-closed, 우회 금지).
         if detect_emergency(heard):
             self.get_logger().warning(f"[A/B] 긴급어 — 텍스트 경로에 위임: heard='{heard}'")
+            return
+
+        # Realtime 이 느린 사이(예: 8초 대기) 텍스트 경로가 같은 발화를 먼저 발행했으면
+        # 여기서 접는다 — 같은 말에 의도가 두 번 나가면 미션이 두 번 움직인다.
+        if self._last_text_publish_t > turn_started:
+            self.get_logger().info(f"[A/B] 텍스트가 먼저 발행 — 소리 결과 버림: heard='{heard}'")
             return
 
         # 모델 전결(2026-09-20): 빈 말·환각·에코 판정도 모델 몫이다 — 사람 말이

@@ -118,9 +118,20 @@ class LlmBackendManager:
         return self._local is not None
 
     def set_logger(self, logger: Callable[[str, str], None]) -> None:
-        """로그 출력 함수를 바꾼다(ROS 노드가 자기 로거로 갈아 끼울 때). level 은 "info"/"warning"/"error"."""
+        """로그 출력 함수를 바꾼다(ROS 노드가 자기 로거로 갈아 끼울 때). level 은 "info"/"warning"/"error".
+
+        로거가 던지는 예외는 여기서 삼킨다 — 로그 한 줄 때문에 호출부(구독 콜백)가
+        죽어서는 안 된다(2026-09-20 실기: rclpy 심각도 규칙 위반으로 노드 사망).
+        """
+        def safe(level: str, msg: str) -> None:
+            try:
+                logger(level, msg)
+            except Exception as exc:  # 로그 실패는 stderr 로만 알리고 계속 간다
+                import sys
+                print(f"[{level.upper()}] {msg} (로거 실패: {exc})", file=sys.stderr)
+
         with self._lock:
-            self._log = logger
+            self._log = safe
 
     # ----- 호출 ---------------------------------------------------------
     def invoke(self, messages: Sequence[Any]) -> Any:

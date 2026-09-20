@@ -411,3 +411,18 @@ def test_robot_state_has_is_paused_default_false():
     from src.schema import RobotState
     assert RobotState().is_paused is False
     assert RobotState(is_paused=True).is_paused is True
+
+
+class TestSetLoggerIsSafe:
+    def test_raising_logger_does_not_propagate(self, capsys):
+        from src.llm_backend import LlmBackendManager
+
+        def boom(level, msg):
+            raise ValueError("Logger severity cannot be changed between calls.")
+
+        from src.llm_backend import ProbeResult
+        mgr = LlmBackendManager(cloud=lambda m: "ok", local=None,
+                                probe=lambda: ProbeResult.ALIVE)
+        mgr.set_logger(boom)
+        mgr._log("info", "hello")           # 죽지 않는다
+        assert "hello" in capsys.readouterr().err
