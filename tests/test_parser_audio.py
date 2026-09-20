@@ -163,3 +163,10 @@ class TestAudioPrompt:
     def test_tool_schema_has_need_confirm(self):
         from src.realtime_intent import build_intent_tool
         assert "need_confirm" in build_intent_tool()["parameters"]["properties"]
+
+    def test_prompt_lists_building_and_floor(self):
+        d = DestinationData(id="r407", name="407호", aliases=["407호", "윤지영"], building="로봇관", floor=4,
+                            confirm_prompt="407호로 안내해드릴까요?")
+        text = parser.build_audio_prompt([d])
+        assert "위치: 로봇관 4층" in text and "윤지영" in text
+        assert "기억이 없다고 하지 마라" in text
