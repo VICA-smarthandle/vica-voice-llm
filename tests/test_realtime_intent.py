@@ -216,6 +216,17 @@ class TestAsk:
         assert client._conn is None
 
 
+class TestWarm:
+    def test_warm_connects_once_and_ask_reuses_it(self):
+        events = [done_event({"intent": "unknown", "heard_text": "a"})]
+        client, conns = make_client(events)
+        dt = client.warm()
+        assert dt >= 0.0
+        assert len(conns) == 1
+        client.ask(PCM, None, "x")
+        assert len(conns) == 1  # 예열 연결을 그대로 재사용
+
+
 from src.realtime_intent import AUDIO_MSG_LABEL, audio_turn_applies, pcm16_from_audio_msg
 
 

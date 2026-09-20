@@ -54,35 +54,50 @@ class TestAudioPath:
     def test_navigate_draft_goes_through_finalize(self, rt):
         c = rt({"intent": "navigate", "destination_candidate": "별빛관 1층 화장실", "reply": ""},
                "화장실로 가줘")
-        intent, heard, dt = parse_intent_audio(PCM, [DEST])
+        intent, heard, dt, info = parse_intent_audio(PCM, [DEST])
         assert intent.intent == "navigate" and intent.matched_destination_id == DEST.id
         assert heard == "화장실로 가줘" and dt == pytest.approx(0.7)
+        assert info["src"] == "model"  # draft 가 _finalize 를 거쳐 확정됐다
+        assert info["usage"] == {"audio_tokens": 20}
         assert "heard_text" in c.calls[0][2]  # 추가 지시문이 들어갔다
         assert parser.AUDIO_EXTRA_INSTRUCTIONS in c.calls[0][2]
 
     def test_wait_minutes_from_heard_text(self, rt):
-        rt({"intent": "wait", "reply": "", "wait_minutes": 5}, "오 분")
-        intent, heard, _ = parse_intent_audio(PCM, [DEST])
-        assert intent.intent == "wait" and intent.wait_minutes == 5
+        # heard("이십 분"=20)가 draft.wait_minutes(5)를 이긴다 — 산수는 코드가 한다.
+        rt({"intent": "wait", "reply": "", "wait_minutes": 5}, "이십 분")
+        intent, heard, _, info = parse_intent_audio(PCM, [DEST])
+        assert intent.intent == "wait" and intent.wait_minutes == 20
+        assert info["src"] == "model"
 
     def test_affirm_with_pending_becomes_navigate(self, rt):
-        rt({"intent": "affirm", "reply": ""}, "응응")
+        # "넵"은 텍스트 지름길 어휘(AFFIRMATIVES/SOFT_AFFIRMATIVES)에 없다 —
+        # _shortcut_intent 를 비켜 가서 모델의 affirm 판정이 pending 확정
+        # 경로(코드)를 타는지를 검증한다.
+        from src.handle_mode import AFFIRMATIVES, SOFT_AFFIRMATIVES
+        assert "넵" not in (AFFIRMATIVES | SOFT_AFFIRMATIVES)
+        rt({"intent": "affirm", "reply": ""}, "넵")
         hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt)]
-        intent, _, _ = parse_intent_audio(PCM, [DEST], history=hist)
+        intent, _, _, info = parse_intent_audio(PCM, [DEST], history=hist)
         assert intent.intent == "navigate" and intent.matched_destination_id == DEST.id
         assert intent.need_confirm is False
+        assert info["src"] == "pending-affirm"
 
     def test_deny_with_pending_stays_deny(self, rt):
-        rt({"intent": "deny", "reply": ""}, "아니 됐어")
+        # "됐거든"은 NEGATIVES 에 없다 — 모델의 deny 판정이 pending 경로를 타는지 검증한다.
+        from src.handle_mode import NEGATIVES
+        assert "됐거든" not in NEGATIVES
+        rt({"intent": "deny", "reply": ""}, "됐거든")
         hist = [HumanMessage("화장실"), AIMessage(DEST.confirm_prompt)]
-        intent, _, _ = parse_intent_audio(PCM, [DEST], history=hist)
+        intent, _, _, info = parse_intent_audio(PCM, [DEST], history=hist)
         assert intent.intent == "deny"
+        assert info["src"] == "pending-deny"
 
     def test_heard_text_shortcut_wins_over_draft(self, rt):
         # 들린 말이 호출어면 초안(unknown)과 무관하게 호출 응답
         rt({"intent": "unknown", "reply": ""}, "비카야")
-        intent, _, _ = parse_intent_audio(PCM, [DEST])
+        intent, _, _, info = parse_intent_audio(PCM, [DEST])
         assert intent.reply == parser.WAKE_GREETING
+        assert info["src"] == "shortcut"
 
     def test_realtime_failure_propagates(self, rt):
         rt({}, "", fail=TimeoutError("8초"))
