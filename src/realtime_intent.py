@@ -256,3 +256,19 @@ def pcm16_from_audio_msg(data, label: str) -> bytes:
     if label != AUDIO_MSG_LABEL:
         raise ValueError(f"오디오 라벨이 {AUDIO_MSG_LABEL} 이 아니다: {label!r}")
     return bytes(data)
+
+
+AUDIO_TURN_MAX_AGE_SEC = 15.0
+
+
+def audio_turn_applies(turn: dict, now: float, max_age_sec: float = AUDIO_TURN_MAX_AGE_SEC) -> bool:
+    """직전 소리 발화 결과를 지금 도착한 텍스트에 붙여도 되는가.
+
+    handled 이고, 만든 지 max_age_sec 안이어야 한다. 한 번 쓰면 노드가 버린다(pop) —
+    소리 없이 들어온 텍스트(예: 긴급 검증 구제 경로)에 옛 결과가 새어 발화가
+    소실되는 것을 막는다(2026-09-20 리뷰).
+    """
+    if not turn or not turn.get("handled"):
+        return False
+    t = turn.get("t")
+    return t is not None and 0.0 <= (now - t) <= max_age_sec

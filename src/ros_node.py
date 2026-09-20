@@ -39,7 +39,7 @@ from .langchain_intent_parser import (
     SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent,
     parse_intent_audio)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import pcm16_from_audio_msg
+from .realtime_intent import audio_turn_applies, pcm16_from_audio_msg
 from .replies import expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -194,10 +194,16 @@ class LlmIntentNode(Node):
             )
             self.get_logger().warn(f"[긴급] '{keyword}' 감지 -> safety_flag=emergency")
         else:
-            if self._intent_input == "audio" and self._audio_turn.get("handled"):
+            if self._intent_input == "audio" and audio_turn_applies(self._audio_turn, time.time()):
                 # 이 발화는 소리 경로가 이미 처리했다. 텍스트 경로 결과는 비교 로그로만.
-                self._shadow_text(text)
+                turn, self._audio_turn = self._audio_turn, {}   # 1회 소비 — 다음 발화에 새지 않게
+                self._shadow_text(text, turn)
                 return
+            if self._intent_input == "audio" and self._audio_turn:
+                # 긴급 검증 구제 경로 등 on_user_audio 를 거치지 않고 들어온 텍스트가
+                # 옛 소리 결과를 주워 먹지 않도록 버린다(2026-09-20 리뷰, 발화 소실 방지).
+                self.get_logger().info("[A/B] 옛 소리 결과 버림 — 이 발화는 텍스트 경로로 처리")
+                self._audio_turn = {}
             # (audio 모드인데 소리 경로가 실패했거나 소리가 오지 않았으면 여기로 내려와 지금처럼 처리한다)
             # 1-1) LLM 응답까지는 수 초가 걸린다. 그동안 침묵하면 눈으로 확인할 수
             #      없는 사용자는 로봇이 들었는지 알 수 없다. "확인할게요" 같은
@@ -299,16 +305,16 @@ class LlmIntentNode(Node):
         self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
         self._publish_intent(intent, heard)
 
-    def _shadow_text(self, text: str) -> None:
+    def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함)."""
-        turn = dict(self._audio_turn)
         history = self._history.messages
         robot_state = self._robot_state
+        destinations = self._destinations
 
         def work():
             started = time.monotonic()
             try:
-                shadow = parse_intent(text, self._destinations, history=history, robot_state=robot_state)
+                shadow = parse_intent(text, destinations, history=history, robot_state=robot_state)
                 text_part = f"{shadow.intent}/{shadow.matched_destination_id or '-'} {time.monotonic() - started:.2f}s"
             except Exception as exc:
                 text_part = f"실패({type(exc).__name__}) {time.monotonic() - started:.2f}s"

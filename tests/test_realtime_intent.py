@@ -216,10 +216,30 @@ class TestAsk:
         assert client._conn is None
 
 
-from src.realtime_intent import AUDIO_MSG_LABEL, pcm16_from_audio_msg
+from src.realtime_intent import AUDIO_MSG_LABEL, audio_turn_applies, pcm16_from_audio_msg
 
 
 def test_pcm16_from_audio_msg_roundtrip_and_label():
     assert pcm16_from_audio_msg([1, 2, 3], AUDIO_MSG_LABEL) == b"\x01\x02\x03"
     with pytest.raises(ValueError):
         pcm16_from_audio_msg([1], "float32_48000")
+
+
+def test_audio_turn_applies_empty_turn_is_false():
+    assert audio_turn_applies({}, 10.0) is False
+
+
+def test_audio_turn_applies_not_handled_is_false():
+    assert audio_turn_applies({"handled": False, "t": 9.0}, 10.0) is False
+
+
+def test_audio_turn_applies_handled_and_fresh_is_true():
+    assert audio_turn_applies({"handled": True, "t": 9.0}, 10.0) is True
+
+
+def test_audio_turn_applies_handled_but_stale_is_false():
+    assert audio_turn_applies({"handled": True, "t": 9.0}, 30.0) is False
+
+
+def test_audio_turn_applies_handled_without_t_is_false():
+    assert audio_turn_applies({"handled": True}, 10.0) is False

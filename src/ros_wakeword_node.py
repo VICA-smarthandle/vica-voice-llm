@@ -298,7 +298,8 @@ class WakewordNode(Node):
     def _on_user_audio(self, audio) -> None:
         pcm = float32_to_pcm16(audio)
         msg = UInt8MultiArray()
-        msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm), stride=len(pcm)))
+        # size 는 표본 수(샘플), stride 는 바이트 수(pcm16 이라 표본당 2 바이트) — 단위가 다르다.
+        msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm) // 2, stride=len(pcm)))
         msg.data = list(pcm)
         self._pub_audio.publish(msg)
         self.get_logger().info(f"🎧 발화 소리 -> /vica/user_audio ({len(pcm)/2/16000:.2f}s)")
