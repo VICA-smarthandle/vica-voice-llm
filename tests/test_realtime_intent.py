@@ -273,3 +273,22 @@ def test_audio_turn_applies_handled_but_stale_is_false():
 
 def test_audio_turn_applies_handled_without_t_is_false():
     assert audio_turn_applies({"handled": True}, 10.0) is False
+
+
+class TestRecentlyFailed:
+    def test_failure_sets_and_success_clears(self):
+        from src.realtime_intent import RealtimeIntentClient
+
+        def bad_connect():
+            raise ConnectionError("no wifi")
+
+        c = RealtimeIntentClient(connect=bad_connect, timeout_sec=1)
+        assert not c.recently_failed(30)
+        try:
+            c.ask(b"\x00\x00" * 160, None, "x")
+        except ConnectionError:
+            pass
+        assert c.recently_failed(30)
+        assert not c.recently_failed(0)
+        c.last_failure_at = None
+        assert not c.recently_failed(30)

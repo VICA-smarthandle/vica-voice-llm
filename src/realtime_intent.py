@@ -122,6 +122,14 @@ class RealtimeIntentClient:
         self._connect = connect or (lambda: _default_connect(model))
         self._conn = None
         self._lock = threading.Lock()
+        # 마지막 실패 시각(monotonic). 복도처럼 와이파이가 끊긴 곳에서 발화마다 8초를
+        # 기다리지 않도록, 호출부가 recently_failed() 로 잠시 건너뛴다(2026-09-20 실기).
+        self.last_failure_at: Optional[float] = None
+
+    def recently_failed(self, within_sec: float) -> bool:
+        """마지막 ask 가 within_sec 안에 실패했는가(성공하면 지워진다)."""
+        return (self.last_failure_at is not None
+                and (time.monotonic() - self.last_failure_at) < within_sec)
 
     # ----- 연결 --------------------------------------------------------
     def _ensure_conn(self):
@@ -169,6 +177,15 @@ class RealtimeIntentClient:
     # ----- 호출 --------------------------------------------------------
     def ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
         """소리 + 이력 + 지시문 → set_intent 인자. 실패·timeout 이면 예외(연결은 버린다)."""
+        try:
+            result = self._ask(pcm16_16k, history, instructions)
+        except BaseException:
+            self.last_failure_at = time.monotonic()
+            raise
+        self.last_failure_at = None
+        return result
+
+    def _ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
         with self._lock:
             started = time.monotonic()
             conn = self._ensure_conn()

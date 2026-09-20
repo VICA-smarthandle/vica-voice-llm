@@ -59,6 +59,9 @@ ROBOT_ECHO_TTL_SEC = 12.0
 # 이 길이를 넘는 클립은 소리 경로를 생략한다(항목 H) — 정상 발화 범위를
 # 크게 벗어나면 Realtime 왕복 비용·지연만 늘고, 텍스트 경로가 어차피 처리한다.
 AUDIO_CLIP_MAX_SEC = 12.0
+# Realtime 이 방금 실패했으면(와이파이 없는 복도 등) 이 시간 동안은 소리 경로를 건너뛴다 —
+# 발화마다 timeout(8초)을 기다리지 않게. 그동안은 whisper+로컬 텍스트 경로가 답한다.
+REALTIME_RETRY_AFTER_SEC = float(os.environ.get("VICA_REALTIME_RETRY_AFTER", "30"))
 
 
 class LlmIntentNode(Node):
@@ -369,6 +372,10 @@ class LlmIntentNode(Node):
         # 18:54 실기: 그림자 텍스트 경로의 gpt 호출이 한 번 연결 오류를 내자 LOCAL 로
         # 넘어가며 멀쩡한 Realtime 까지 그 주행 내내 꺼졌다. Realtime 이 실제로 실패하면
         # 예외로 돌아와 아래에서 텍스트 경로에 넘긴다(그 발화는 whisper+로컬이 처리).
+        if get_realtime_client().recently_failed(REALTIME_RETRY_AFTER_SEC):
+            self.get_logger().info(
+                f"[A/B] Realtime 최근 실패 — {REALTIME_RETRY_AFTER_SEC:.0f}초간 소리 경로 생략, 텍스트 경로가 처리")
+            return
         try:
             label = msg.layout.dim[0].label if msg.layout.dim else ""
             pcm = pcm16_from_audio_msg(msg.data, label)
