@@ -114,7 +114,14 @@ class RealtimeIntentClient:
     def _ensure_conn(self):
         if self._conn is None:
             conn = self._connect()
-            conn.session.update(session=self._session_config())
+            try:
+                conn.session.update(session=self._session_config())
+            except BaseException:
+                try:
+                    conn.close()   # 세션 설정에 실패한 연결은 바로 닫는다 — 누수 방지
+                except Exception:
+                    pass
+                raise
             self._conn = conn
         return self._conn
 

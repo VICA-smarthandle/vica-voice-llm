@@ -193,3 +193,24 @@ class TestAsk:
         client, _ = make_client([ev])
         with pytest.raises(ValueError):
             client.ask(PCM, None, "x")
+
+    def test_session_update_failure_closes_connection(self):
+        class BrokenSessionConn(FakeConn):
+            def __init__(self, events):
+                super().__init__(events)
+                def boom(session):
+                    raise RuntimeError("session rejected")
+                self.session = types.SimpleNamespace(update=boom)
+
+        conns = []
+
+        def connect():
+            conn = BrokenSessionConn([])
+            conns.append(conn)
+            return conn
+
+        client = RealtimeIntentClient(model="fake", timeout_sec=1.0, connect=connect)
+        with pytest.raises(RuntimeError, match="session rejected"):
+            client.ask(PCM, None, "x")
+        assert conns[0].closed is True
+        assert client._conn is None
