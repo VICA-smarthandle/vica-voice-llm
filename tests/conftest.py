@@ -12,6 +12,12 @@
 (예: `TestRequireBothSignals`).
 """
 import os
+import sys
+from unittest.mock import MagicMock
+
+# Mock vica_interfaces before any test imports ros_convert (which imports vica_interfaces)
+sys.modules['vica_interfaces'] = MagicMock()
+sys.modules['vica_interfaces.msg'] = MagicMock()
 
 # 코드 기본값과 같은 값. 여기 없는 변수는 시험이 쓰지 않는 것이다.
 _DEFAULTS = {

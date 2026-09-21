@@ -52,11 +52,25 @@ def msg_to_intent(msg: VicaIntentMsg) -> VicaIntent:
 
 
 def msg_to_robot_state(msg: RobotStateMsg) -> RobotState:
-    """ROS2 RobotState 메시지 -> pydantic RobotState. (-1 층은 '알 수 없음' = None)"""
+    """ROS2 RobotState 메시지 -> pydantic RobotState. (-1 층은 '알 수 없음' = None)
+
+    대장 칸(P1)은 옛 미션 메시지에 없을 수 있어 getattr 기본값으로 받는다 — 그러면
+    ledger_view 가 빈 블록을 돌려주고 노드는 goal-event 상황판으로 폴백한다.
+    """
     return RobotState(
         current_floor=None if msg.current_floor < 0 else msg.current_floor,
         current_building=msg.current_building,
         is_moving=msg.is_moving,
         is_paused=msg.is_paused,
+        dialog_state=str(getattr(msg, "dialog_state", "") or ""),
+        place_here=str(getattr(msg, "place_here", "") or ""),
+        place_here_dist_m=float(getattr(msg, "place_here_dist_m", -1.0)),
+        active_destination=str(getattr(msg, "active_destination", "") or ""),
+        last_destination=str(getattr(msg, "last_destination", "") or ""),
+        last_arrived_age_sec=int(getattr(msg, "last_arrived_age_sec", -1)),
+        aborted_destination=str(getattr(msg, "aborted_destination", "") or ""),
+        wait_minutes=int(getattr(msg, "wait_minutes", -1)),
+        wait_left_sec=int(getattr(msg, "wait_left_sec", -1)),
+        battery_pct=int(getattr(msg, "battery_pct", -1)),
     )
 

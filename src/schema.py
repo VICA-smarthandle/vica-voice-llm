@@ -103,6 +103,17 @@ class RobotState(BaseModel):
     is_moving: bool = False
     # 일시정지(목적지를 기억한 채 정지). 전환 담당 모듈의 복귀 조건에 쓴다 (2026-09-19).
     is_paused: bool = False
+    # ---- 로봇 대장 (P1, 스펙 3절). 미션이 적고 여기선 읽기만. 없으면 ""/-1 ----
+    dialog_state: str = ""
+    place_here: str = ""
+    place_here_dist_m: float = -1.0
+    active_destination: str = ""
+    last_destination: str = ""
+    last_arrived_age_sec: int = -1
+    aborted_destination: str = ""
+    wait_minutes: int = -1
+    wait_left_sec: int = -1
+    battery_pct: int = -1
 
 
 def should_forward_intent(intent) -> bool:
