@@ -73,6 +73,25 @@ def main() -> None:
         import numpy as np
         noise = (np.random.default_rng(0).normal(0, 300, 16000 * 2)).astype("<i2").tobytes()
         run_case(tts, dests, "", history=arrival, label="[잡음 2초]", pcm=noise)
+
+    # 대장(P1) 케이스: [지금 상황] 블록만으로 다섯 질문에 답하는지.
+    from src.building_directory import DirectoryEntry, format_directory_block
+    from src.ledger_view import render_ledger
+    from src.schema import RobotState
+    st = RobotState(current_floor=4, current_building="로봇관", dialog_state="waiting", place_here="407호 앞",
+                    place_here_dist_m=1.2, last_destination="407호", last_arrived_age_sec=660,
+                    aborted_destination="화장실", wait_minutes=10, wait_left_sec=300)
+    situation = render_ledger(st, awaiting_answer=False, now_text="15:40")
+    directory = format_directory_block([DirectoryEntry("세미나실", "로봇관", 3)], "로봇관", 4)
+    for q in ("우리 몇 층이야", "지금 어디 있어", "아까 어디 갔었지", "어디 가려고 했더라", "지금 몇 시야",
+              "세미나실 갈 수 있어"):
+        pcm = synth(tts, q)
+        try:
+            intent, heard, dt, info = parse_intent_audio(pcm, dests, situation=situation, directory_block=directory)
+            print(f"[대장] '{q}' → intent={intent.intent} reply='{intent.reply[:40]}' dt={dt:.2f}s")
+        except Exception as exc:
+            print(f"[대장 실패] '{q}': {type(exc).__name__}: {exc}")
+
     if not dests:
         print("[이력 케이스 생략] 목적지 목록이 비어 있다")
 
