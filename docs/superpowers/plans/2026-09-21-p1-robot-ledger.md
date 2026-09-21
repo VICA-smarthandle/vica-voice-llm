@@ -14,7 +14,9 @@
 
 - 미션·Safety 우회 금지. LLM 은 제안만(루트 CLAUDE.md). 이 계획은 판단 로직을 추가하지 않는다.
 - 어떤 로그·파일 오류도 노드를 죽이지 않는다(대장 파일 쓰기 실패 = 경고 로그).
-- ROS 저장소 브랜치: `vica_ros2_ws` `feat/robot-ledger`(현재 체크아웃 `feat/arrival-reconfirm` 에서 분기). 음성: `vica-voice-llm` `feat/realtime-intent`(현재).
+- ROS 저장소: **별도 worktree** `/home/ji_w/wt-robot-ledger`(브랜치 `feat/robot-ledger`, `feat/arrival-reconfirm` 3120f2a 에서 분기, 이미 만들어 둠). 본 체크아웃 `vica_ros2_ws` 는 다른 세션이 `test_Route_Server` 로 Nav2 작업 중이라 **절대 checkout 하지 않는다**. ROS 쪽 모든 작업·시험·빌드는 worktree 안에서 한다. 음성: `vica-voice-llm` `feat/realtime-intent`(현재).
+- ROS 빌드는 worktree 에서 `source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && colcon build --packages-select vica_interfaces vica_mission_manager`(본 install 을 밑에 깔고 두 패키지만 worktree 의 `install/` 에). 실행·확인 때는 그 뒤에 `source /home/ji_w/wt-robot-ledger/install/setup.bash` 를 **덧씌운다**(⑩ mission·⑫ llm 칸 모두). 이렇게 하면 다른 세션의 빌드와 섞이지 않는다.
+- 되돌리기 지점: 두 저장소에 태그 `p1-start`(음성 e78f18b, ROS 3120f2a). 되돌릴 때 `git checkout p1-start` 가 아니라 브랜치를 그 커밋으로 reset 하고 worktree install 을 지운다.
 - ROS 시험은 ROS 를 source 하지 않고 `cd vica_ros2_ws/src/vica_mission_manager && PYTHONPATH=. python3 -m pytest -q test/`. `test_progress_narration` 3건 실패는 기존 표류(무시).
 - 음성 시험은 `cd vica-voice-llm && .venv/bin/python -m pytest -q`(현재 551 통과). 노드 임포트 확인은 ROS 를 source 한 뒤 `.venv/bin/python -c "import src.ros_node"`.
 - 메시지 변경 뒤에는 `colcon build --packages-select vica_interfaces vica_mission_manager` 와 두 저장소 노드 재기동이 필요하다(음성 노드는 ROS install 의 `vica_interfaces` 를 임포트한다).
@@ -26,7 +28,7 @@
 ### Task 1: RobotState 메시지 칸 추가
 
 **Files:**
-- Modify: `vica_ros2_ws/src/vica_interfaces/msg/RobotState.msg`
+- Modify: `wt-robot-ledger/src/vica_interfaces/msg/RobotState.msg`
 
 **Interfaces:**
 - Produces: `RobotState` 에 필드 `dialog_state`(string), `place_here`(string), `place_here_dist_m`(float32), `active_destination`(string), `last_destination`(string), `last_arrived_age_sec`(int32), `aborted_destination`(string), `wait_minutes`(int32), `wait_left_sec`(int32), `battery_pct`(int32). 기존 4칸 유지.
@@ -34,13 +36,12 @@
 - [ ] **Step 1: 브랜치 만들기**
 
 ```bash
-cd /home/ji_w/VICA-smarthandle/vica_ros2_ws
-git checkout -b feat/robot-ledger    # feat/arrival-reconfirm 에서 분기, 파일 변화 없음
+cd /home/ji_w/wt-robot-ledger && git branch --show-current   # feat/robot-ledger (이미 만들어 둔 worktree)
 ```
 
 - [ ] **Step 2: 메시지 파일 끝에 칸 추가**
 
-`vica_ros2_ws/src/vica_interfaces/msg/RobotState.msg` 의 `bool is_paused` 뒤에 붙인다:
+`wt-robot-ledger/src/vica_interfaces/msg/RobotState.msg` 의 `bool is_paused` 뒤에 붙인다:
 
 ```
 # ---- 로봇 대장 (2026-09-21 P1, 스펙 3절). 미션이 적고 LLM 노드가 읽는 사실. 없으면 ""/-1 ----
@@ -59,8 +60,8 @@ int32 battery_pct             # 배터리 %. 모르면 -1
 - [ ] **Step 3: 인터페이스 빌드와 확인**
 
 ```bash
-cd /home/ji_w/VICA-smarthandle/vica_ros2_ws
-source /opt/ros/humble/setup.bash && source install/setup.bash
+cd /home/ji_w/wt-robot-ledger
+source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash
 colcon build --packages-select vica_interfaces 2>&1 | tail -3
 source install/setup.bash
 ros2 interface show vica_interfaces/msg/RobotState | grep -c "dialog_state\|battery_pct"
@@ -81,8 +82,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 2: map_meta — 지도 한 장의 건물·층
 
 **Files:**
-- Create: `vica_ros2_ws/src/vica_mission_manager/vica_mission_manager/map_meta.py`
-- Test: `vica_ros2_ws/src/vica_mission_manager/test/test_map_meta.py`
+- Create: `wt-robot-ledger/src/vica_mission_manager/vica_mission_manager/map_meta.py`
+- Test: `wt-robot-ledger/src/vica_mission_manager/test/test_map_meta.py`
 
 **Interfaces:**
 - Produces: `MapMeta(building: str, floor: int)`(frozen dataclass, 기본 `""`, `-1`), `load_map_meta(destinations_path: str) -> MapMeta` — `destinations.yaml` 과 같은 폴더의 `map.yaml`(`building`, `floor`)을 읽는다. 없거나 깨지면 기본값.
@@ -119,7 +120,7 @@ def test_non_mapping_yaml_is_unknown(tmp_path):
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd /home/ji_w/VICA-smarthandle/vica_ros2_ws/src/vica_mission_manager
+cd /home/ji_w/wt-robot-ledger/src/vica_mission_manager
 PYTHONPATH=. python3 -m pytest -q test/test_map_meta.py
 ```
 Expected: `ModuleNotFoundError: vica_mission_manager.map_meta`.
@@ -187,8 +188,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 3: ledger — 대장 자료형, 좌표→"OO 앞/사이", JSON 보존, 메시지 칸 파생
 
 **Files:**
-- Create: `vica_ros2_ws/src/vica_mission_manager/vica_mission_manager/ledger.py`
-- Test: `vica_ros2_ws/src/vica_mission_manager/test/test_ledger.py`
+- Create: `wt-robot-ledger/src/vica_mission_manager/vica_mission_manager/ledger.py`
+- Test: `wt-robot-ledger/src/vica_mission_manager/test/test_ledger.py`
 
 **Interfaces:**
 - Consumes: `mission_logic.Destination`, `mission_logic.Pose2D`.
@@ -444,8 +445,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 4: 미션 로직 접근자 — 대기 요청 분·남은 초
 
 **Files:**
-- Modify: `vica_ros2_ws/src/vica_mission_manager/vica_mission_manager/mission_logic.py:1032`(초기화), `:2017-2023`(`_enter_waiting`), `:1185` 근처(접근자 추가), `_reset_arrival_dialog`(`_wait_until = None` 자리)
-- Test: `vica_ros2_ws/src/vica_mission_manager/test/test_arrival_dialog.py`(끝에 추가)
+- Modify: `wt-robot-ledger/src/vica_mission_manager/vica_mission_manager/mission_logic.py:1032`(초기화), `:2017-2023`(`_enter_waiting`), `:1185` 근처(접근자 추가), `_reset_arrival_dialog`(`_wait_until = None` 자리)
+- Test: `wt-robot-ledger/src/vica_mission_manager/test/test_arrival_dialog.py`(끝에 추가)
 
 **Interfaces:**
 - Produces: `MissionLogic.wait_minutes_requested() -> int`(대기 중 아니면 -1), `MissionLogic.wait_left_sec(now: float) -> int`(WAITING 아니면 -1, 남은 초 ≥ 0).
@@ -531,7 +532,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 5: 노드 통합 — 대장을 채우고 방송하고 보존한다
 
 **Files:**
-- Modify: `vica_ros2_ws/src/vica_mission_manager/vica_mission_manager/mission_manager_node.py` — import 블록, `__init__`(196행 `self.destinations = load_destinations(...)` 뒤), `_on_amcl_pose`(1053행), `_tick`(1336행), `_publish_robot_state`(1350행), `_publish_goal_event`(1625행)
+- Modify: `wt-robot-ledger/src/vica_mission_manager/vica_mission_manager/mission_manager_node.py` — import 블록, `__init__`(196행 `self.destinations = load_destinations(...)` 뒤), `_on_amcl_pose`(1053행), `_tick`(1336행), `_publish_robot_state`(1350행), `_publish_goal_event`(1625행)
 
 **Interfaces:**
 - Consumes: Task 2 `load_map_meta`, Task 3 `Ledger`/`LedgerStore`/`state_fields`, Task 4 접근자.
@@ -642,7 +643,7 @@ from .map_meta import load_map_meta
 - [ ] **Step 6: 시험·임포트 확인**
 
 ```bash
-cd /home/ji_w/VICA-smarthandle/vica_ros2_ws/src/vica_mission_manager
+cd /home/ji_w/wt-robot-ledger/src/vica_mission_manager
 PYTHONPATH=. python3 -m pytest -q test/ 2>&1 | tail -2
 cd /home/ji_w/VICA-smarthandle/vica_ros2_ws && source /opt/ros/humble/setup.bash && source install/setup.bash
 python3 -c "import vica_mission_manager.mission_manager_node as m; print('node import ok')"
@@ -664,7 +665,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Create (로봇 데이터, git 밖): `~/vica_data/destinations/vica_map_0903_d/map.yaml`
-- Modify: `vica_ros2_ws/docs/vica_robot_bringup_manual.md`(경로 규약 표에 한 줄)
+- Modify: `wt-robot-ledger/docs/vica_robot_bringup_manual.md`(경로 규약 표에 한 줄)
 
 - [ ] **Step 1: 지도 메타 파일**
 
@@ -678,7 +679,7 @@ EOF
 
 - [ ] **Step 2: 문서 한 줄**
 
-`vica_ros2_ws/docs/vica_robot_bringup_manual.md` 에서 `home.yaml` 경로 규약을 설명하는 표(또는 줄) 아래에 추가:
+`wt-robot-ledger/docs/vica_robot_bringup_manual.md` 에서 `home.yaml` 경로 규약을 설명하는 표(또는 줄) 아래에 추가:
 ```
 | `<storage_root>/<map_id>/map.yaml` | 건물·층 한 줄(`building`, `floor`). 미션이 읽어 `/vica/robot_state` 로 방송. 없으면 층 -1 |
 | `<storage_root>/<map_id>/ledger.json` | 로봇 대장(직전 도착·하려다 만 곳). 미션이 쓴다. 손으로 고치지 않는다 |
@@ -687,17 +688,17 @@ EOF
 - [ ] **Step 3: 빌드**
 
 ```bash
-cd /home/ji_w/VICA-smarthandle/vica_ros2_ws
-source /opt/ros/humble/setup.bash && source install/setup.bash
+cd /home/ji_w/wt-robot-ledger
+source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash
 colcon build --packages-select vica_interfaces vica_mission_manager 2>&1 | tail -3
 ```
 Expected: `Summary: 2 packages finished`.
 
 - [ ] **Step 4: 방송 확인(스택이 떠 있을 때)**
 
-⑩ mission 칸을 Ctrl-C 후 다시 띄운 뒤:
+⑩ mission 칸을 Ctrl-C 후 `source /home/ji_w/wt-robot-ledger/install/setup.bash` 를 덧씌우고 다시 띄운 뒤(⑫ llm 칸도 같은 줄을 덧씌워 재기동):
 ```bash
-source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=7
+source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && source /home/ji_w/wt-robot-ledger/install/setup.bash && export ROS_DOMAIN_ID=7
 timeout 5 ros2 topic echo /vica/robot_state --once
 ```
 Expected: `current_building: 로봇관`, `current_floor: 4`, `dialog_state: idle`, `place_here: ''`(초기 위치 전) 또는 `'OO 앞'`.
@@ -1032,7 +1033,7 @@ Expected: FAIL(`[현재 로봇 상태]` 가 들어 있음).
 
 ```bash
 .venv/bin/python -m pytest -q 2>&1 | tail -1
-source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && .venv/bin/python -c "import src.ros_node; print('ros_node import ok')"
+source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && source /home/ji_w/wt-robot-ledger/install/setup.bash && .venv/bin/python -c "import src.ros_node; print('ros_node import ok')"
 ```
 Expected: 전부 passed, `ros_node import ok`.
 
@@ -1220,7 +1221,7 @@ EOF
 
 ```bash
 .venv/bin/python -m pytest -q 2>&1 | tail -1
-source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && .venv/bin/python -c "import src.ros_node; print('ros_node import ok')"
+source /opt/ros/humble/setup.bash && source /home/ji_w/VICA-smarthandle/vica_ros2_ws/install/setup.bash && source /home/ji_w/wt-robot-ledger/install/setup.bash && .venv/bin/python -c "import src.ros_node; print('ros_node import ok')"
 ```
 Expected: 전부 passed, import ok.
 
