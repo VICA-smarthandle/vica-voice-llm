@@ -179,3 +179,17 @@ class TestAudioPrompt:
         c = rt({"intent": "question", "reply": "407호예요."}, "아까 어디 갔었지?")
         parse_intent_audio(PCM, [DEST], situation="\n[지금 상황]\n- 마지막 도착: 407호 (방금)\n")
         assert "마지막 도착: 407호" in c.calls[0][2]
+
+    def test_dynamic_blocks_come_last_for_prompt_cache(self):
+        # 앞부분(역할·규칙·목적지)이 호출마다 같아야 Realtime 캐시가 먹는다 — 바뀌는 블록은 맨 뒤.
+        from src.schema import RobotState
+        a = parser.build_audio_prompt([DEST], RobotState(), situation="\n[지금 상황]\n- 안내 중: 없음\n")
+        b = parser.build_audio_prompt([DEST], RobotState(is_moving=True), situation="\n[지금 상황]\n- 안내 중: 화장실\n")
+        prefix = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            prefix += 1
+        assert prefix > len(a) * 0.8            # 8할 이상이 공통 접두
+        assert a.index("[현재 로봇 상태]") > a.index("[말투]")
+        assert a.index("[지금 상황]") > a.index("[현재 로봇 상태]")

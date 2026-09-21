@@ -617,6 +617,11 @@ def build_audio_prompt(
 
     situation 은 LLM 노드의 상황판(situation_board.render) — 이동 중·마지막 도착·대기
     요청처럼 코드가 미션 신호로 확인한 사실. 이력이 비어도 남는 기억이다.
+
+    순서가 비용이다(2026-09-21): Realtime 은 직전 호출과 **앞부분이 똑같은** 토큰을
+    반값(캐시)으로 친다. 그래서 매 호출 바뀌는 로봇 상태·상황판은 맨 뒤에 붙이고,
+    역할·규칙·목적지 목록(파일이 안 바뀌면 동일)은 앞에 둔다. 절약량은 `[RT]` 로그의
+    cached 토큰으로 본다.
     """
     lines = []
     for d in destinations:
@@ -688,7 +693,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 
 [목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
 {dest_block}
-{state_block}{situation}
+
 [확신이 낮을 때] 안내를 끝내거나 접는 결정(deny·finish·cancel, 확정 navigate)은 되돌리기 어렵다.
 들린 말이 짧고 불분명해 confidence 가 0.7 미만이면 그 결정을 내리지 말고 clarify 로 로봇의
 마지막 질문을 다시 한다. "그럴래?"·"그럴까?"·"어어"처럼 부드러운 긍정을 부정으로 오해하지 마라.
@@ -703,7 +708,8 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 받아 주면 좋다("배가 아프시군요", "아, 테스트3요?"). 다만 소리로만 듣는 사람이라 길면 부담이다 —
 변명·긴 설명은 넣지 않는다. 답을 들어야 하는 말은 반드시 "?"로 끝낸다(그래야 로봇이 듣는다).
 reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel)는 로봇 본체가 이어서
-말하므로 네가 말을 보태지 않는다."""
+말하므로 네가 말을 보태지 않는다.
+{state_block}{situation}"""
 
 
 def parse_intent_audio(

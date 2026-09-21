@@ -292,3 +292,12 @@ class TestRecentlyFailed:
         assert not c.recently_failed(0)
         c.last_failure_at = None
         assert not c.recently_failed(30)
+
+
+def test_usage_dict_reports_cached_tokens():
+    from types import SimpleNamespace
+    from src.realtime_intent import _usage_dict
+    usage = SimpleNamespace(output_tokens=7, input_token_details=SimpleNamespace(
+        audio_tokens=20, text_tokens=3000, cached_tokens=2400))
+    assert _usage_dict(usage) == {"audio_tokens": 20, "text_tokens": 3000, "cached_tokens": 2400, "output_tokens": 7}
+    assert _usage_dict(None) == {}

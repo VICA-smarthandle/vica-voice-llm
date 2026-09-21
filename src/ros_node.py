@@ -450,10 +450,12 @@ class LlmIntentNode(Node):
         audio_tok = usage.get("audio_tokens", 0)
         text_tok = usage.get("text_tokens", 0)
         out_tok = usage.get("output_tokens", 0)
+        cached_tok = usage.get("cached_tokens", 0)
         self.get_logger().info(
             f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
             f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
-            f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} clip={clip_sec:.2f}s")
+            f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
+            f"cached={cached_tok} clip={clip_sec:.2f}s")
         self._publish_intent(intent, heard, llm_first=True)
 
     def _shadow_text(self, text: str, turn: dict) -> None:

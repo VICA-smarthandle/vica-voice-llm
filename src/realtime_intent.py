@@ -260,6 +260,8 @@ def _usage_dict(usage) -> dict:
     return {
         "audio_tokens": int(getattr(det, "audio_tokens", 0) or 0),
         "text_tokens": int(getattr(det, "text_tokens", 0) or 0),
+        # 직전 호출과 앞부분이 같아 반값으로 계산된 입력 토큰(지시문 캐시 실측용, 2026-09-21)
+        "cached_tokens": int(getattr(det, "cached_tokens", 0) or 0),
         "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
     }
 
