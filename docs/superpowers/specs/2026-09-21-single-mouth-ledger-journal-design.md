@@ -160,18 +160,18 @@ P2b-1 실기에서 변형만으로 충분하면 만들지 않는다.
 
 | 줄 | 값 | 출처 |
 | --- | --- | --- |
-| 건물·층 | `로봇관`, `4` | 지도 폴더의 `map.yaml`(`building`, `floor`) — 지도 = 한 층 |
+| 건물·층 | `로봇관`, `4` | 목적지 폴더 `~/vica_data/destinations/<map_id>/map.yaml`(`building`, `floor`) — 지도 = 한 층 |
 | 지금 있는 곳 | `407호 앞` / `407호와 화장실 사이` / `위치 미확인` | AMCL 좌표 vs 등록 목적지 좌표. 3.0 m 안이면 "OO 앞", 아니면 가장 가까운 두 곳 "사이". 초기 위치 전은 미확인 |
 | 가는 중인 곳 | 목적지 name | 출발 시 기록, 도착·실패·취소 시 비움 |
 | 직전에 간 곳 · 도착 시각 | name, epoch | 도착(`goal_succeeded`) |
 | 하려다 만 곳 | name | 확인 대기까지 갔다가 거절·취소·시간초과·무응답으로 안 간 곳. 다음 출발 시 비움 |
 | 대화 단계 | `idle` / `awaiting_user` / `confirming` / `seeking` / `navigating` / `asking_next` / `asking_wait_time` / `waiting` / `returning` | 미션 상태 그대로 |
 | 대기 | 요청 분, 남은 초 | WAITING 진입 시 |
-| 시각 | `15:40` | 시스템 시계(미션이 채움) |
+| 시각 | `15:40` | LLM 노드 시스템 시계(미션 방송에는 없음) |
 | 배터리 | `80 %` / `모름` | 전원 측정기(INA228)가 고장이라 시스템 값이 있으면 그것, 없으면 "모름" |
 
-**건물 디렉터리**: 다른 층의 장소("3층 세미나실")는 `~/vica_data/destinations/<building>/directory.yaml`
-(name, floor)로 안다. 이 층이 아니면 "3층에 있다, 층 이동은 못 한다"고 말하고 등록 목적지
+**건물 디렉터리**: 다른 층의 장소("3층 세미나실")는 `~/vica_data/destinations/directory.yaml`
+(하나, `building` 칸으로 구분, name·floor)로 안다. 이 층이 아니면 "3층에 있다, 층 이동은 못 한다"고 말하고 등록 목적지
 **엘리베이터**를 제안한다. 지시문의 목적지 목록 뒤에 "다른 층" 블록으로 붙는다.
 
 ### 3.2 전달과 보존
@@ -180,8 +180,8 @@ P2b-1 실기에서 변형만으로 충분하면 만들지 않는다.
   `float32 place_here_dist_m`, `string active_destination`, `string last_destination`,
   `int32 last_arrived_age_sec`, `string aborted_destination`, `int32 wait_minutes`, `int32 wait_left_sec`,
   `int32 battery_pct`(-1 = 모름). 기존 칸 유지, 층·건물은 `map.yaml` 로 채운다(launch 인자 우선).
-- 미션은 1 Hz `/vica/robot_state` 그대로. 대장이 바뀔 때마다 `~/vica_data/state/<map_id>/ledger.json`
-  에 적고 기동 시 "직전에 간 곳·하려다 만 곳"을 복원한다. "지금 있는 곳"은 복원하지 않는다.
+- 미션은 1 Hz `/vica/robot_state` 그대로. 대장이 바뀔 때마다 `~/vica_data/destinations/<map_id>/ledger.json`
+  (home.yaml 과 같은 폴더)에 적고 기동 시 "직전에 간 곳·하려다 만 곳"을 복원한다. "지금 있는 곳"은 복원하지 않는다.
 - LLM 노드의 `SituationBoard` 는 `/vica/robot_state` 를 읽는 `LedgerView` 로 바뀐다(새 칸이 비어
   오면 지금의 goal-event 추정, 호환). 시각은 LLM 노드가 직접 넣는다. 지시문 맨 뒤 `[지금 상황]` 블록.
 - **원천 차단**: 대화 단계가 지시문에 있으므로 모델은 회전 중·안내 중의 제안을 애초에 내지 않는다.
