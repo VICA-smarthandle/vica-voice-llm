@@ -38,6 +38,7 @@ from .history import ConversationHistory
 from .langchain_intent_parser import (
     SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent,
     parse_intent_audio)
+from .ledger_view import render_ledger
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .situation_board import SituationBoard, parse_goal_event_name
@@ -421,7 +422,7 @@ class LlmIntentNode(Node):
         try:
             intent, heard, dt, info = parse_intent_audio(
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
-                situation=self._board.render(awaiting_answer=time.time() < self._followup_until))
+                situation=self._situation_block())
         except Exception as exc:
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "
@@ -457,6 +458,12 @@ class LlmIntentNode(Node):
             f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
             f"cached={cached_tok} clip={clip_sec:.2f}s")
         self._publish_intent(intent, heard, llm_first=True)
+
+    def _situation_block(self) -> str:
+        """지시문 맨 뒤 [지금 상황]: 미션 대장(P1)이 오면 그것, 옛 미션이면 goal-event 상황판."""
+        awaiting = time.time() < self._followup_until
+        text = render_ledger(self._robot_state, awaiting_answer=awaiting, now_text=time.strftime("%H:%M"))
+        return text or self._board.render(awaiting_answer=awaiting)
 
     def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).

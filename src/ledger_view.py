@@ -28,6 +28,8 @@ DIALOG_KO = {
 HEADER = ("\n[지금 상황] (미션이 확인한 사실 — 대화 이력이 비어 있어도 이것은 맞다. "
           "\"지금 어디 가?\"·\"아까 어디 갔었지?\"·\"몇 층이야?\"·\"몇 시야?\"는 이것으로 답한다)\n")
 
+FLOOR_LABEL = "건물/층"   # 대장만 항상 내는 줄. parser 가 이 상수로 "대장이 왔는가"를 판정한다.
+
 
 def _ago(sec: int) -> str:
     if sec < 60:
@@ -47,9 +49,9 @@ def render_ledger(state: RobotState, *, awaiting_answer: bool, now_text: str) ->
     lines = []
     if state.current_building or state.current_floor is not None:
         floor = f" {state.current_floor}층" if state.current_floor is not None else ""
-        lines.append(f"- 건물/층: {state.current_building or '건물 모름'}{floor}")
+        lines.append(f"- {FLOOR_LABEL}: {state.current_building or '건물 모름'}{floor}")
     else:
-        lines.append("- 건물/층: 모름")
+        lines.append(f"- {FLOOR_LABEL}: 모름")
     lines.append(f"- 지금 있는 곳: {state.place_here or '위치 미확인'}")
     if state.active_destination:
         lines.append(f"- 안내 중: {state.active_destination}로 이동 중")

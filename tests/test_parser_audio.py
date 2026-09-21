@@ -193,3 +193,11 @@ class TestAudioPrompt:
         assert prefix > len(a) * 0.8            # 8할 이상이 공통 접두
         assert a.index("[현재 로봇 상태]") > a.index("[말투]")
         assert a.index("[지금 상황]") > a.index("[현재 로봇 상태]")
+
+    def test_state_block_is_skipped_when_situation_has_ledger(self):
+        from src.schema import RobotState
+        st = RobotState(current_floor=4, current_building="로봇관", dialog_state="idle")
+        with_ledger = parser.build_audio_prompt([DEST], st, situation="\n[지금 상황]\n- 건물/층: 로봇관 4층\n")
+        assert "[현재 로봇 상태]" not in with_ledger and "[지금 상황]" in with_ledger
+        without = parser.build_audio_prompt([DEST], st, situation="")
+        assert "[현재 로봇 상태]" in without

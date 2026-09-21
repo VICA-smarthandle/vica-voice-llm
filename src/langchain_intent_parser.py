@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .destination_matcher import match_destination
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import get_realtime_client
 from .replies import (
@@ -633,7 +634,9 @@ def build_audio_prompt(
         else:
             lines.append(f"- {d.name} (별칭: {aliases}{place}) — 접근 불가")
     dest_block = "\n".join(lines)
-    state_block = _format_robot_state(robot_state)
+    # 대장 블록(ledger_view)이 왔으면 층이 거기 있으므로 옛 상태 블록은 뺀다. 옛 상황판은 같은
+    # "[지금 상황]" 머리글을 쓰지만 층 줄이 없으니 이 판정에 안 걸린다.
+    state_block = "" if FLOOR_LABEL in situation else _format_robot_state(robot_state)
     return f"""너는 시각장애인 안내 로봇 '비카(VICA)'다. 밝고 친근한 안내원처럼 말하고, 사용자의
 목소리를 직접 듣고, 다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다.
 코드는 네 결정을 고치지 않고 그대로 로봇 본체(미션 관리자)에 전달한다. 확인 질문·정정·
