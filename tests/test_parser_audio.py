@@ -201,3 +201,7 @@ class TestAudioPrompt:
         assert "[현재 로봇 상태]" not in with_ledger and "[지금 상황]" in with_ledger
         without = parser.build_audio_prompt([DEST], st, situation="")
         assert "[현재 로봇 상태]" in without
+
+    def test_directory_block_and_elevator_rule(self):
+        text = parser.build_audio_prompt([DEST], directory_block="\n[다른 층 장소]\n- 세미나실: 로봇관 3층\n")
+        assert "[다른 층 장소]" in text and "엘리베이터" in text

@@ -32,6 +32,7 @@ from std_msgs.msg import Bool, String, UInt8MultiArray
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
+from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
@@ -85,6 +86,8 @@ class LlmIntentNode(Node):
         self._destinations_mtime_ns: int | None = None
         self._destinations = []
         self._reload_destinations_if_changed(force=True)
+        self._directory = load_directory(directory_path())
+        self.get_logger().info(f"건물 디렉터리 {len(self._directory)}곳: {directory_path()}")
         self._robot_state = RobotState()  # robot_state 토픽이 오기 전 기본값
         # 멀티턴 기억. 공용 로봇이라 한동안 발화가 없으면 새 대화로 보고 비운다.
         # 소리 모드(모델 전결)는 로봇이 실제로 한 말(미션 질문 포함)까지 이력에
@@ -422,7 +425,9 @@ class LlmIntentNode(Node):
         try:
             intent, heard, dt, info = parse_intent_audio(
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
-                situation=self._situation_block())
+                situation=self._situation_block(),
+                directory_block=format_directory_block(
+                    self._directory, self._robot_state.current_building, self._robot_state.current_floor))
         except Exception as exc:
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "
@@ -518,6 +523,7 @@ class LlmIntentNode(Node):
             if destination.authorization == "public"
         ]
         self._destinations_mtime_ns = mtime_ns
+        self._directory = load_directory(directory_path())
         self.get_logger().info(
             f"public 목적지 {len(self._destinations)}개 로드: "
             f"{self._destinations_path}"
