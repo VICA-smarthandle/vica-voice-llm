@@ -192,7 +192,7 @@ class TestAudioPrompt:
             prefix += 1
         assert prefix > len(a) * 0.8            # 8할 이상이 공통 접두
         assert a.index("[현재 로봇 상태]") > a.index("[말투]")
-        assert a.index("[지금 상황]") > a.index("[현재 로봇 상태]")
+        assert a.rindex("[지금 상황]") > a.index("[현재 로봇 상태]")  # rindex: 실제 블록 헤더 (규칙 텍스트의 참조 아님)
 
     def test_state_block_is_skipped_when_situation_has_ledger(self):
         from src.schema import RobotState
@@ -205,3 +205,9 @@ class TestAudioPrompt:
     def test_directory_block_and_elevator_rule(self):
         text = parser.build_audio_prompt([DEST], directory_block="\n[다른 층 장소]\n- 세미나실: 로봇관 3층\n")
         assert "[다른 층 장소]" in text and "엘리베이터" in text
+
+    def test_question_rule_names_ledger_lines(self):
+        text = parser.build_audio_prompt([DEST])
+        for key in ("몇 층", "지금 어디", "어디 가려고", "몇 시", "배터리"):
+            assert key in text, key
+        assert "안내 데스크" in text   # 조언 금지 문구는 유지
