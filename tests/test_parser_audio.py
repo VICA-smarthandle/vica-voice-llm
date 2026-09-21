@@ -194,6 +194,25 @@ class TestAudioPrompt:
         assert a.index("[현재 로봇 상태]") > a.index("[말투]")
         assert a.rindex("[지금 상황]") > a.index("[현재 로봇 상태]")  # rindex: 실제 블록 헤더 (규칙 텍스트의 참조 아님)
 
+    def test_ledger_dynamic_blocks_come_last_for_prompt_cache(self):
+        # 대장(render_ledger) 경로도 같은 캐시 접두 계약을 지켜야 한다 — [현재 로봇 상태]는 안 나온다.
+        from src.ledger_view import render_ledger
+        from src.schema import RobotState
+        st_a = RobotState(current_floor=4, current_building="로봇관", dialog_state="idle", place_here="407호 앞")
+        st_b = RobotState(current_floor=4, current_building="로봇관", dialog_state="navigating", place_here="복도")
+        a = parser.build_audio_prompt([DEST], st_a,
+                                      situation=render_ledger(st_a, awaiting_answer=False, now_text="09:01"))
+        b = parser.build_audio_prompt([DEST], st_b,
+                                      situation=render_ledger(st_b, awaiting_answer=False, now_text="09:01"))
+        prefix = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            prefix += 1
+        assert prefix > len(a) * 0.8
+        assert "[현재 로봇 상태]" not in a
+        assert a.rindex("[지금 상황]") > a.index("[말투]")
+
     def test_state_block_is_skipped_when_situation_has_ledger(self):
         from src.schema import RobotState
         st = RobotState(current_floor=4, current_building="로봇관", dialog_state="idle")

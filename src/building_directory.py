@@ -35,7 +35,7 @@ def directory_path() -> str:
 def load_directory(path: str) -> list[DirectoryEntry]:
     try:
         data = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, ValueError, yaml.YAMLError):
         return []
     if not isinstance(data, list):
         return []

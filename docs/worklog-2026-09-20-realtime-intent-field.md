@@ -226,7 +226,10 @@ feat/arrival-reconfirm 작동) / "그래 빨리 가자"·"거기로 가자"·"�
 
 ## 10. P1 대장 실기 대본 (합격선: 대장 질문 5종 정답)
 
-준비: ⑩ mission(재빌드 뒤)·⑫ llm 재기동. `ros2 topic echo /vica/robot_state --once` 에서 건물·층·dialog_state 확인.
+준비: ⑩ mission(재빌드 뒤)·⑫ llm 재기동 — ⑩·⑫ **둘 다** `source /home/ji_w/wt-robot-ledger/install/setup.bash` 를
+본 install 뒤에 덧씌운다. 각 칸에서 먼저 `python3 -c "from vica_interfaces.msg import RobotState as M; print('dialog_state' in M.get_fields_and_field_types())"` 가
+`True` 인지 본다. `ros2 topic echo /vica/robot_state --once` 도 덧씌운 셸에서 실행해 건물·층·dialog_state 확인
+— 옛 셸이면 새 칸이 안 보여 "방송이 안 나온다" 로 오해한다.
 1. 초기 위치 찍기 전 "우리 지금 어디 있어?" → "위치 미확인" 계열 답. 찍은 뒤 → "OO 앞".
 2. "우리 몇 층이야?" → "로봇관 4층".
 3. 407호 안내 → 도착 → "십 분" 대기 → 3분 넘게 침묵 → "비카야, 아까 어디 갔었지?" → 407호. "지금 몇 시야?" → 시각.
@@ -234,6 +237,8 @@ feat/arrival-reconfirm 작동) / "그래 빨리 가자"·"거기로 가자"·"�
 5. "3층 세미나실 갈 수 있어?" → 3층에 있다·층 이동 불가·엘리베이터 제안(엘리베이터가 목록에 있으면 navigate 제안).
 6. 주행 중 "지금 어디 가?" → 목적지 이름.
 관찰: `[RT]` 로그의 reply, `ledger.json` 내용(도착 뒤 last_destination), 미션 재기동 뒤 "아까 어디 갔었지?"가 파일 복원으로 답하는지.
+주의: 시나리오 6 은 답 뒤에 모델이 새 목적지를 제안하면 P2a 전이라 MSG_BUSY 로 튕긴다 — 합격선 밖.
+주의: `directory.yaml` 은 `destinations.yaml` 이 바뀔 때만 다시 읽으니 실기 중 항목을 더하면 ⑫ 재기동.
 
 ### 10-1. 스모크에서 드러난 한도 — Realtime 은 분당 7회가 상한
 

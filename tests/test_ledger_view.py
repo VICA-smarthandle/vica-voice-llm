@@ -54,5 +54,11 @@ class TestRender:
         assert render_ledger(RobotState(current_floor=4), awaiting_answer=False, now_text="09:01") == ""
 
     def test_unknown_state_word_passes_through(self):
-        text = render_ledger(RobotState(dialog_state="turning"), awaiting_answer=False, now_text="09:01")
-        assert "- 대화 단계: 회전 중" in text
+        text = render_ledger(RobotState(dialog_state="seeking_x"), awaiting_answer=False, now_text="09:01")
+        assert "- 대화 단계: seeking_x" in text
+
+    def test_ago_negative_is_unknown(self):
+        st = RobotState(dialog_state="idle", last_destination="407호", last_arrived_age_sec=-1)
+        text = render_ledger(st, awaiting_answer=False, now_text="09:01")
+        assert "시각 모름" in text
+        assert "방금" not in text

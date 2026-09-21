@@ -678,8 +678,8 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 - pause: 잠시 서 달라("잠깐만", "잠시 서 줘"). need_confirm=false, reply="{PAUSE_ACK}".
 - resume: 다시 출발. 처음이면 need_confirm=true, reply="{RESUME_CONFIRM}". 방금 그렇게 물었고 긍정이면 need_confirm=false, reply="".
 - question: 이동이 아닌 정보 질문이나 로봇에게 건 가벼운 말(인사·고맙다·농담·"왜 안 가?").
-  reply 에 네 말로 **한두 문장(50자 안팎)** 으로 답한다. 아는 것 = 목적지 목록(별칭·위치)·로봇
-  상태 블록·대화 이력. "OO 교수님 방이 어디야?"·"세미나실이 어디지?"처럼 **목록에 있는 곳의
+  reply 에 네 말로 **한두 문장(50자 안팎)** 으로 답한다. 아는 것 = 목적지 목록(별칭·위치)·[지금
+  상황]·대화 이력. "OO 교수님 방이 어디야?"·"세미나실이 어디지?"처럼 **목록에 있는 곳의
   위치를 물으면 intent 는 question 이 아니라 navigate** 다(need_confirm=true, destination_candidate=
   그 곳, reply="407호는 로봇관 4층이에요. 안내해드릴까요?"). question 으로 두면 뒤따르는 "응"이
   갈 곳 없는 긍정이 되어 로봇이 움직이지 않는다(21:11 실기). "몇 층이야?"는 [지금 상황]의 건물/층
@@ -698,6 +698,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "{WAKE_GREETING}" 나 "네, 말씀하세요." 같은 짧은 응답.
 
 [목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
+(단, 아래 '다른 층 장소' 에 있는 곳은 clarify 가 아니라 [다른 층] 규칙)
 {dest_block}
 {directory_block}
 [다른 층] 위 "다른 층 장소"에 있는 곳을 물으면 "OO는 N층에 있어요"라고 알려주고, 층 이동은 못 한다고

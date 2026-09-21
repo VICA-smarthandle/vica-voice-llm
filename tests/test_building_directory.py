@@ -12,6 +12,12 @@ def test_missing_file_is_empty(tmp_path):
     assert load_directory(str(tmp_path / "none.yaml")) == []
 
 
+def test_invalid_utf8_is_empty(tmp_path):
+    p = tmp_path / "directory.yaml"
+    p.write_bytes(b"\xff\xfe")
+    assert load_directory(str(p)) == []
+
+
 def test_block_lists_only_other_floors():
     entries = [DirectoryEntry("세미나실", "로봇관", 3), DirectoryEntry("407호", "로봇관", 4),
                DirectoryEntry("식당", "학생회관", 1)]
