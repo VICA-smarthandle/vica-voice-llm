@@ -56,11 +56,40 @@ LLM 노드는 확인 질문·되묻기·잡담 답을 `/vica/tts_request` 로 �
   않는다). 큐 상한 8, 2초 중복 제거는 그대로. 새 토픽 없음.
 - 끼어들기(barge-in)는 지금 기제 그대로 재생을 끊고 큐를 비운다(`/vica/tts_stop`).
 
-### 1.4 관문
+### 1.4 인사 답 대기 중의 목적지 요청은 "네 + 목적지"로 받는다
+
+지금은 `AWAITING_USER`(접근 질문 "안내를 받으시겠어요?"의 답 대기)에 navigate 가 오면
+MSG_APPROACH_BUSY("지금은 다른 응대 중입니다")로 거절하고, 질문은 15초 뒤 "실례했습니다"로 접힌다
+(09-20 21:11·21:25). 답할 사람은 그 사용자뿐이므로 거절할 이유가 없다.
+
+- `on_intent`: 상태가 `AWAITING_USER` 이고 navigate(제안, need_confirm=True)가 오면 접근 질문을
+  긍정으로 접고(`on_approach_answer(True)` 와 같은 정리: 시계·재청취 해제, 온보딩 되묻기 사다리 청산)
+  곧바로 그 목적지의 확인 흐름(`CONFIRMING`)으로 간다. 읽는 문장은 reply(확인 질문) 하나.
+- 확정 navigate(need_confirm=False)가 오면 — 모델이 앞선 제안을 기억해 확정으로 낸 경우 — 확인
+  질문을 건너뛰지 않는다. 같은 목적지의 제안으로 강등해 확인 질문을 한 번 한다(안전: 접근 질문
+  뒤 첫 출발은 반드시 확인을 거친다).
+- 온보딩("손잡이는 …", "어디로 가고 싶으신가요?")은 이 경로에서 생략한다 — 목적지를 이미 말했다.
+
+### 1.5 회전·탐색·복귀 중의 요청은 버리지 않고 들고 있는다
+
+`TURNING`·`SEEKING`·`RETURNING` 중에 온 navigate 를 MSG_APPROACH_BUSY 로 버리는 대신 **보류 칸**에
+둔다(09-20 21:24:52 "화장실로 가자"가 회전 중이라 버려진 사건).
+
+- 보류 칸은 하나(최신 것만), 상한 10초(회전·탐색은 5~7초). 상한이 지나면 조용히 버린다.
+- 동작이 끝나 `IDLE` 로 돌아오는 자리(회전 종료·탐색 종료·복귀 브레이크)에서 보류 요청을 꺼내
+  `on_intent` 에 다시 넣는다 → 확인 질문으로 이어진다.
+- 보류할 때 읽는 말은 짧은 접수 한마디("잠시만요.", 변형 가능). 진짜 받을 수 없는 경우만 남는다:
+  `NAVIGATING` 중 새 목적지 → "지금 OO로 가는 중이에요. 바꾸시려면 취소라고 말씀해 주세요."
+  (MSG_BUSY 의 문구를 이렇게 바꾼다 — 무엇을 하면 되는지를 말한다). "지금은 다른 응대 중입니다"
+  문구는 없앤다.
+- `ESTOPPED` 거절은 그대로.
+
+### 1.6 관문
 
 겹침 0회(09-20 21:11·21:25 장면 재현), 지연 증가 0(미션이 reply 를 읽는 경로는 지금의 LLM 노드
-발행과 같은 한 hop). 미션 파라미터 `speak_reply:=true` 로 켜고, false 면 옛 동작(LLM 노드가 직접
-발행). 플래그 하나로 되돌린다.
+발행과 같은 한 hop), 인사 답 대기 중 목적지 요청 → 확인 질문 1회로 출발(재호출 0회), 회전 중 요청
+→ 회전 뒤 확인 질문. 미션 파라미터 `speak_reply:=true` 로 켜고, false 면 옛 동작(LLM 노드가 직접
+발행). 1.4·1.5 는 같은 플래그 아래 둔다.
 
 ## 2. 말투 — 미리 생성한 변형과 오디오 캐시 (P2b)
 
@@ -190,7 +219,9 @@ P1·P2 실기에서 "대장으로 못 답한 기억 질문"(아까 처음에·�
 ## 7. 시험과 합격선
 
 - 단위: 미션 `on_intent` 중재(제안 수락 → reply 발화, 거절 → 거절 문구만, question → reply, 빈 reply →
-  침묵), `request_for_intent` 폐지 뒤 LLM 노드가 TTS 를 내지 않음, TTS 큐 5초 폐기, 변형 검증 규칙
+  침묵), AWAITING_USER 의 navigate → CONFIRMING(확정 navigate 는 제안으로 강등), TURNING/SEEKING/
+  RETURNING 의 navigate 보류 → IDLE 복귀 시 재투입·10초 만료, `request_for_intent` 폐지 뒤 LLM 노드가
+  TTS 를 내지 않음, TTS 큐 5초 폐기, 변형 검증 규칙
   5종, 변형 채우기(조사), 대장 계산(좌표→앞/사이/미확인, 복원), `LedgerView` 호환, (P3) 일지 회차·
   도구 필터·2회전 흐름.
 - 실 API 스모크: 변형 생성 30종·검증 통과율, (P2b-2) `compose_line` 예산.
@@ -207,7 +238,7 @@ P1·P2 실기에서 "대장으로 못 답한 기억 질문"(아까 처음에·�
 | 단계 | 내용 | 관문 | 스위치 | 저장소·브랜치 | 크기 |
 | --- | --- | --- | --- | --- | --- |
 | P1 대장 | RobotState 칸, 미션 대장 계산·파일 보존, `map.yaml`, `LedgerView` | 대장 질문 3종 정답 | — | vica_ros2_ws(`vica_interfaces` 포함) `feat/robot-ledger`, voice `feat/realtime-intent` | 반나절 |
-| P2a 중재 | 미션이 reply 를 읽고 거절과 조율, LLM 노드 TTS 발행 폐지, TTS 5초 폐기 | 겹침 0 · 지연 증가 0 | `speak_reply` | vica_ros2_ws `feat/speak-arbitration`, voice | 반나절 |
+| P2a 중재 | 미션이 reply 를 읽고 거절과 조율, 인사 답 대기 중 목적지 = "네+목적지", 회전·탐색·복귀 중 요청 보류, LLM 노드 TTS 발행 폐지, TTS 5초 폐기 | 겹침 0 · 지연 증가 0 · 재호출 0 | `speak_reply` | vica_ros2_ws `feat/speak-arbitration`, voice | 하루 |
 | P2b-1 변형 | 변형 생성·검증·파일, 미션 채우기, `tts_prewarm` | 즉시 등급 ≤ 0.2 s · 검증 실패 < 10 % | `compose_variants` | voice + vica_ros2_ws | 하루 |
 | P2b-2 맥락 문장 | `compose_line` 서비스(선택) | P2b-1 실기 판단 뒤 | 서비스 미생성 = 꺼짐 | 둘 다 | 반나절 |
 | P3 일지·도구 | journal·recall_journal·2회전 | 회차당 기억 질문 2건 이상일 때 착수 | — | voice | 반나절 |
