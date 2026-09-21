@@ -75,22 +75,28 @@ def main() -> None:
         run_case(tts, dests, "", history=arrival, label="[잡음 2초]", pcm=noise)
 
     # 대장(P1) 케이스: [지금 상황] 블록만으로 다섯 질문에 답하는지.
+    # 호출당 ≈5k 토큰 → 조직 TPM 40k(gpt-realtime-mini)면 분당 7회가 상한. 앞 케이스로 찬 창을 비우고 간격을 둔다.
     from src.building_directory import DirectoryEntry, format_directory_block
     from src.ledger_view import render_ledger
     from src.schema import RobotState
-    st = RobotState(current_floor=4, current_building="로봇관", dialog_state="waiting", place_here="407호 앞",
-                    place_here_dist_m=1.2, last_destination="407호", last_arrived_age_sec=660,
-                    aborted_destination="화장실", wait_minutes=10, wait_left_sec=300)
+    TPM_WINDOW_SEC, TPM_GAP_SEC = 60, 10
+    st = RobotState(current_floor=4, current_building="공학관", dialog_state="waiting", place_here="407호 앞",
+                    place_here_dist_m=1.2, last_destination="윤지영 교수님 사무실", last_arrived_age_sec=660,
+                    aborted_destination="공학관 2층 화장실", wait_minutes=10, wait_left_sec=300)
     situation = render_ledger(st, awaiting_answer=False, now_text="15:40")
-    directory = format_directory_block([DirectoryEntry("세미나실", "로봇관", 3)], "로봇관", 4)
+    directory = format_directory_block([DirectoryEntry("대강당", "공학관", 3)], "공학관", 4)
+    print(f"[대장] TPM 창 비우기 {TPM_WINDOW_SEC}s …", flush=True)
+    time.sleep(TPM_WINDOW_SEC)
     for q in ("우리 몇 층이야", "지금 어디 있어", "아까 어디 갔었지", "어디 가려고 했더라", "지금 몇 시야",
-              "세미나실 갈 수 있어"):
+              "대강당 갈 수 있어"):
         pcm = synth(tts, q)
         try:
             intent, heard, dt, info = parse_intent_audio(pcm, dests, situation=situation, directory_block=directory)
-            print(f"[대장] '{q}' → intent={intent.intent} reply='{intent.reply[:40]}' dt={dt:.2f}s")
+            print(f"[대장] '{q}' → intent={intent.intent} dest={intent.destination_candidate or '-'} "
+                  f"nc={intent.need_confirm} reply='{intent.reply[:40]}' dt={dt:.2f}s", flush=True)
         except Exception as exc:
-            print(f"[대장 실패] '{q}': {type(exc).__name__}: {exc}")
+            print(f"[대장 실패] '{q}': {type(exc).__name__}: {exc}", flush=True)
+        time.sleep(TPM_GAP_SEC)
 
     if not dests:
         print("[이력 케이스 생략] 목적지 목록이 비어 있다")

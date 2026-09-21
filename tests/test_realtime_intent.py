@@ -234,6 +234,15 @@ class TestAsk:
         assert conns[0].closed is True
         assert client._conn is None
 
+    def test_failed_status_surfaces_error_code(self):
+        # TPM 한도 초과: response.done 이 status=failed·output 빈 채로 온다 (2026-09-21 스모크 실측)
+        err = types.SimpleNamespace(code="rate_limit_exceeded", type="tokens",
+                                    message="Rate limit reached … Please try again in 864ms.")
+        resp = types.SimpleNamespace(status="failed", status_details=types.SimpleNamespace(error=err),
+                                     output=[], usage=None)
+        with pytest.raises(RuntimeError, match="rate_limit_exceeded"):
+            RealtimeIntentClient._parse_done(FakeEvent("response.done", response=resp))
+
 
 class TestWarm:
     def test_warm_connects_once_and_ask_reuses_it(self):

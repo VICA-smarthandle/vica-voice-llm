@@ -241,7 +241,16 @@ class RealtimeIntentClient:
 
     @staticmethod
     def _parse_done(done) -> tuple[dict, dict]:
-        for item in getattr(done.response, "output", []) or []:
+        resp = done.response
+        status = getattr(resp, "status", None) or "completed"
+        if status != "completed":
+            # 한도 초과(rate_limit_exceeded)·취소·불완전 응답은 output 이 비어 온다 — 사유를 그대로 싣는다.
+            details = getattr(resp, "status_details", None)
+            err = getattr(details, "error", None)
+            why = getattr(err, "code", None) or getattr(details, "reason", None) or "사유 없음"
+            msg = getattr(err, "message", None) or ""
+            raise RuntimeError(f"Realtime 응답 {status}: {why} {msg}".strip())
+        for item in getattr(resp, "output", []) or []:
             if getattr(item, "type", "") == "function_call" and getattr(item, "name", "") == TOOL_NAME:
                 try:
                     draft = json.loads(item.arguments or "{}")
@@ -249,7 +258,7 @@ class RealtimeIntentClient:
                     raise ValueError(f"set_intent 인자가 JSON 이 아니다: {exc}") from exc
                 if not isinstance(draft, dict):
                     raise ValueError("set_intent 인자가 객체가 아니다")
-                return draft, _usage_dict(getattr(done.response, "usage", None))
+                return draft, _usage_dict(getattr(resp, "usage", None))
         raise ValueError("응답에 set_intent 호출이 없다")
 
 
