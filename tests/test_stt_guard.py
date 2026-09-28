@@ -193,3 +193,27 @@ def test_gomawo_alone_is_hallucination_but_mixed_survives():
     assert is_hallucination("고마워.") is True
     assert is_hallucination("고마워") is True
     assert is_hallucination("고마워. 대기해.") is False
+
+
+def test_number_loop_is_hallucination_2026_09_28():
+    """2026-09-28 마이크 실기: 사용자 말 대신 숫자 몇 개가 끝없이 반복되는
+    전사가 3분 새 두 번 나왔다(whisper 반복 루프). 목록 문구가 아니라 통과했고,
+    LLM 이 '2'를 방2로 읽어 안내를 제안했다. 실측 전사 그대로 쓴다."""
+    loop_a = ", ".join(["2", "3"] * 40 + ["4", "3"] * 20)
+    loop_b = "1, 2, 1, 2, 1, 2, " + ", ".join(["1", "3", "2"] * 30)
+    assert is_hallucination(loop_a) is True
+    assert is_hallucination(loop_b) is True
+    # 같은 루프가 장소 이름으로도 나온다 — STT 장소 귀띔을 무음에서 되뇐 것.
+    # 과거 실기 전사 1,053개 중 58개가 반복 루프였고 대부분이 이 꼴이다.
+    assert is_hallucination("입구, " + ", ".join(["화장실"] * 20)) is True
+    assert is_hallucination(", ".join(["입구", "4층", "실험실 입구"] * 6)) is True
+
+
+def test_real_repetition_survives():
+    """사람도 되풀이한다 — 짧은 반복·섞인 말은 살아야 한다. '네. 아니. 아니.
+    아니.'는 09-02 실기에서 정정 방어의 근거가 된 진짜 발화다."""
+    assert is_hallucination("네. 아니. 아니. 아니.") is False
+    assert is_hallucination("네 네 네 네") is False
+    assert is_hallucination("아니 아니 아니 아니 아니 아니") is False
+    assert is_hallucination("2층 3층 말고 4층으로 가 주세요") is False
+    assert is_hallucination("방2로 가 줘") is False
