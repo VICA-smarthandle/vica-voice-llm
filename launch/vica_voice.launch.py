@@ -95,6 +95,12 @@ def generate_launch_description() -> LaunchDescription:
                     "OLLAMA_KEEP_ALIVE": "-1",
                     "OLLAMA_NUM_PARALLEL": "1",
                     "OLLAMA_MAX_LOADED_MODELS": "1",
+                    # 직접 등록한 GGUF(폴백 midm2-mini)는 이게 없으면 Ollama 가
+                    # GGUF 내장 Jinja 틀을 골라 system(목적지 목록)을 빠뜨린다
+                    # (2026-09-28 실측: 이름 지시 무시·EXAONE 4.0 20.8 %). Go 틀
+                    # 경로로 강제해 Modelfile TEMPLATE·JSON 스키마를 살린다.
+                    # 공식 태그(gemma4·exaone3.5)는 영향 없음.
+                    "OLLAMA_GO_TEMPLATE": "1",
                 },
             ),
         ]
