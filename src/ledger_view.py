@@ -16,6 +16,12 @@ DIALOG_KO = {
     "approaching": "사람에게 다가가는 중",
     "navigating": "안내 중(주행)",
     "paused": "일시정지",
+    # 손잡이 두 단계(2026-09-30, ROS mission_logic DIALOG_GRIP_WAIT·DIALOG_PAUSED_HANDLE).
+    # 손 놓쳐 선 것과 "잠깐"으로 선 것이 둘 다 "일시정지"로 보이면 "왜 안 가요?"에
+    # "다시 가자라고 말하세요"로 엉뚱하게 답한다. 정본: 루트 docs/superpowers/specs/
+    # 2026-09-28-touch-haptic-integration-final.md 4.7절.
+    "grip_wait": "손잡이 잡기를 기다리는 중(잡으면 안내 시작)",
+    "paused_handle": "손잡이를 놓쳐 멈춤(다시 잡으면 출발)",
     "arrived": "도착",
     "asking_next": "도착 질문 중",
     "asking_wait_time": "대기 시간 질문 중",
