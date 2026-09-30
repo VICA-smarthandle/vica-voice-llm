@@ -3,6 +3,20 @@
 ROS·LLM·langchain 의존이 없어 개발용 컴퓨터에서 그대로 검증한다.
 순수 로직 모듈이며, 배선은 노드가 맡는다.
 
+## [2026-09-30] 모드 질문은 쓰지 않기로 했다 (설계 D2)
+
+아래 흐름(목적지 확정 뒤 MODE_ASK → "네" → 3초 잡기)은 **대체됐다.** 09-10 접근
+흐름(수락 → 손잡이 회전 → 손잡이 안내 + 진동)이 생긴 뒤로는 잡는 행동 자체를
+"쓰겠다"는 대답으로 본다 — 안내 뒤 15초 안에 2초 중 80 % 잡으면 활성, 못 잡으면
+비활성. 판정은 전부 ROS `mission_manager`(`grip_meter.py`·`mission_logic.py`)가
+하고, 이 저장소는 LLM 상황판 번역(`ledger_view.DIALOG_KO` 의 grip_wait·
+paused_handle)과 손잡이 사실(`langchain_intent_parser.HANDLE_FACTS`)만 맡는다.
+정본: 루트 `docs/superpowers/specs/2026-09-28-touch-haptic-integration-final.md`.
+
+이 모듈의 `AFFIRMATIVES`·`NEGATIVES`·`classify_short_reply` 는 목적지 확인 단축이
+계속 쓰므로 남는다. `ModeQuestion` 과 replies 의 MODE_* 문구는 쓰는 곳이 없지만
+지우지 않는다(되돌릴 때를 위해).
+
 ## 왜 규칙으로 판정하는가
 
 첫 호출에서 로봇이 `replies.MODE_ASK` 로 묻고 사용자는 "네" 한 글자로 답한다.
