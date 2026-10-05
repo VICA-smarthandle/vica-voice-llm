@@ -1,0 +1,11 @@
+# Gemma 4 E2B 텍스트 전용 변형: HF Q4_K_M 가중치만 쓰고(projector 제외),
+# 모델 턴 앞에 빈 생각 블록을 넣어 자발적 추론을 막는다 (공식 태그의 think=false 와 같은 효과).
+FROM /home/ji_w/.ollama/models/blobs/sha256-740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8
+TEMPLATE """{{- range .Messages }}<|turn>{{ if eq .Role "assistant" }}model{{ else }}{{ .Role }}{{ end }}
+{{ .Content }}<turn|>
+{{ end }}<|turn>model
+<|channel>thought
+<channel|>"""
+PARAMETER stop "<turn|>"
+PARAMETER stop "<|turn>"
+PARAMETER temperature 0

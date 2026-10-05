@@ -1,0 +1,14 @@
+# Mi:dm 2.0 Mini Instruct 2.3B (커뮤니티 GGUF mykor, Q4_K_M) — KT 공식 GGUF 없음.
+# [함정 09-28] EXAONE 4.0 과 같다 — Jinja 틀 경로에서 우리 system 이 빠지고 KT 기본 문구만
+# 남았다. 서버를 OLLAMA_GO_TEMPLATE=1 로 띄워 이 틀을 쓴다. 형식은 GGUF 내장 틀과 같은
+# Llama-3 머리표이고, KT 기본 시스템 문구(약 1,000자)는 넣지 않는다(입력만 늘린다).
+# BOS 는 Ollama 가 붙인다.
+FROM /home/ji_w/models/gguf/Midm-2.0-Mini-Instruct-Q4_K_M.gguf
+TEMPLATE """{{- range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
+
+"""
+PARAMETER stop "<|eot_id|>"
+PARAMETER stop "<|end_of_text|>"
+PARAMETER temperature 0

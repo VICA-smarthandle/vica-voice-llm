@@ -1,0 +1,24 @@
+# EXAONE 4.0 1.2B (LG 공식 GGUF Q8_0) — Ollama 공식 목록에 없어 직접 등록.
+# [함정 09-28] Ollama 0.30.6 은 기본으로 GGUF 안의 Jinja 틀(gguf_chat_template)을 쓰고
+# 이 TEMPLATE 을 무시한다. 그 경로에서 system 메시지가 빠져 목적지 목록이 모델에 안 갔다
+# ("토끼봇" 시험: 이름 지시 무시, 입력 18토큰). → 서버를 OLLAMA_GO_TEMPLATE=1 로 띄워 이 틀을 쓴다.
+# 틀은 GGUF 내장 틀의 비추론 모드(assistant 턴 앞 빈 생각 블록)를 그대로 옮긴 것.
+FROM /home/ji_w/models/gguf/EXAONE-4.0-1.2B-Q8_0.gguf
+TEMPLATE """{{- range .Messages }}{{ if eq .Role "system" }}[|system|]
+{{ .Content }}[|endofturn|]
+{{ else if eq .Role "user" }}[|user|]
+{{ .Content }}[|endofturn|]
+{{ else if eq .Role "assistant" }}[|assistant|]
+<think>
+
+</think>
+
+{{ .Content }}[|endofturn|]
+{{ end }}{{ end }}[|assistant|]
+<think>
+
+</think>
+
+"""
+PARAMETER stop "[|endofturn|]"
+PARAMETER temperature 0

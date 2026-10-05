@@ -1,0 +1,19 @@
+# Qwen3.5 2B (Ollama 공식 qwen3.5:2b 가중치 blob 그대로, Q8_0) — 형식 강제용 재등록.
+# [함정 09-28] 공식 태그는 전용 renderer/parser(qwen3.5)를 쓰는데, 그 경로에서는
+# JSON 스키마 format 이 강제되지 않아 'intent=navigate, destination_candidate=…'
+# 같은 자유 문장이 나왔다(0630 벤치 19.2 %, 판단은 대부분 맞음). Go 틀 경로
+# (서버 OLLAMA_GO_TEMPLATE=1)로 등록하면 스키마가 강제된다. 생각 모드는 모델 턴
+# 앞에 빈 생각 블록을 넣어 끈다(Qwen 비추론 모드 형식).
+# 이미지 인코더는 blob 에 함께 들어 있어 빼지 못했다 — 메모리는 공식 태그와 같다.
+FROM /home/ji_w/.ollama/models/blobs/sha256-b709d81508a078a686961de6ca07a953b895d9b286c46e17f00fb267f4f2d297
+TEMPLATE """{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+<think>
+
+</think>
+
+"""
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+PARAMETER temperature 0
