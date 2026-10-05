@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .destination_matcher import match_destination
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from . import local_rules
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import get_realtime_client
@@ -140,7 +141,8 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 
 
 def _build_system_prompt(
-    destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None
+    destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
+    local: bool = False,
 ) -> str:
     lines = []
     for d in destinations:
@@ -183,7 +185,7 @@ def _build_system_prompt(
 - 직전에 로봇이 'OO로 안내해드릴까요?'라고 물었고 사용자가 긍정(응, 네, 맞아, 그래, 좋아)하면:
   intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true 로 답해라.
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
-- 부정만 하고 목적지를 안 말하면 clarify."""
+- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "")
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -231,6 +233,42 @@ def _pending_confirm_destination(
     for dest in destinations:
         if dest.confirm_prompt and dest.confirm_prompt == last_ai.content:
             return dest
+    return None
+
+
+def _recent_confirm_destination(
+    history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
+):
+    """기록에서 **가장 최근의 확인 질문**이 가리키는 목적지 (로컬 규칙 전용, 2026-10-05).
+
+    로컬 규칙은 로봇이 소리 낸 말 전부(미션 말 포함)를 기록에 넣는다. 그러면 확인
+    질문 뒤에 미션의 다른 말("지금은 다른 응대 중…")이 끼어 '마지막 로봇 말'이
+    확인 질문이 아닐 수 있다. 확인 중인지는 미션의 dialog_state 가 정하고, 여기서는
+    어느 목적지인지만 찾는다 — 그래서 마지막 말이 아니라 거슬러 올라가 찾는다.
+    """
+    if not history:
+        return None
+    for m in reversed(history):
+        if not isinstance(m, AIMessage):
+            continue
+        for dest in destinations:
+            if dest.confirm_prompt and dest.confirm_prompt == m.content:
+                return dest
+    return None
+
+
+def _pending_for(history, destinations, local: bool, dialog_state: str):
+    """'확인 대기 중인 목적지'. 로컬 규칙 + 미션 상태를 알면 미션 상태가 정한다.
+
+    - 로컬 규칙이 꺼졌거나 dialog_state 를 모르면: 예전 그대로(마지막 로봇 말).
+    - 로컬 규칙 + confirming: 기록의 가장 최근 확인 질문 목적지.
+    - 로컬 규칙 + 그 밖의 단계: 없음 — 확인 중이 아닌데 "그래"가 지나간 확인
+      질문에 붙어 출발이 확정되던 문제(10-02 시연 ①, 수리안 가)를 막는다.
+    """
+    if not local or not dialog_state:
+        return _pending_confirm_destination(history, destinations)
+    if dialog_state == "confirming":
+        return _recent_confirm_destination(history, destinations)
     return None
 
 
@@ -285,7 +323,7 @@ def _sino_number(token: str):
     return _SINO_UNITS.get(token)
 
 
-def parse_wait_minutes(text: str):
+def parse_wait_minutes(text: str, range_factor: float = 1.5):
     """한국어 시간 표현에서 분(minute)을 뽑는다. 없으면 None.
 
     산수는 전부 여기서 한다 — LLM 에게 계산을 맡겼더니 범위("십 분에서
@@ -294,6 +332,8 @@ def parse_wait_minutes(text: str):
     - 범위(숫자 2개 이상 또는 "에서"·"~")는 넉넉한 쪽(최댓값) x1.5 반올림
       (사용자 결정: "5분에서 10분" -> 15분 — 여유를 주는 게 센스다).
     - 상한(30분)은 여기서 걸지 않는다 — 판정 권한은 Mission 에 있다.
+    - range_factor: 범위에 곱하는 수. 로컬 규칙은 1.0 을 넘겨 OpenAI 지시문과
+      같은 "범위면 큰 쪽"으로 맞춘다(2026-10-05). 기본값 1.5 는 그대로다.
     """
     import re
     t = (text or "").replace(" ", "")
@@ -313,7 +353,7 @@ def parse_wait_minutes(text: str):
     if not values:
         return None
     if len(values) >= 2 or "에서" in t or "~" in t:
-        return int(max(values) * 1.5 + 0.5)
+        return int(max(values) * range_factor + 0.5)
     return values[0]
 
 
@@ -377,6 +417,9 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
         # 모델을 메모리에 상주시킨다 (기본 5분 후 언로드 -> 다음 발화가 ~20초 콜드스타트).
         "keep_alive": -1,
     }
+    if local_rules.enabled():
+        # 로컬 규칙: 문맥 길이를 Ollama 기본값에 맡기지 않고 명시한다(2026-10-05).
+        kwargs["num_ctx"] = local_rules.LOCAL_NUM_CTX
     client_kwargs: dict = {"timeout": timeout}
     if api_key:  # 클라우드는 인증 헤더 필요, 로컬 Ollama 는 불필요
         client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
@@ -391,6 +434,7 @@ def _build_local_structured():
     client_kwargs 의 timeout 이 없으면 ollama 클라이언트 기본값(None)이 적용돼
     Ollama 가 멈춰도 무한정 기다린다 — LOCAL_TIMEOUT_SEC 으로 상한을 둔다.
     """
+    extra = {"num_ctx": local_rules.LOCAL_NUM_CTX} if local_rules.enabled() else {}
     llm = ChatOllama(
         model=FALLBACK_MODEL,
         base_url=FALLBACK_HOST,
@@ -398,6 +442,7 @@ def _build_local_structured():
         reasoning=False,
         keep_alive=-1,
         client_kwargs={"timeout": LOCAL_TIMEOUT_SEC},
+        **extra,
     )
     return llm.with_structured_output(_IntentDraft)
 
@@ -469,7 +514,8 @@ def reset_backend_manager() -> None:
 
 
 def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
-                     destinations: Sequence[DestinationData]) -> Optional[VicaIntent]:
+                     destinations: Sequence[DestinationData],
+                     dialog_state: str = "", local: bool = False) -> Optional[VicaIntent]:
     """LLM 없이 코드가 확정하는 경우. 없으면 None.
 
     parse_intent 의 지름길(제어 확인 대기 -> 목적지 확인 대기 긍/부정 -> 호출어 ->
@@ -497,7 +543,17 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
                 need_confirm=False,
             )
 
-    pending = _pending_confirm_destination(history, destinations)
+    # 로컬 규칙 + 미션이 확인 중(confirming): 확인 질문의 짧은 대답을 여기서
+    # 끝낸다. 기록의 마지막 말이 확인 질문이 아니어도(미션 말이 끼어도) 확인
+    # 중이라는 사실은 dialog_state 가 안다 — 이때 "음"이 아래 일반 경로로 새서
+    # affirm 이 되면 미션은 곧바로 출발한다(CONFIRMING + affirm = 확정, 08-31).
+    # 09-28 "음" 되묻기의 의도("음"으로는 절대 출발 안 함)를 지키는 자리다.
+    if local and dialog_state == "confirming":
+        confirming = _confirming_shortcut(user_text, history, destinations)
+        if confirming is not None:
+            return confirming
+
+    pending = _pending_for(history, destinations, local, dialog_state)
     if pending is not None:
         word = _normalize_short_reply(user_text)
         # 첫 단어 기준 판정 (2026-09-01): "응 화장실로 가자"처럼 긍정어 뒤에
@@ -587,11 +643,61 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
     # 무시한다 (계약: VicaIntent.msg affirm/deny 절, "아무 때나 보내도 안전").
     # reply 는 빈 문자열 — 수락/거절 발화는 Mission 몫이라 채우면 두 번 말한다.
     # '취소'는 NEGATIVES 에도 있으나 위 _CANCEL_WORDS 직행이 먼저 잡는다.
+    # 로컬 규칙: 미션이 대답을 기다리는 단계일 때만 즉시 처리하고, 아니면 LLM 이
+    # 앞뒤 대화를 보고 판단한다(2026-10-05 인수인계 "짧은 대답").
+    if local and not local_rules.short_answer_allowed(dialog_state):
+        return None
     if word in _SOLO_AFFIRMATIVES:
         return VicaIntent(intent="affirm", confidence=1.0, reply="", need_confirm=False)
     if word in _NEGATIVES:
         return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
     return None
+
+
+def _confirming_shortcut(user_text: str, history: Optional[list[BaseMessage]],
+                         destinations: Sequence[DestinationData]) -> Optional[VicaIntent]:
+    """로컬 규칙 + 미션 confirming 일 때의 짧은 대답. 짧은 대답이 아니면 None(LLM 몫).
+
+    - 부정어가 한 토막이라도 있으면 deny (09-02 정정 방어와 같다).
+    - '음'·'어어' 단독은 출발 대신 같은 확인 질문을 한 번 더 (09-28 A안).
+      목적지를 기록에서 못 찾으면 고정 문구 RETRY_PROMPT 로 되묻는다 — 어느 쪽이든
+      Mission 이 무시하는 clarify 라 출발하지 않는다(안전한 쪽으로 실패).
+    - 진짜 긍정(단독 또는 첫 단어): 목적지를 알면 그 목적지로 확정 navigate,
+      모르면 affirm — Mission 은 CONFIRMING 에서 affirm 을 자기가 아는 목적지의
+      확정으로 받는다.
+    """
+    word = _normalize_short_reply(user_text)
+    tokens = user_text.split()
+    first = _normalize_short_reply(tokens[0]) if tokens else ""
+    denied = (word in _NEGATIVES
+              or any(_normalize_short_reply(t) in _NEGATIVES for t in tokens))
+    dest = _recent_confirm_destination(history, destinations)
+    if denied:
+        return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
+    if word in SOFT_AFFIRMATIVES and word not in _AFFIRMATIVES:
+        return VicaIntent(intent="clarify", confidence=1.0,
+                          reply=dest.confirm_prompt if dest else RETRY_PROMPT,
+                          need_confirm=False, safety_flag="normal")
+    if word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES:
+        if dest is None:
+            return VicaIntent(intent="affirm", confidence=1.0, reply="", need_confirm=False)
+        return VicaIntent(intent="navigate", destination_candidate=dest.name,
+                          matched_destination_id=dest.id, confidence=1.0,
+                          reply=f"{dest.name} 안내를 시작합니다.",
+                          need_confirm=False, safety_flag="normal")
+    return None
+
+
+def is_scripted_intent(intent: VicaIntent, destinations: Sequence[DestinationData]) -> bool:
+    """재청취 기각 예외 판별 — is_scripted_reply 에 로컬 규칙의 되묻기 하나를 더한다.
+
+    로컬 규칙의 '음' 되묻기는 목적지를 못 찾으면 RETRY_PROMPT 로 나간다. 같은 문구를
+    _finalize 가 빈 대답 메움에도 쓰므로, 지름길이 만든 것(clarify + 확신 1.0)만 통과시킨다.
+    """
+    if is_scripted_reply(intent.reply, destinations):
+        return True
+    return (local_rules.enabled() and intent.intent == "clarify"
+            and intent.reply == RETRY_PROMPT and intent.confidence == 1.0)
 
 
 def parse_intent(
@@ -602,13 +708,17 @@ def parse_intent(
     model: Optional[str] = None,
 ) -> VicaIntent:
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
-    shortcut = _shortcut_intent(user_text, history, destinations)
+    local = local_rules.enabled()
+    dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
+    shortcut = _shortcut_intent(user_text, history, destinations,
+                                dialog_state=dialog_state, local=local)
     if shortcut is not None:
         return shortcut
     pending_command = _pending_command(history)
-    pending = _pending_confirm_destination(history, destinations)
+    pending = _pending_for(history, destinations, local, dialog_state)
 
-    messages: list[BaseMessage] = [SystemMessage(_build_system_prompt(destinations, robot_state))]
+    messages: list[BaseMessage] = [SystemMessage(
+        _build_system_prompt(destinations, robot_state, local=local))]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(user_text))
@@ -636,7 +746,7 @@ def parse_intent(
             need_confirm=False,
         )
     return _finalize(draft, destinations, pending=pending,
-                     pending_command=pending_command, user_text=user_text)
+                     pending_command=pending_command, user_text=user_text, local=local)
 
 
 # ---------------------------------------------------------------------------
@@ -854,6 +964,7 @@ def _finalize(
     pending: Optional[DestinationData] = None,
     pending_command: Optional[str] = None,
     user_text: str = "",
+    local: bool = False,
 ) -> VicaIntent:
     """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)
 
@@ -885,9 +996,15 @@ def _finalize(
         # 후속 질문. 상한(30분) 강제는 Mission. reply 는 Mission 몫.
         result.reply = ""
         result.need_confirm = False
-        minutes = parse_wait_minutes(user_text)
-        if minutes is None and draft.wait_minutes and draft.wait_minutes > 0:
-            minutes = draft.wait_minutes
+        if local:
+            # 로컬 규칙(2026-10-05): OpenAI 지시문 기준에 맞춘다 — 범위면 큰 쪽(×1.5
+            # 없음), 하나면 그 값, 숫자가 없으면 비움(Mission 이 "몇 분쯤?" 다시 물음).
+            # 숫자 계산은 계속 코드가 한다 — 작은 모델은 범위에 평균을 냈다.
+            minutes = parse_wait_minutes(user_text, range_factor=1.0)
+        else:
+            minutes = parse_wait_minutes(user_text)
+            if minutes is None and draft.wait_minutes and draft.wait_minutes > 0:
+                minutes = draft.wait_minutes
         result.wait_minutes = minutes if minutes else -1
         return result
 

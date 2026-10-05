@@ -32,18 +32,19 @@ from std_msgs.msg import Bool, String, UInt8MultiArray
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
+from . import local_rules
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import (
-    get_backend_manager, is_instant_utterance, is_scripted_reply, parse_intent,
-    parse_intent_audio)
+    get_backend_manager, is_instant_utterance, is_scripted_intent, is_scripted_reply,
+    parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .situation_board import SituationBoard, parse_goal_event_name
-from .replies import expects_answer
+from .replies import COMMAND_DECLINED, LLM_UNAVAILABLE, RETRY_PROMPT, WAKE_GREETING, expects_answer
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
@@ -96,10 +97,19 @@ class LlmIntentNode(Node):
         # 소리 모드는 시간으로 비우지 않는다(2026-09-20 사용자 결정): 대기 중(10~30분)에도
         # 기억이 남아야 돌아온 사용자의 "아까 어디 갔었지?"가 통한다. 비우는 때는
         # 안내가 대기 없이 끝났을 때뿐 — 미션의 return_home_sent(_on_goal_event).
-        if self._intent_input == "audio":
-            self._history = ConversationHistory(max_messages=16, idle_reset_sec=float("inf"))
+        # 로컬 규칙(VICA_LOCAL_RULES, 2026-10-05)도 같은 방식이다: 로봇이 소리 낸 말
+        # 전부를 16줄 기억하고 시간으로 비우지 않는다. 꺼져 있으면 예전 그대로.
+        self._local = local_rules.enabled()
+        self._spoken_history = self._intent_input == "audio" or self._local
+        if self._spoken_history:
+            self._history = ConversationHistory(
+                max_messages=local_rules.HISTORY_MAX_MESSAGES, idle_reset_sec=float("inf"))
         else:
             self._history = ConversationHistory()
+        # 로컬 규칙: 접근 질문 시작(→ awaiting_user)에 기록을 비우려고 직전 단계를 기억.
+        self._prev_dialog_state = ""
+        # 로컬 규칙: 듣기 창 밖 못 알아들은 말 — 고정 문구 한 번 뒤 침묵.
+        self._misheard = local_rules.MisheardGate()
         # 상황판(소리 모드): 이동 중·마지막 도착·대기 요청 — 이력이 비어도 남는 사실.
         self._board = SituationBoard()
 
@@ -126,7 +136,8 @@ class LlmIntentNode(Node):
         self._robot_recent: list = []
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
-        self.get_logger().info(f"의도 입력 모드: {self._intent_input}")
+        self.get_logger().info(
+            f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}")
 
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
@@ -203,11 +214,20 @@ class LlmIntentNode(Node):
 
     def _on_wake_signal(self, _msg: String) -> None:
         self._followup_until = 0.0
+        self._misheard.reset()
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """로봇 상태 메시지를 받아 최신값으로 보관한다. 전환 담당 모듈에도 넘긴다."""
         self._robot_state = msg_to_robot_state(msg)
         self._backend.on_robot_state(msg.is_moving, msg.is_paused)
+        if self._local:
+            new_state = self._robot_state.dialog_state
+            if local_rules.should_clear_history(self._prev_dialog_state, new_state) and len(self._history):
+                # 접근 질문이 새로 시작됐다 = 새 사람(수리안 나). 앞사람과의 대화가
+                # 남아 있으면 그 사람의 "그래"가 옛 확인 질문에 붙는다(10-02 시연 ①).
+                self._history.clear()
+                self.get_logger().info("접근 질문 시작 — 대화 기록 비움(로컬 규칙)")
+            self._prev_dialog_state = new_state
 
     def _on_goal_event(self, msg: String) -> None:
         """미션 매니저의 주행 사건 → 전환 담당 모듈(주행 중엔 클라우드로 안 돌아간다)."""
@@ -216,7 +236,7 @@ class LlmIntentNode(Node):
             self._backend.on_goal_event(event)
         ev, name = parse_goal_event_name(msg.data)
         self._board.on_goal_event(ev, name)
-        if ev == "return_home_sent" and self._intent_input == "audio" and len(self._history):
+        if ev == "return_home_sent" and self._spoken_history and len(self._history):
             # 안내가 대기 없이 끝났다(종료 답·거절·무응답·대기 만료 → 홈행) = 이 사용자와의
             # 대화 끝. 다음 사람의 "거기로 가줘"가 앞사람 목적지로 붙지 않게 여기서만 비운다.
             self._history.clear()
@@ -325,11 +345,18 @@ class LlmIntentNode(Node):
                 and time.time() < self._followup_until
                 and intent.intent in ("unknown", "clarify")
                 and not intent.need_confirm
-                and not is_scripted_reply(intent.reply, self._destinations)
+                and not is_scripted_intent(intent, self._destinations)
                 and intent.safety_flag != "emergency"):
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")
             return
+
+        # 2-2) 로컬 규칙: 듣기 창 밖에서 못 알아들은 말(unknown·question)에는 LLM 이
+        #      지어낸 대꾸 대신 녹음된 고정 문구 하나만, 같은 상황이 이어지면 침묵.
+        #      코드가 정한 문구("네?"·"계속 진행할게요"·LLM 실패 안내·확인 질문)는
+        #      손대지 않는다. 미션이 말하는 상태 안내도 이 노드를 거치지 않아 그대로다.
+        if self._local and not llm_first:
+            intent = self._apply_misheard_rule(intent, text)
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
@@ -359,10 +386,28 @@ class LlmIntentNode(Node):
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
-        if self._intent_input == "audio":
+        if self._spoken_history:
             self._history.extend([HumanMessage(text)])
         else:
             self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+
+    def _apply_misheard_rule(self, intent: VicaIntent, text: str) -> VicaIntent:
+        """로컬 규칙: 창 밖 못 알아들은 말의 대꾸를 고정 문구 한 번 → 침묵으로 바꾼다."""
+        fixed = {WAKE_GREETING, COMMAND_DECLINED, LLM_UNAVAILABLE}
+        misheard = (time.time() >= self._followup_until
+                    and intent.intent in ("unknown", "question")
+                    and intent.safety_flag != "emergency"
+                    and intent.reply not in fixed
+                    and not is_scripted_reply(intent.reply, self._destinations))
+        if not misheard:
+            if intent.intent not in ("unknown", "question"):
+                self._misheard.reset()    # 알아들은 말이 나오면 처음으로
+            return intent
+        reply = self._misheard.decide(RETRY_PROMPT)
+        self.get_logger().info(
+            f"못 알아들음(로컬 규칙): '{text}' intent={intent.intent} "
+            f"LLM 대꾸={intent.reply!r} → {'고정 문구' if reply else '침묵'}")
+        return intent.model_copy(update={"reply": reply or ""})
 
     def _on_tts_done_text(self, msg: String) -> None:
         """로봇이 방금 한 말을 기억한다(에코 대조용, 웨이크워드 노드와 같은 방어).
@@ -376,7 +421,7 @@ class LlmIntentNode(Node):
             (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
         self._robot_recent.append((now, msg.data))
         text = (msg.data or "").strip()
-        if self._intent_input == "audio" and text:
+        if self._spoken_history and text:
             self._history.extend([AIMessage(text)])
 
     def _on_user_audio(self, msg: UInt8MultiArray) -> None:
