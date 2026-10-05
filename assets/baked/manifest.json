@@ -11,8 +11,6 @@
  "reply_confirm_declined.wav": "알겠습니다. 어디로 안내해드릴까요?",
  "reply_cancel_confirm.wav": "안내를 취소할까요?",
  "reply_resume_confirm.wav": "다시 출발할까요?",
- "reply_approach_question.wav": "안녕하세요? 저는 시각장애인 안내로봇 비카입니다! 저와 함께 목적지까지 동행해보시는건 어떠세요? 안내를 받으시겠어요?",
- "reply_approach_onboarding.wav": "안녕하세요? 반갑습니다! 저에게 말을 거실 때는 '비카야'라고 불러주세요. 자, 이제 어디로 가고 싶으신가요?",
  "reply_approach_turn_notice.wav": "네, 잠시만 기다려주세요. 로봇이 회전하니 주의하세요.",
  "reply_approach_turn_done.wav": "회전이 완료되었습니다.",
  "reply_approach_farewell.wav": "알겠습니다. 이만 물러납니다.",
@@ -32,8 +30,8 @@
  "mission_msg_approach_busy.wav": "지금은 다른 응대 중입니다. 잠시 후 다시 말씀해 주세요.",
  "mission_msg_approach_declined.wav": "알겠습니다. 이만 물러납니다.",
  "mission_msg_approach_no_answer.wav": "실례했습니다. 필요하시면 언제든 불러 주세요.",
- "mission_msg_approach_onboarding.wav": "안녕하세요? 반갑습니다! 저에게 말을 거실 때는 '비카야'라고 불러주세요. 자, 이제 어디로 가고 싶으신가요?",
- "mission_msg_approach_question.wav": "안녕하세요? 저는 시각장애인 안내로봇 비카입니다! 저와 함께 목적지까지 동행해보시는건 어떠세요? 안내를 받으시겠어요?",
+ "mission_msg_approach_onboarding.wav": "저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?",
+ "mission_msg_approach_question.wav": "안녕하세요? 시각장애인 안내로봇 비카입니다. 안내를 받으시겠어요?",
  "mission_msg_approach_turn_done.wav": "회전이 완료되었습니다.",
  "mission_msg_busy.wav": "지금 이동 중입니다. 먼저 현재 안내를 취소해 주세요.",
  "mission_msg_canceled.wav": "안내를 취소했습니다.",
@@ -87,5 +85,6 @@
  "dest_mullichiryosil_arrival_merged.wav": "물리치료실 앞에 도착했습니다. 여기서 대기할까요?",
  "handle_grip_request.wav": "스마트핸들 손잡이를 잡아주세요!",
  "handle_grip_confirmed.wav": "확인되었습니다!",
- "handle_grip_lost.wav": "안전을 위해 손잡이를 다시 잡아주세요"
+ "handle_grip_lost.wav": "안전을 위해 손잡이를 다시 잡아주세요",
+ "mission_msg_handle_hint.wav": "손잡이가 진동하고 있습니다. 잡아주세요."
 }
