@@ -11,6 +11,7 @@ from src.langchain_intent_parser import (
     _IntentDraft,
     _normalize_short_reply,
     _pending_confirm_destination,
+    is_scripted_reply,
     parse_intent,
 )
 from src.schema import DestinationData
@@ -124,13 +125,28 @@ class TestFirstWordShortcut:
         result = parse_intent("아니 거기 말고 다른 데", [DEST], history=HISTORY)
         assert result.intent == "deny"
 
-    def test_hesitation_alone_confirms_but_prefix_does_not(self):
-        """'음'·'어어'는 whisper 가 적은 "응"이라 단독이면 승낙이다. 그러나
-        첫 단어로는 승낙이 아니다 — "음… 아니야"의 망설임이 곧바로 주행이
-        되면 안 된다 (2026-09-02 목록 추가 시 함께 정한 경계)."""
+    def test_hesitation_alone_reasks_but_prefix_does_not_confirm(self):
+        """'음'·'어어' 단독은 whisper 가 적은 "응"일 수도, 망설임일 수도 있다 —
+        글자로는 못 가른다. 출발 확인에서는 승낙하지 않고 같은 확인 질문을 한
+        번 더 한다(2026-09-28 사용자 결정 A안: 마이크 실기에서 혼잣소리 "음."이
+        안내소 출발을 확정했다). "응"이었던 사람은 한 번 더 답하면 된다.
+
+        navigate 로 보내면 안 된다 — Mission 은 확인 중인 같은 목적지의
+        navigate(need_confirm=True)를 '다시 말한 승낙'으로 보고 출발한다
+        (mission_logic.on_intent, 2026-09-01). clarify 는 Mission 이 무시하므로
+        확인 대기(CONFIRMING)가 그대로 살아 있다.
+        첫 단어로도 승낙이 아니다 — "음… 아니야" (2026-09-02 경계)."""
         alone = parse_intent("음.", [DEST], history=HISTORY)
-        assert alone.intent == "navigate"
+        assert alone.intent == "clarify"
+        assert not alone.matched_destination_id
         assert alone.need_confirm is False
+        assert alone.reply == DEST.confirm_prompt
+        # 재청취 기각(무의미 발화 침묵)에 삼켜지면 안 된다.
+        assert is_scripted_reply(alone.reply, [DEST]) is True
+        assert parse_intent("어어", [DEST], history=HISTORY).intent == "clarify"
+        # 진짜 긍정어는 그대로 한 번에 출발한다.
+        yes = parse_intent("응", [DEST], history=HISTORY)
+        assert yes.intent == "navigate" and yes.need_confirm is False
 
         prefixed = parse_intent("음 아니야 다른 데 갈래", [DEST], history=HISTORY,
                                 model="__no_llm__")
@@ -178,3 +194,12 @@ class TestCorrectionBeatsFirstWord:
         result = parse_intent("네 화장실 아니고 안내소로", [DEST],
                               history=HISTORY, model="__no_llm__")
         assert result.intent != "deny"
+
+
+def test_scripted_reply_detection():
+    """재청취 기각 예외 판별 — 코드가 정한 문구(호출 응답·확인 질문)만 참이다.
+    LLM 이 지어낸 잡담 대꾸는 여전히 거짓이라 종전대로 버려진다."""
+    assert is_scripted_reply("네?", [DEST]) is True
+    assert is_scripted_reply(DEST.confirm_prompt, [DEST]) is True
+    assert is_scripted_reply("식당으로 가시겠어요?", [DEST]) is False
+    assert is_scripted_reply("", [DEST]) is False

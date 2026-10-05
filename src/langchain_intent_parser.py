@@ -206,6 +206,19 @@ _normalize_short_reply = normalize_short_reply
 SHORTCUT_REPLIES = frozenset({WAKE_GREETING})
 
 
+def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bool:
+    """코드가 정한 문구(호출 응답·목적지 확인 질문)인가 — 재청취 기각 예외 판별.
+
+    확인 질문 재질문('음' 단독, 2026-09-28)은 clarify 로 나가는데, 재청취 창의
+    무의미 발화 기각이 intent 이름만 보고 삼키면 되묻기가 침묵이 된다.
+    LLM 이 지어낸 대꾸는 여기서 거짓이라 종전대로 버려진다.
+    """
+    if not reply:
+        return False
+    return reply in SHORTCUT_REPLIES or any(
+        d.confirm_prompt and d.confirm_prompt == reply for d in destinations)
+
+
 def _pending_confirm_destination(
     history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
 ):
@@ -503,6 +516,24 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
         # '아니고' 같은 말은 걸리지 않는다.
         denied = (word in _NEGATIVES
                   or any(_normalize_short_reply(t) in _NEGATIVES for t in tokens))
+        # 혼잣소리 단독('음'·'어어')은 출발 승낙으로 쓰지 않고 같은 확인
+        # 질문을 한 번 더 한다 (2026-09-28 사용자 결정 A안). whisper 가 적은
+        # "응"일 수도, 망설임일 수도 있어 글자로는 못 가른다 — 마이크 실기에서
+        # 혼잣소리 "음."이 안내소 출발을 확정했다. 모드 질문·짧은 답 구제 등
+        # 움직이지 않는 자리의 '음' 승낙(2026-09-02)은 그대로 둔다.
+        #
+        # navigate 로 보내면 안 된다 — Mission 은 확인 중인 같은 목적지의
+        # navigate(need_confirm=True)를 '다시 말한 승낙'으로 보고 출발한다
+        # (mission_logic.on_intent, 2026-09-01). clarify 는 Mission 이 무시해
+        # 확인 대기가 그대로 살고, 질문만 한 번 더 나간다.
+        if not denied and word in SOFT_AFFIRMATIVES and word not in _AFFIRMATIVES:
+            return VicaIntent(
+                intent="clarify",
+                confidence=1.0,
+                reply=pending.confirm_prompt,
+                need_confirm=False,
+                safety_flag="normal",
+            )
         if not denied and (word in _SOLO_AFFIRMATIVES or first in _AFFIRMATIVES):
             return VicaIntent(
                 intent="navigate",

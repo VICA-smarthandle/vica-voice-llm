@@ -37,7 +37,7 @@ from .destination_loader import load_destinations
 from .emergency_filter import detect_emergency
 from .history import ConversationHistory
 from .langchain_intent_parser import (
-    SHORTCUT_REPLIES, get_backend_manager, is_instant_utterance, parse_intent,
+    get_backend_manager, is_instant_utterance, is_scripted_reply, parse_intent,
     parse_intent_audio)
 from .ledger_view import render_ledger
 from .llm_backend import BackendState, parse_goal_event
@@ -318,12 +318,14 @@ class LlmIntentNode(Node):
         #      만든 호출 응답("네?")이 intent 이름만 보고 함께 삼켜져 '피카야'가
         #      무응답이 됐다(실기). 판별은 SHORTCUT_REPLIES 로 한다 — LLM 이
         #      지어낸 잡담 대꾸는 이 목록에 없으므로 종전대로 버려진다.
+        #      '음' 단독의 확인 재질문(2026-09-28)도 같은 까닭으로 통과한다 —
+        #      판별은 is_scripted_reply(호출 응답 + 목적지 확인 문구).
         #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
         if (not llm_first
                 and time.time() < self._followup_until
                 and intent.intent in ("unknown", "clarify")
                 and not intent.need_confirm
-                and intent.reply not in SHORTCUT_REPLIES
+                and not is_scripted_reply(intent.reply, self._destinations)
                 and intent.safety_flag != "emergency"):
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")

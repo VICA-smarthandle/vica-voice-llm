@@ -12,6 +12,8 @@ whisper 는 입력에 말이 없으면 학습 데이터에서 흔했던 문장(�
      문구들만으로 이루어졌을 때만** 유령으로 본다 — 진짜 발화에 섞인 부분
      일치는 지우지 않는다("네, 감사합니다"는 통과). 문장이 여럿이면 조각을
      쪼개 전부 환각일 때만 기각한다 ("다 됐어. 고마워." 실측 2026-09-02).
+     몇 토막이 끝없이 되풀이되는 반복 루프("1, 2, 3, 2, 3, …")도 여기서
+     막는다 (2026-09-28).
 
 전부 순수 함수라 장치 없이 시험된다. 목록은 실측 로그에서 발견되는 대로
 추가한다 (근거 없는 선제 추가는 하지 않는다).
@@ -64,6 +66,21 @@ _STRIP = re.compile(r"[\s.,!?~♪…'\"”“]+")
 _SENTENCE_SPLIT = re.compile(r"[.!?…]+")
 
 
+# 반복 루프 — whisper 가 몇 토막("1, 2, 3")을 끝없이 되풀이하는 환각
+# (2026-09-28 마이크 실기: 3분 새 두 번, 100토막 넘게). 문구가 매번 달라
+# 목록으로 못 잡는다. 토막이 많은데 서로 다른 토막은 거의 없을 때만 본다 —
+# 사람의 되풀이("아니. 아니. 아니.")는 짧아서 토막 수 문턱에 안 닿는다.
+_TOKEN = re.compile(r"[^\s.,!?~…'\"”“]+")
+_LOOP_MIN_TOKENS = 12
+_LOOP_MAX_DISTINCT_RATIO = 0.25
+
+
+def _is_repeat_loop(text: str) -> bool:
+    tokens = _TOKEN.findall(text)
+    return (len(tokens) >= _LOOP_MIN_TOKENS
+            and len(set(tokens)) / len(tokens) <= _LOOP_MAX_DISTINCT_RATIO)
+
+
 def _normalize(text: str) -> str:
     return _STRIP.sub("", text)
 
@@ -82,6 +99,8 @@ def is_hallucination(text: str) -> bool:
     norm = _normalize(text)
     if not norm:
         return False
+    if _is_repeat_loop(text):
+        return True
     if _is_ghost_piece(norm):
         return True
     pieces = [_normalize(p) for p in _SENTENCE_SPLIT.split(text)]
