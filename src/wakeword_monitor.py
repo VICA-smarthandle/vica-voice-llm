@@ -479,6 +479,12 @@ class WakewordMonitor:
             return None
         if self.gate_a.feed(float(scores["a"]), now):
             self.gate_b.reset()
+            # '비카야'는 새 대화다 — 옛 질문의 재청취 예약을 지운다. 남겨 두면
+            # 로봇 말이 끝나는 순간 set_speaking(False) 가 '질문 답' 창을 다시
+            # 열어 이 호출 창을 바꿔치기한다. 질문 창은 최소 개방·반짝 무효화가
+            # 없어 로봇 소리 한 조각에 닫히고 뒤따른 말이 사라졌다
+            # (2026-10-06 실기 15:21, '화장실로 가자' 유실).
+            self._followup_armed = False
             self._on_wake()
             self._open_listen(followup=False, now=now)
             return "wake"

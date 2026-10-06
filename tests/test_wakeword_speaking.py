@@ -196,3 +196,49 @@ def test_ring_buffer_survives_tts_boundary():
 
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.1)
     assert results[-1] == "emergency"
+
+
+# ---- '비카야'는 옛 질문 예약을 지운다 (2026-10-06 실기 15:21) ------------------
+def _frames(m, n, frame, t0, vad=None):
+    out, t = [], t0
+    for _ in range(n):
+        out.append(m.process_frame(frame, now=t, vad=vad))
+        t += 0.08
+    return out, t
+
+
+def _wake_after_stale_question(m):
+    """되묻기 질문 → 질문 창 → 안내('응답이 없어…')가 창을 접고 예약을 되살림
+    → 그 안내 도중 '비카야' → 안내 끝 → '네?'. 반환: 마지막 시각."""
+    t = 0.0
+    m.arm_followup(now=t)
+    m.set_speaking(True, now=t)
+    _, t = _frames(m, 62, QUIET, t, vad=False)       # 질문 재생 5초
+    m.set_speaking(False, now=t)                     # 질문 창이 열린다
+    _, t = _frames(m, 30, QUIET, t, vad=False)
+    m.set_speaking(True, now=t)                      # 안내 시작 — 창 접고 예약 되살림
+    out, t = _frames(m, 2, LOUD, t, vad=False)       # '비카야'
+    assert out[-1] == "wake"
+    _, t = _frames(m, 58, LOUD, t, vad=False)        # 안내 나머지
+    m.set_speaking(False, now=t)
+    m.set_speaking(True, now=t)
+    _, t = _frames(m, 6, LOUD, t, vad=False)         # '네?'
+    m.set_speaking(False, now=t)
+    return t
+
+
+def test_wake_cancels_a_stale_question_reservation():
+    """안내가 끝나는 순간 옛 질문 예약이 '질문 답' 창을 다시 열어 호출 창을
+    바꿔치기했다. 질문 창은 최소 개방·반짝 무효화가 없어 로봇 소리 한 조각에
+    0.8초 만에 닫혔고(empty:ghost speech=0.00s), 그 뒤 '화장실로 가자'가 사라졌다."""
+    fake = Fake(scores=[(0, 0)] * 92 + [(0.9, 0), (0.9, 0)], text="화장실로 가자")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    t = _wake_after_stale_question(m)
+    assert m._listen_is_followup is False            # 호출 창 그대로
+    out_b, t = _frames(m, 1, LOUD, t, vad=True)      # 로봇 소리 꼬리 한 조각
+    out_q, t = _frames(m, 12, QUIET, t, vad=False)   # 사용자가 숨 고르는 1초
+    out_s, t = _frames(m, 15, LOUD, t, vad=True)     # '화장실로 가자'
+    out_e, t = _frames(m, 12, QUIET, t, vad=False)
+    assert "wake_silent" not in out_b + out_q + out_s
+    assert texts == ["화장실로 가자"]
