@@ -117,6 +117,12 @@ class WakewordNode(Node):
         self._user_doa_center = float(doa_center) if doa_center else None
         self._user_doa_width = float(
             os.environ.get("VICA_USER_DOA_WIDTH", "45") or 45)
+        # 호출 방향 회전 스위치 (2026-10-06 팀 요청으로 기본 끔). 켜면 "비카야"가 온
+        # 방향을 /vica/wake_doa 로 미션에 보내 그쪽으로 돈다(SEEKING·핸들 쪽 곧장
+        # 질문). 마이크 잡음이 강한 곳에서 방향이 틀려 엉뚱한 쪽으로 돌았다. 꺼도
+        # 방향은 로그에 남기고, barge-in 방향 관문·호출 방향 잠금은 그대로 쓴다.
+        self._wake_doa_turn = os.environ.get(
+            "VICA_WAKE_DOA_TURN", "off").strip().lower() in ("1", "on", "true")
 
         # 장소 이름 귀띔 — 자유 명령 창의 목적지 오전사('휴게실'→'조계실') 대책.
         # 목적지를 못 읽어도 감시는 시작해야 하므로 실패는 경고로만 남긴다.
@@ -202,7 +208,8 @@ class WakewordNode(Node):
                 if self._doa_gate else "꺼짐")
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
-            f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate})")
+            f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate} | "
+            f"호출 방향 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
         # 긴급이 확정되면 로봇부터 입을 다문다 — 정지 안내(긴급 발화)는
@@ -292,7 +299,14 @@ class WakewordNode(Node):
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
     def _publish_wake_doa(self, doa: float) -> None:
-        """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다."""
+        """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다.
+
+        회전이 꺼져 있으면(VICA_WAKE_DOA_TURN) 로그만 남기고 미션에 보내지 않는다 —
+        미션은 이 토픽이 와야만 돈다(방향을 못 읽었을 때와 같은 길).
+        """
+        if not self._wake_doa_turn:
+            self.get_logger().info(f"🧭 호출 방향 {doa:.0f}° (방향 회전 꺼짐 — 미션에 안 보냄)")
+            return
         self._pub_wake_doa.publish(Float32(data=float(doa)))
         self.get_logger().info(f"🧭 호출 방향 {doa:.0f}°")
 
