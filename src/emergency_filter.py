@@ -40,7 +40,11 @@ __all__ = [
     "EMERGENCY_KEYWORDS",
     "SOFT_KEYWORDS",
     "EMERGENCY_REPLY",
+    "PAUSE_PHRASES",
+    "PAUSABLE_DIALOG_STATES",
     "detect_emergency",
+    "detect_stop_request",
+    "stop_pause_intent_for",
 ]
 
 # 어절 구분자 (공백과 문장부호).
@@ -87,3 +91,46 @@ def detect_emergency(text: str) -> Optional[str]:
         if _starts_at_token_boundary(text, keyword):
             return keyword
     return None
+
+
+# ---- 청취 창 안 멈춤 말 → 주행 중이면 일시정지 (2026-10-06 사용자 결정 (가)) ----
+# '비카야' 뒤 말에 멈춤 말이 있으면 안내 주행 중에는 일시정지(pause) 제안으로 바꾼다.
+# 비상정지(래치·관리자 해제)는 '비카야' 없이 외친 긴급어(웨이크워드 노드 긴급 모델)
+# 몫으로 남긴다 — 불러 놓고 한 요청은 말로 다시 출발할 수 있는 정지가 맞다.
+# 전에는 이 말이 safety_flag 만 단 unknown 으로 나가 미션이 아무 데도 쓰지 않았다
+# (10-05 21:40 실기: '이동을 멈춰'에도 계속 주행).
+
+# 어절 첫머리 규칙(detect_emergency)으로는 붙여 쓴 '정지'를 못 잡는 멈춤 말.
+PAUSE_PHRASES = ("일시정지",)
+
+# 일시정지가 받아들여지는 미션 대화 단계(RobotState.dialog_state). 미션의
+# check_pause_gate 와 같은 뜻이다 — 주행 중, 그리고 손 놓침으로 선 PAUSED(말로 재개하는
+# 보통 일시정지로 바뀐다). 그 밖에서는 미션이 '지금은 안내 중이 아닙니다'로 거절하므로
+# 바꾸지 않고 예전처럼 둔다.
+PAUSABLE_DIALOG_STATES = ("navigating", "paused_handle")
+
+
+def detect_stop_request(text: str) -> Optional[str]:
+    """멈춤 말이면 그 말을, 아니면 None. 하드 긴급어 + 붙여 쓴 '일시정지'."""
+    keyword = detect_emergency(text)
+    if keyword:
+        return keyword
+    joined = re.sub(r"\s+", "", text or "")
+    for phrase in PAUSE_PHRASES:
+        if phrase in joined:
+            return phrase
+    return None
+
+
+def stop_pause_intent_for(text: str, dialog_state: str):
+    """청취 창 안 말이 멈춤 요청이고 지금 안내 주행 중이면 일시정지 제안을, 아니면 None.
+
+    reply 는 비운다 — "잠시 멈추겠습니다" 는 일시정지를 실제로 건 미션이 말한다.
+    safety_flag 는 emergency 로 둬 멈춤 말에서 왔다는 흔적을 남긴다(미션의 pause
+    경로는 이 값을 보지 않는다).
+    """
+    if dialog_state not in PAUSABLE_DIALOG_STATES or not detect_stop_request(text):
+        return None
+    from .schema import VicaIntent
+
+    return VicaIntent(intent="pause", reply="", need_confirm=False, safety_flag="emergency")

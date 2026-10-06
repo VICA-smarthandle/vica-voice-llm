@@ -35,7 +35,7 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 from . import local_rules
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_destinations
-from .emergency_filter import detect_emergency
+from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
 from .langchain_intent_parser import (
     get_backend_manager, is_instant_utterance, is_scripted_intent, is_scripted_reply,
@@ -132,6 +132,7 @@ class LlmIntentNode(Node):
         # 텍스트보다 먼저 처리돼야 이중 발행이 없다(항목 C).
         self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
         self._last_text_publish_t = 0.0   # 텍스트 경로가 방금 발행했으면 소리 경로를 생략한다
+        self._last_text_publish_intent = ""   # 그때 낸 intent — 멈춤 중복 발행 방지용
         # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
         self._robot_recent: list = []
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
@@ -266,6 +267,22 @@ class LlmIntentNode(Node):
         if self._history.begin_turn(time.time()):
             self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
 
+        # 1-0) 안내 주행 중 멈춤 말은 일시정지 제안으로 (2026-10-06 사용자 결정 (가)).
+        #      소리 경로가 같은 발화로 이미 일시정지를 냈으면 다시 내지 않는다 — 두 번
+        #      가면 미션이 PAUSED 에서 '지금은 안내 중이 아닙니다'로 답한다.
+        pause = stop_pause_intent_for(text, self._robot_state.dialog_state)
+        if pause is not None:
+            turn, self._audio_turn = self._audio_turn, {}   # 이 발화의 소리 결과는 여기서 소비
+            if (self._intent_input == "audio" and audio_turn_applies(turn, time.time())
+                    and getattr(turn.get("intent"), "intent", "") == "pause"):
+                self.get_logger().info(f"[멈춤] 소리 경로가 이미 일시정지 발행 — 받아쓰기 '{text}' 생략")
+                return
+            self.get_logger().warning(f"[멈춤] '{text}' — 주행 중이라 일시정지 요청")
+            self._publish_intent(pause, text)
+            self._last_text_publish_t = time.time()
+            self._last_text_publish_intent = pause.intent
+            return
+
         # 1) 긴급어는 LLM 이전에 처리한다 (안전 경로).
         keyword = detect_emergency(text)
         if keyword:
@@ -322,6 +339,7 @@ class LlmIntentNode(Node):
         # C) 소리 경로 이중 처리 방지 — 텍스트가 방금 이 발화를 발행했다는
         # 표식. _on_user_audio 는 이 시각에서 2초 안이면 소리 경로를 생략한다.
         self._last_text_publish_t = time.time()
+        self._last_text_publish_intent = intent.intent
 
     def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
         """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리).
@@ -483,7 +501,23 @@ class LlmIntentNode(Node):
         finally:
             self._thinking_pub.publish(Bool(data=False))
 
-        # D) 긴급어는 텍스트 경로(_on_user_text -> detect_emergency)에 맡긴다 —
+        # D-0) 안내 주행 중 멈춤 말은 받아쓰기를 기다리지 않고 바로 일시정지 제안
+        #      (2026-10-06 사용자 결정 (가)). 10-05 21:40 실기: Realtime 은 '이동을 멈춰'를
+        #      들었는데 아래 D 가 받아쓰기에 넘겼고, 받아쓰기는 '네. 네. 네.'라 계속 주행.
+        #      서는 쪽이 안전한 방향이라 두 경로 중 하나만 들어도 선다. 판정은 LLM 이
+        #      아니라 같은 단어 규칙(detect_stop_request)이다.
+        pause = stop_pause_intent_for(heard, self._robot_state.dialog_state)
+        if pause is not None:
+            if (self._last_text_publish_t > turn_started
+                    and self._last_text_publish_intent == "pause"):
+                self.get_logger().info(f"[멈춤] 텍스트가 이미 일시정지 발행 — 소리 결과 버림: heard='{heard}'")
+                return
+            self._audio_turn.update(handled=True, intent=pause, heard=heard, dt=dt)
+            self.get_logger().warning(f"[멈춤] heard='{heard}' — 주행 중이라 일시정지 요청 (dt={dt:.2f}s)")
+            self._publish_intent(pause, heard, llm_first=True)
+            return
+
+        # D) 그 밖의 긴급어는 텍스트 경로(_on_user_text -> detect_emergency)에 맡긴다 —
         #    검증된 안전 경로 하나만 쓴다(fail-closed, 우회 금지).
         if detect_emergency(heard):
             self.get_logger().warning(f"[A/B] 긴급어 — 텍스트 경로에 위임: heard='{heard}'")
