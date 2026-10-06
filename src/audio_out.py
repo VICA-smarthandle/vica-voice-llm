@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import threading
 from math import gcd
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -247,13 +247,19 @@ def _persistent_stream(index: Optional[int], rate: int, channels: int):
 
 
 # ---------------------------------------------------------------- 재생
-def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
+def play(wave: np.ndarray, rate: int, blocking: bool = False,
+         should_stop: Optional[Callable[[], bool]] = None) -> None:
     """정규화·리샘플 후 재생한다. 실패 처리는 호출자 몫(예외 그대로 전파) —
     TTS 는 원인을 로그에 남기고, 효과음은 조용히 넘어가는 식으로 서로 다르다.
 
     blocking=True(TTS)는 조각 단위로 쓰며 조각 사이에 stop() 깃발을 본다 —
     다른 스레드가 언제든 0.1초 안에 끊을 수 있다 (긴급 선점·barge-in).
     blocking=False(효과음, 0.2초 내외)는 짧아서 끊을 일이 없다.
+
+    should_stop: 호출자의 중단 조건(조각마다 함께 본다). stop() 깃발은 재생을
+    시작할 때 지우므로, 재생 준비 중(장치 탐색·리샘플)에 온 멈춤 요청은 깃발만
+    으로는 사라진다 — 2026-10-06 실기에서 안내 시작 0.11초 뒤 "비카야"가 와도
+    안내 4.8초가 끝까지 나가 "네?"가 늦었다. TTS 는 발화마다 선점 여부를 넘긴다.
     """
     import sounddevice as sd
 
@@ -279,7 +285,7 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
     _stop_flag.clear()
     stream = _persistent_stream(index, out_rate, out.shape[1])
     for i in range(0, len(out), CHUNK):
-        if _stop_flag.is_set():
+        if _stop_flag.is_set() or (should_stop is not None and should_stop()):
             break
         stream.write(np.ascontiguousarray(out[i:i + CHUNK]))
 

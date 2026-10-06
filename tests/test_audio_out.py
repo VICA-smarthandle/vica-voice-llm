@@ -145,3 +145,47 @@ def test_no_respeaker_at_all_refuses(monkeypatch):
     소리는 나는데 AEC 참조가 깨진 채 도는 것이 가장 위험하다."""
     _with_devices(monkeypatch, [HDMI_OUT, PULSE_OUT], routed=False)
     assert audio_out._find_device() is None
+
+
+# ---- 재생 중단: 재생 준비 중에 온 멈춤 요청이 사라지지 않는다 (2026-10-06 실기) ----
+class _FakeStream:
+    def __init__(self):
+        self.writes = 0
+
+    def write(self, data):
+        self.writes += 1
+
+
+@pytest.fixture
+def fake_output(monkeypatch):
+    stream = _FakeStream()
+    monkeypatch.setattr(audio_out, "output_device", lambda: (0, 16000, 1))
+    monkeypatch.setattr(audio_out, "_persistent_stream", lambda *a: stream)
+    return stream
+
+
+def test_stop_requested_before_playback_starts_is_honored(fake_output):
+    """'비카야'(barge-in)가 재생 준비 0.1초 사이에 오면 play() 첫머리의 깃발
+    초기화가 그 요청을 지워 안내가 끝까지 나갔다. 호출자의 중단 조건을 함께 본다."""
+    audio_out.stop()                                   # 준비 중에 온 멈춤
+    audio_out.play(np.ones(16000, dtype=np.float32), 16000, blocking=True,
+                   should_stop=lambda: True)
+    assert fake_output.writes == 0
+
+
+def test_playback_runs_to_the_end_without_a_stop(fake_output):
+    audio_out.play(np.ones(16000, dtype=np.float32), 16000, blocking=True,
+                   should_stop=lambda: False)
+    assert fake_output.writes == -(-16000 // audio_out.CHUNK)
+
+
+def test_stop_condition_can_fire_mid_playback(fake_output):
+    calls = {"n": 0}
+
+    def stop_after_two():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    audio_out.play(np.ones(16000, dtype=np.float32), 16000, blocking=True,
+                   should_stop=stop_after_two)
+    assert fake_output.writes == 2

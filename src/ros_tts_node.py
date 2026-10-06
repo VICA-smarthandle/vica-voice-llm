@@ -191,6 +191,11 @@ class TtsNode(Node):
 
     def _playback_loop(self) -> None:
         while self._running:
+            # 이전 선점 신호는 다음 말을 꺼내기 **전에** 소비한다 — 꺼낸 뒤에
+            # 지우면 그 사이에 온 barge-in("비카야")이 지워져 말이 끝까지
+            # 나간다(2026-10-06 실기: 예고 4.8초 완주, "네?" 4.7초 지연).
+            # 꺼낸 뒤에 온 선점은 _speak → play(should_stop) 가 본다.
+            self._preempt.clear()
             item = self._queue.pop()
             for stale in self._queue.take_expired():
                 # 낡아서 버린 말도 반드시 남긴다 — 조용히 사라지면 추적 불가.
@@ -202,8 +207,6 @@ class TtsNode(Node):
                     time.sleep(IDLE_POLL_SEC)
                 continue
 
-            # 이전 선점 신호는 여기서 소비한다 — 새 발화까지 끊기면 안 된다.
-            self._preempt.clear()
             self.get_logger().info(f"재생[{item.priority}]: {item.text}")
             completed = self._speak(item.text)
             # 완주·중단 불문 종료를 알린다 — 응답 시계의 기점 (docstring).
@@ -225,7 +228,7 @@ class TtsNode(Node):
             wav, rate = cached
             self._publish_state(True)
             try:
-                self._tts.play_audio(wav, rate)
+                self._tts.play_audio(wav, rate, should_stop=self._preempt.is_set)
             finally:
                 time.sleep(TAIL_SEC)
                 self._publish_state(False)
@@ -242,7 +245,7 @@ class TtsNode(Node):
                         wav, rate = self._tts.synthesize(chunk)
                     self._synth_cache.put(chunk, wav, rate)
                     hit = (wav, rate)
-                self._tts.play_audio(*hit)
+                self._tts.play_audio(*hit, should_stop=self._preempt.is_set)
             finally:
                 # 재생이 실패해도 감시는 반드시 다시 열어야 한다.
                 time.sleep(TAIL_SEC)
