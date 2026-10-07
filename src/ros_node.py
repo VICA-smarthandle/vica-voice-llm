@@ -41,6 +41,7 @@ from .langchain_intent_parser import (
     get_backend_manager, is_instant_utterance, is_scripted_intent, is_scripted_reply,
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
+from .mission_phrases import WAIT_BEACON
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .situation_board import SituationBoard, parse_goal_event_name
@@ -330,6 +331,9 @@ class LlmIntentNode(Node):
                     self._destinations,
                     history=self._history.messages,
                     robot_state=self._robot_state,
+                    # 글자 경로에도 [지금 상황] 메모(2026-10-07 사용자 결정) — 와이파이가
+                    # 끊겨 받아쓰기 경로로 넘어가도 "어디서 기다린다고?"에 답하게.
+                    situation=self._situation_block(),
                 )
             finally:
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
@@ -439,7 +443,9 @@ class LlmIntentNode(Node):
             (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
         self._robot_recent.append((now, msg.data))
         text = (msg.data or "").strip()
-        if self._spoken_history and text:
+        # 대기 중 10초 알림(M3)은 기록에 넣지 않는다(2026-10-07 검토) — 30분 대기면 180번이라
+        # 16줄 기록이 3분이면 그것으로 가득 차, 돌아온 사용자의 말에 앞 대화를 잃는다.
+        if self._spoken_history and text and text != WAIT_BEACON:
             self._history.extend([AIMessage(text)])
 
     def _on_user_audio(self, msg: UInt8MultiArray) -> None:

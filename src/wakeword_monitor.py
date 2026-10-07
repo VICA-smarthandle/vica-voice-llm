@@ -125,6 +125,13 @@ PREROLL_FRAMES = 6
 SPEECH_RMS = 0.01               # barge-in 의 "소리는 나야 한다" 건전성 바닥
 # 말머리 소급의 되돌아보기 상한 (0.64초). 링버퍼(2.5초) 안에서만 줍는다.
 HEAD_PRE_ROLL_FRAMES = 8
+# 호출 판정 대기 상한 (2026-10-07, 호출 반응표). "비카야" 뒤 자유 창의 말은 미션의
+# 판정(/vica/wake_reply listen·ignore)이 와야 LLM 으로 간다. 미션이 멈췄으면 판정이 끝내
+# 안 오므로 이 시간이 지나면 버린다(사용자 결정: 미션이 멈추면 대답 없음). 보통 판정은
+# 수십 ms 안에 와 말이 끝나기 훨씬 전이다. 6초인 까닭: 미션의 같은 콜백 그룹이 주행
+# 시작에서 최악 약 4초(주행 잠금 2초 + 트리 전환 2초) 붙잡힐 수 있어 그 위에 여유를 둔다.
+# 늦게 온 판정이 다음 호출에 붙지 않게 호출마다 번호를 주고받는다(wake:N → listen:N).
+WAKE_REPLY_TIMEOUT_SEC = float(os.environ.get("VICA_WAKE_REPLY_TIMEOUT_SEC", "6.0"))
 
 
 def _frame_rms(frame) -> float:
@@ -227,6 +234,7 @@ class WakewordMonitor:
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
         user_doa_width: float = 45.0,
+        wake_gate: bool = False,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         listen_hint: Optional[str] = None,
@@ -325,6 +333,83 @@ class WakewordMonitor:
         # 청취+STT 묶음 6.1초의 내역을 몰랐던 것이 도입 계기).
         self.last_listen_timing: Optional[dict] = None
         self._listen_speech_started_at = 0.0
+        # 호출 판정 관문 (2026-10-07, 호출 반응표). 켜져 있으면 "비카야" 자유 창의 말은
+        # 미션의 판정을 받아야 나간다 — 창은 지금처럼 호출 즉시 열어 "비카야 화장실 가자"
+        # 한 호흡을 살리고, 판정 전에 나온 말은 쥐고 있다가 listen 이면 내보내고 ignore·
+        # 무응답이면 버린다. 질문 답(followup) 창·긴급 경로는 관문과 무관하다.
+        # 판정은 ROS 스레드가 set_wake_verdict 로 넣고(우편함), 이 스레드가 다음 프레임에
+        # 꺼내 처리한다 — 콜백은 늘 감시 스레드에서만 나간다.
+        self._wake_gate = wake_gate
+        self._wake_verdict: Optional[str] = None     # None/pending/listen/ignore
+        self._wake_pending_since = 0.0
+        self._verdict_inbox: Optional[tuple[str, Optional[int]]] = None
+        self._held: list[tuple[str, object]] = []    # 판정 전에 나온 ("audio"|"text", 값)
+        self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
+
+    # ---------------------------------------------------------------- 호출 판정
+    @property
+    def wake_seq(self) -> int:
+        """마지막 호출의 번호. 노드가 /vica/wake 에 실어 보내고 판정이 되돌려 준다."""
+        return self._wake_seq
+
+    def set_wake_verdict(self, verdict: str, seq: Optional[int] = None) -> None:
+        """미션의 "비카야" 판정("listen"/"ignore", 호출 번호). ROS 스레드에서 불러도 된다.
+
+        번호가 지금 호출과 다르면(앞 호출의 늦은 판정) 다음 프레임에서 버린다. 번호 없는
+        판정(옛 미션·가상 로봇)은 지금 호출의 것으로 본다.
+        """
+        if verdict in ("listen", "ignore"):
+            self._verdict_inbox = (verdict, seq)
+
+    def _apply_wake_verdict(self, now: float) -> None:
+        inbox, self._verdict_inbox = self._verdict_inbox, None
+        verdict = None
+        if inbox is not None:
+            verdict, seq = inbox
+            if seq is not None and seq != self._wake_seq:
+                verdict = None          # 앞 호출의 늦은 판정 — 이 호출과 무관하다
+        if self._wake_verdict != "pending":
+            return
+        if verdict == "listen":
+            self._wake_verdict = "listen"
+            held, self._held = self._held, []
+            for kind, value in held:
+                self._dispatch_free(kind, value)
+        elif verdict == "ignore":
+            self._drop_free_window("ignored")
+        elif now - self._wake_pending_since > WAKE_REPLY_TIMEOUT_SEC:
+            self._drop_free_window("no-reply")
+
+    def _drop_free_window(self, reason: str) -> None:
+        """판정이 ignore 거나 끝내 안 왔다 — 쥔 말을 버리고 열린 자유 창을 닫는다."""
+        self._wake_verdict = "ignore"
+        self._held = []
+        if self._state == "listen" and not self._listen_is_followup:
+            self._state = "idle"
+            self._collect = []
+        # 미션의 귀 홀드가 이 창을 '바쁨'으로 붙잡고 있지 않게 닫힘을 알린다.
+        self._on_listen_state(f"empty:wake-{reason}")
+
+    def _emit_free(self, kind: str, value) -> None:
+        """자유 창의 결과를 판정에 따라 내보내거나 쥐거나 버린다."""
+        if not self._wake_gate or self._wake_verdict in (None, "listen"):
+            self._dispatch_free(kind, value)
+        elif self._wake_verdict == "pending":
+            self._held.append((kind, value))
+        elif kind == "text":
+            # ignore — 버린다. 판정 때 창이 긴급 검증 중이라 못 닫았으면 여기서 닫힘을 알린다.
+            self._on_listen_state("empty:wake-ignored")
+
+    def _dispatch_free(self, kind: str, value) -> None:
+        if kind == "audio":
+            if self._on_user_audio is not None:
+                try:
+                    self._on_user_audio(value)
+                except Exception:
+                    pass
+        else:
+            self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
+            self._on_user_text(value)
 
     # ---------------------------------------------------------------- 방향 잠금
     def lock_user_direction(self, doa: Optional[float],
@@ -446,6 +531,9 @@ class WakewordMonitor:
         """
         now = time.time() if now is None else now
         self._ring.append(frame)
+        if self._wake_gate:
+            # 미션 판정은 뮤트 중에도 받는다("네?" 재생 중에 오는 것이 보통이다).
+            self._apply_wake_verdict(now)
 
         if self._is_muted(now):
             self.gate_a.reset()
@@ -485,6 +573,15 @@ class WakewordMonitor:
             # 없어 로봇 소리 한 조각에 닫히고 뒤따른 말이 사라졌다
             # (2026-10-06 실기 15:21, '화장실로 가자' 유실).
             self._followup_armed = False
+            if self._wake_gate:
+                # 새 호출 — 미션 판정을 기다린다. 앞 호출의 판정·쥔 말은 버린다.
+                # on_wake(=/vica/wake 발행)보다 먼저 세운다: 판정이 아무리 빨리 와도
+                # 이 줄이 그것을 지우지 않게.
+                self._wake_seq += 1
+                self._wake_verdict = "pending"
+                self._wake_pending_since = now
+                self._held = []
+                self._verdict_inbox = None
             self._on_wake()
             self._open_listen(followup=False, now=now)
             return "wake"
@@ -763,10 +860,14 @@ class WakewordMonitor:
             transcribe = self._transcribe_listen or self._transcribe
         if self._on_user_audio is not None:
             # 소리→의도 직행(audio 모드): whisper 보다 먼저 클립을 넘긴다. 실패해도 전사는 계속.
-            try:
-                self._on_user_audio(audio)
-            except Exception:
-                pass
+            # 자유 창이면 미션 판정을 거친다(호출 반응표).
+            if self._listen_is_followup:
+                try:
+                    self._on_user_audio(audio)
+                except Exception:
+                    pass
+            else:
+                self._emit_free("audio", audio)
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
         self.last_listen_timing = {
@@ -801,8 +902,12 @@ class WakewordMonitor:
             # 유령으로 본다 — 잡음 딸깍이 '방2' 같은 장소로 둔갑하는 것 방지.
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
             return "wake_silent"
-        self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
-        self._on_user_text(text)
+        if self._listen_is_followup:
+            self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
+            self._on_user_text(text)
+        else:
+            # 자유 창("비카야" 뒤) — 미션이 대답하기로 한 호출만 LLM 으로 간다.
+            self._emit_free("text", text)
         return "user_text"
 
     # ---------------------------------------------------------------- 실행 (실기)

@@ -72,5 +72,7 @@ def msg_to_robot_state(msg: RobotStateMsg) -> RobotState:
         wait_minutes=int(getattr(msg, "wait_minutes", -1)),
         wait_left_sec=int(getattr(msg, "wait_left_sec", -1)),
         battery_pct=int(getattr(msg, "battery_pct", -1)),
+        door_side=str(getattr(msg, "door_side", "") or ""),
+        wait_place=str(getattr(msg, "wait_place", "") or ""),
     )
 

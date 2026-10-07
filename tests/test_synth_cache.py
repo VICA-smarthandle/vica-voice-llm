@@ -37,3 +37,26 @@ class TestSynthCache:
         c.put("가", *_wav(32))
         assert len(c) == 1
         assert len(c.get("가")[0]) == 32
+
+
+class TestPinned:
+    """미리 합성한 문장은 고정 — 주행 중 LLM 대답들에 밀려 첫 도착 전에 지워지지 않는다
+    (2026-10-07, 도착 멘트·M1·질문이 늘어 64문장을 넘는다)."""
+
+    def test_pinned_survives_eviction_and_does_not_count_toward_capacity(self):
+        c = SynthCache(capacity=2)
+        c.put("화장실에 도착했습니다.", *_wav(), pinned=True)
+        c.put("가", *_wav())
+        c.put("나", *_wav())
+        c.put("다", *_wav())                       # '가'가 밀린다 — 고정 문장은 아니다
+        assert c.get("화장실에 도착했습니다.") is not None
+        assert c.get("가") is None
+        assert c.get("나") is not None and c.get("다") is not None
+        assert len(c) == 3
+
+    def test_unpinned_put_does_not_replace_a_pinned_sentence(self):
+        c = SynthCache(capacity=2)
+        c.put("가", *_wav(8), pinned=True)
+        c.put("가", *_wav(32))
+        assert len(c.get("가")[0]) == 8
+        assert len(c) == 1

@@ -5,8 +5,10 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
 발행: /vica/emergency (vica_interfaces/EmergencyEvent)  ← 긴급, LLM 우회 (기존 계약)
       /vica/user_text (std_msgs/String)                 ← 호출 후 발화 (기존 계약)
       /vica/tts_stop  (std_msgs/Empty)                  ← barge-in: 재생 즉시 중단 요청
+      /vica/wake      (std_msgs/String)                 ← "wake" 호출 / "rescue" 창 안 구제
 구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 경계 (뮤트 또는 AEC 모드)
       /vica/listen_request (std_msgs/Bool)              ← 질문 후 재청취 예약 (true=예약)
+      /vica/wake_reply (std_msgs/String)                ← 미션의 호출 판정 listen/ignore (2026-10-07)
 
 keyword 는 whisper 전사에서 정확 매칭으로 추출되므로 항상
 HARD_EMERGENCY_KEYWORDS 정본 안의 값이다 — 브리지·래치 체인 변경 없음.
@@ -90,7 +92,19 @@ class WakewordNode(Node):
         # 에 "아니요" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
         self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
 
-        # 호출에는 항상 "네?"로 답한다. 짧은 신호음만으로는 언제 말해야
+        # 호출 응답은 미션이 정한다 (2026-10-07 사용자 결정, 호출 반응표). 예전엔 이 노드가
+        # 상태와 상관없이 "말 멈추기 → '네?' → 듣기"를 했는데, 다가가는 중·비상 정지·
+        # 주행 실패처럼 대답하면 안 되는 상태에서도 "네?"가 나갔다. 이제 이 노드는
+        # /vica/wake 만 보내고, 미션이 "네?"(또는 비상 한 마디)와 판정(/vica/wake_reply
+        # listen·ignore)을 낸다. 듣기 창은 지금처럼 호출 즉시 열어 "비카야 화장실 가자"
+        # 한 호흡을 살리고, 창에서 들은 말은 판정이 올 때까지 감시기가 쥐고 있다.
+        # 미션이 멈췄으면 판정이 안 와 버린다(대답 없음). 미션을 옛 판으로 돌릴 때는
+        # VICA_WAKE_BY_MISSION=off 로 이 노드가 예전처럼 직접 "네?"를 한다.
+        self._wake_by_mission = os.environ.get(
+            "VICA_WAKE_BY_MISSION", "on").strip().lower() not in ("off", "0", "false")
+        self.create_subscription(String, "/vica/wake_reply", self._on_wake_reply, 10)
+
+        # (옛 판) 호출에는 항상 "네?"로 답한다. 짧은 신호음만으로는 언제 말해야
         # 하는지 알 수 없다는 로봇팀 실사용 피드백(2026-08-20)으로, 첫 호출만
         # 인사하던 GreetingState 를 없앴다. 효과음은 참고용일 뿐이다.
 
@@ -170,6 +184,7 @@ class WakewordNode(Node):
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
             user_doa_width=self._user_doa_width,
+            wake_gate=self._wake_by_mission,
         )
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
         # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
@@ -209,7 +224,8 @@ class WakewordNode(Node):
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
             f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate} | "
-            f"호출 방향 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'})")
+            f"호출 방향 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'} | "
+            f"호출 응답 {'미션 판정' if self._wake_by_mission else '이 노드(옛 판)'})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
         # 긴급이 확정되면 로봇부터 입을 다문다 — 정지 안내(긴급 발화)는
@@ -267,8 +283,11 @@ class WakewordNode(Node):
             # "네?"라고 답했는데 미션은 확인 상태를 그대로 들고 있었고,
             # 그 뒤 같은 목적지를 다시 말하자 "재제안=답" 규칙이 그것을
             # 승낙으로 읽어 **확인 없이 출발**했다(2026-09-02 실기 9회차).
+            # 2026-10-07: "rescue" 로 보낸다 — 미션은 상태 정리만 하고 "네?"·판정을
+            # 또 내지 않는다(대답은 이 전사 "비카야"를 받은 LLM 노드가 한다).
             self.get_logger().info(f"🙋 창 안 호출 (소리로 구제): {state}")
-            self._pub_wake.publish(String(data="wake"))
+            self._pub_wake.publish(
+                String(data="rescue" if self._wake_by_mission else "wake"))
         if state.startswith("barge-miss"):
             # 끼어들기가 안 걸린 채 질문이 끝났고, 그 사이 소리는 있었다.
             # 어느 관문에서 막혔는지 남긴다 — 이 줄이 없어서 "말을 안 한
@@ -285,9 +304,18 @@ class WakewordNode(Node):
             self.get_logger().warn(f"청취 기각: {state}")
 
     def _on_wake(self) -> None:
-        # 호출 = 새 대화 (2026-09-01 사용자 결정). 하던 말을 끊고(barge-in)
-        # 큐에 밀린 비긴급 발화도 함께 비운다 — 예전엔 "말하는 중일 때만"
-        # 이라 문장 사이 침묵에 부르면 "네?" 뒤로 낡은 말이 이어졌다.
+        if self._wake_by_mission:
+            # 말 멈추기·"네?"·대답 여부는 미션이 반응표대로 정한다(2026-10-07). 미션은
+            # 끊기와 "네?"를 같은 /vica/tts_request 로 순서대로 보낸다(09-01 순서 사고).
+            # 호출 번호를 싣는다 — 미션이 판정에 그대로 붙여 돌려주면 늦은 판정이 다음
+            # 호출에 붙지 않는다. 옛 미션은 "wake:N" 도 그냥 호출로 받는다.
+            seq = self._monitor.wake_seq
+            self._pub_wake.publish(String(data=f"wake:{seq}"))
+            self.get_logger().info(f"🙋 비카야 호출 #{seq} — 청취 창 열림, 미션 판정 대기")
+            return
+        # (옛 판, VICA_WAKE_BY_MISSION=off) 호출 = 새 대화 (2026-09-01 사용자 결정).
+        # 하던 말을 끊고(barge-in) 큐에 밀린 비긴급 발화도 함께 비운다 — 예전엔
+        # "말하는 중일 때만"이라 문장 사이 침묵에 부르면 "네?" 뒤로 낡은 말이 이어졌다.
         # 청소는 tts_request 의 제어 메시지로 보낸다: 별도 토픽(tts_stop)은
         # 뒤이은 "네?"와 도착 순서가 뒤집혀 청소가 "네?"를 지웠다(실기
         # 3회 + 재현 1회). 같은 발신자·같은 토픽은 순서가 보장된다.
@@ -297,6 +325,16 @@ class WakewordNode(Node):
         msg.data = "wake"
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
+
+    def _on_wake_reply(self, msg: String) -> None:
+        """미션의 "비카야" 판정("listen:N"/"ignore:N") — 쥔 호출 창의 말을 넘길지 버릴지."""
+        verdict, _, seq_text = (msg.data or "").strip().partition(":")
+        if not self._wake_by_mission or verdict not in ("listen", "ignore"):
+            return
+        seq = int(seq_text) if seq_text.isdigit() else None
+        self._monitor.set_wake_verdict(verdict, seq)
+        if verdict == "ignore":
+            self.get_logger().info(f"🙊 미션 판정 #{seq_text or '-'}: 대답 안 함 — 호출 창의 말을 버린다")
 
     def _publish_wake_doa(self, doa: float) -> None:
         """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다.

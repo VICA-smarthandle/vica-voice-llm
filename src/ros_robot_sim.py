@@ -33,8 +33,9 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
 from .destination_loader import load_destinations
 from .robot_sim import SimRobot
+from .replies import WAKE_GREETING
 from .ros_convert import msg_to_intent
-from .tts_queue import NARRATION, build_request
+from .tts_queue import NARRATION, RESPONSE, build_request
 
 
 class RobotSimNode(Node):
@@ -47,6 +48,11 @@ class RobotSimNode(Node):
         self._pub_state = self.create_publisher(RobotStateMsg, "/vica/robot_state", 10)
         self._pub_event = self.create_publisher(String, "/vica/sim/event", 10)
         self._pub_tts = self.create_publisher(String, "/vica/tts_request", 10)
+        # "비카야" 응답 (2026-10-07). 실기에선 미션이 반응표대로 "네?"와 판정
+        # (/vica/wake_reply)을 낸다 — 이 가상 로봇은 늘 대답한다(idle 과 같다). 없으면
+        # 웨이크워드 노드가 판정을 못 받아 호출 창의 말을 전부 버린다.
+        self._pub_wake_reply = self.create_publisher(String, "/vica/wake_reply", 10)
+        self.create_subscription(String, "/vica/wake", self._on_wake, 10)
         self.create_timer(0.5, self._tick)
         self.create_timer(1.0, self._publish_state)
         self.get_logger().info("[SIM] 가상 로봇 시작 (idle, 별빛관 1층)")
@@ -73,6 +79,15 @@ class RobotSimNode(Node):
         self.get_logger().warn(
             f"[SIM] 🚨 '{msg.keyword}' → 즉시 정지 + 래치 (자동 재개 없음)")
         self._publish_state()
+
+    def _on_wake(self, msg: String) -> None:
+        kind, _, seq = (msg.data or "").strip().partition(":")
+        if kind != "wake":
+            return       # 창 안 구제("rescue")는 LLM 노드가 대답한다
+        self._pub_tts.publish(String(data="control:stop"))
+        self._pub_tts.publish(String(data=build_request(RESPONSE, WAKE_GREETING)))
+        # 호출 번호를 그대로 돌려준다(웨이크워드 노드가 늦은 판정을 거르는 짝).
+        self._pub_wake_reply.publish(String(data=f"listen:{seq}" if seq else "listen"))
 
     def _on_reset(self, _msg: Empty) -> None:
         self._sim.reset(time.time())

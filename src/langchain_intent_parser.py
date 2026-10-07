@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field, ValidationError
 
+from .destination_loader import _josa_euro
 from .destination_matcher import match_destination
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
@@ -22,8 +23,11 @@ from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import get_realtime_client
 from .replies import (
+    ALREADY_GOING,
     ASK_DESTINATION,
     CANCEL_CONFIRM,
+    CHANGE_DESTINATION_QUESTION,
+    CHANGE_DESTINATION_TAIL,
     COMMAND_DECLINED,
     LLM_UNAVAILABLE,
     PAUSE_ACK,
@@ -142,15 +146,23 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 
 def _build_system_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
-    local: bool = False,
+    local: bool = False, situation: str = "",
 ) -> str:
+    """글자 경로 지시문. situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
+
+    2026-10-07 부터 글자 경로에도 메모를 붙인다(사용자 결정) — 와이파이가 끊겨 글자 경로
+    (받아쓰기 → gpt/로컬)로 넘어가도 "어디서 기다린다고?"·"화장실 어디야?"에 답하게.
+    대장 블록이 오면 옛 2줄 상태 블록 대신 쓰고, 소리 경로처럼 맨 뒤에 붙인다(매번 바뀌는
+    부분이 뒤여야 앞부분 캐시가 산다).
+    """
     lines = []
     for d in destinations:
         aliases = ", ".join(d.aliases)
         approach = "가능" if d.is_approachable else "불가"
         lines.append(f"- {d.name} (별칭: {aliases} / 분류: {d.category2} / 접근: {approach})")
     dest_block = "\n".join(lines)
-    state_block = _format_robot_state(robot_state)
+    ledger = situation if FLOOR_LABEL in situation else ""
+    state_block = "" if ledger else _format_robot_state(robot_state)
     return f"""너는 시각장애인 안내 로봇 'VICA'의 음성 의도 분석기다.
 사용자의 한국어 발화를 분석해 아래 규칙으로 분류해라.
 
@@ -181,11 +193,25 @@ def _build_system_prompt(
 - 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로 써라.
 - 확신이 없으면 confidence 를 낮춰라.
 
+[지금 상황 쓰기] 맨 뒤에 [지금 상황]이 있으면 미션이 확인한 사실이다.
+- 대화 단계가 '안내 중(주행)'일 때 안내 중인 곳과 다른 목적지로 가고 싶다고 하면 navigate 다(로봇이
+  서서 바꿀지 묻는다 — 그 질문은 시스템이 만든다). 위치만 물으면("화장실 어디예요?") 로봇을 세우지
+  않도록 question 으로 위치만 답한다.
+- "OO 어디야?"에서 OO 가 직전에 간 곳(방금 도착한 곳)이고 'OO 방향' 줄이 있으면 navigate 가 아니라
+  question 이다. reply 는 그 줄대로("화장실은 오른쪽에 있어요."). 이 방향은 도착했을 때 로봇(뒤에서
+  손잡이를 잡은 사용자) 기준 입구 쪽이다.
+- "어디서 기다린다고?"·"어디서 기다려?"는 question 이다. '대기 장소' 줄로 답하고, 줄이 없으면
+  지금 있는 곳에서 기다린다고 답한다.
+- 대화 단계가 '대기 중'·'손 놓기 기다림'일 때 목적지를 말하면 평소처럼 navigate 다(대기는 출발할 때 끝난다).
+  "다 됐어"·"다녀왔어"처럼 볼일이 끝났다고만 하면 finish 다(reply 는 빈 문자열 — 로봇이 "어디로
+  모실까요?"라고 묻는다).
+
 [멀티턴 대화]
-- 직전에 로봇이 'OO로 안내해드릴까요?'라고 물었고 사용자가 긍정(응, 네, 맞아, 그래, 좋아)하면:
-  intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true 로 답해라.
+- 직전에 로봇이 'OO로 안내해드릴까요?' 또는 '…OO로 바꿀까요?'라고 물었고 사용자가 긍정(응, 네,
+  맞아, 그래, 좋아)하면: intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true
+  로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
-- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "")
+- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "") + ledger
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -217,23 +243,56 @@ def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bo
     """
     if not reply:
         return False
+    # "지금 409호로 가는 중이에요."(_finalize 가 만든 사실 한 줄, 2026-10-07)도 코드 문구다 —
+    # 로컬 규칙의 '못 알아들음' 대체·재청취 기각이 이것을 지우면 안 된다.
     return reply in SHORTCUT_REPLIES or any(
-        d.confirm_prompt and d.confirm_prompt == reply for d in destinations)
+        (d.confirm_prompt and d.confirm_prompt == reply)
+        or reply == ALREADY_GOING.format(cur=d.name, cur_josa=_josa_euro(d.name))
+        for d in destinations)
+
+
+def _question_destination(text: str, destinations: Sequence[DestinationData]):
+    """이 로봇 말이 어떤 목적지로 가자는 확인 질문이면 그 목적지, 아니면 None.
+
+    확인 문구(confirm_prompt)와 글자가 같거나, 주행 중 바꾸기 질문("지금 409호로 가는
+    중이에요. 화장실로 바꿀까요?", 2026-10-07)이면 끝의 '…로 바꿀까요?' 목적지다. 바꾸기
+    질문엔 목적지가 둘 들어 있어 앞의 것(지금 가는 곳)을 고르면 "네"가 엉뚱한 곳이 된다.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    for dest in destinations:
+        if dest.confirm_prompt and dest.confirm_prompt == text:
+            return dest
+    # 이름이 다른 이름의 끝과 겹치면("화장실"·"남자 화장실") 긴 쪽이 맞다.
+    matches = [
+        dest for dest in destinations
+        if text.endswith(CHANGE_DESTINATION_TAIL.format(
+            new=dest.name, new_josa=_josa_euro(dest.name)))
+    ]
+    return max(matches, key=lambda d: len(d.name)) if matches else None
+
+
+def _guiding_destination(robot_state: Optional[RobotState]) -> str:
+    """미션이 안내 주행 중이면 가는 곳 이름, 아니면 "" (주행 중 바꾸기 질문용).
+
+    대장(dialog_state)이 'navigating' 일 때만 — 일시정지·확인 질문 중은 바꾸기가 아니다.
+    """
+    if robot_state is None or robot_state.dialog_state != "navigating":
+        return ""
+    return robot_state.active_destination or ""
 
 
 def _pending_confirm_destination(
     history: Optional[list[BaseMessage]], destinations: Sequence[DestinationData]
 ):
-    """직전 AI 발화가 어떤 목적지의 confirm_prompt 였으면 그 목적지를 돌려준다."""
+    """직전 AI 발화가 어떤 목적지의 확인 질문이었으면 그 목적지를 돌려준다."""
     if not history:
         return None
     last_ai = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
     if last_ai is None:
         return None
-    for dest in destinations:
-        if dest.confirm_prompt and dest.confirm_prompt == last_ai.content:
-            return dest
-    return None
+    return _question_destination(last_ai.content, destinations)
 
 
 def _recent_confirm_destination(
@@ -251,9 +310,9 @@ def _recent_confirm_destination(
     for m in reversed(history):
         if not isinstance(m, AIMessage):
             continue
-        for dest in destinations:
-            if dest.confirm_prompt and dest.confirm_prompt == m.content:
-                return dest
+        dest = _question_destination(m.content, destinations)
+        if dest is not None:
+            return dest
     return None
 
 
@@ -706,8 +765,12 @@ def parse_intent(
     history: Optional[list[BaseMessage]] = None,
     robot_state: Optional[RobotState] = None,
     model: Optional[str] = None,
+    situation: str = "",
 ) -> VicaIntent:
-    """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)"""
+    """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)
+
+    situation 은 LLM 노드의 [지금 상황] 블록(2026-10-07 글자 경로에도 붙임).
+    """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
     shortcut = _shortcut_intent(user_text, history, destinations,
@@ -718,7 +781,7 @@ def parse_intent(
     pending = _pending_for(history, destinations, local, dialog_state)
 
     messages: list[BaseMessage] = [SystemMessage(
-        _build_system_prompt(destinations, robot_state, local=local))]
+        _build_system_prompt(destinations, robot_state, local=local, situation=situation))]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(user_text))
@@ -746,7 +809,8 @@ def parse_intent(
             need_confirm=False,
         )
     return _finalize(draft, destinations, pending=pending,
-                     pending_command=pending_command, user_text=user_text, local=local)
+                     pending_command=pending_command, user_text=user_text, local=local,
+                     robot_state=robot_state)
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +867,7 @@ def build_audio_prompt(
 [대화 이력 = 네 기억] 앞에 오는 assistant 줄은 네가(로봇이) 실제로 소리 내어 말한 문장이고,
 user 줄은 그 전에 들린 사용자의 말이다. 로봇의 마지막 말이 질문이면 지금 들리는 말은 대개
 그 답이다. "아까 어디 갔었지?", "방금 도착한 곳이 어디야?" 같은 질문은 이력의 "…로 안내를
-시작합니다"·"… 앞에 도착했습니다" 줄을 보고 답한다 — 기억이 없다고 하지 마라.
+시작합니다"·"…에 도착했습니다" 줄을 보고 답한다 — 기억이 없다고 하지 마라.
 
 [heard_text] 이번 소리에서 실제로 들린 말만 한국어로 그대로 적는다(결정을 내렸다면 반드시
 채운다 — "그래"를 듣고 출발시키면서 heard_text 를 비우지 마라). 사람 말이 아니면
@@ -815,9 +879,20 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 - navigate(새 목적지): 가고 싶은 곳을 말했다. 직접("407호 가자")도 간접("배 아파"→화장실)도 된다.
   destination_candidate=목록의 name 그대로, need_confirm=true, reply=네 말로 만든 확인 질문
   (목적지 name 을 그대로 넣고 반드시 "?"로 끝낸다. 예: "배가 아프시군요. 화장실로 모실까요?").
-- navigate(확정): 로봇의 마지막 말이 "OO로 안내해드릴까요?"이고 사용자가 긍정(네·응·그래·맞아·좋아·어,
-  "그래 빨리 가자"처럼 재촉이 붙어도 긍정)했다. destination_candidate=OO, need_confirm=false, reply=""
-  (출발 안내는 미션이 말한다). 확인 질문을 또 하지 마라 — 긍정에 다시 물으면 사용자는 두 번 답해야 한다.
+- navigate(주행 중 바꾸기): [지금 상황]의 대화 단계가 '안내 중(주행)'인데 '안내 중' 줄의 곳(OO)이
+  아닌 다른 목적지(XX)로 가고 싶다고 했다("화장실 가고 싶어", "식당으로 가자", "배 아파").
+  destination_candidate=XX, need_confirm=true, reply="지금 OO로 가는 중이에요. XX로 바꿀까요?"
+  (조사는 받침에 맞춰 '로/으로'). 로봇은 서서 이 답을 기다린다. 지금 가는 곳(OO)을 또 말하면
+  navigate 가 아니라 question 으로 "지금 OO로 가는 중이에요."만 답한다. 안내 중에 위치만 물으면
+  ("화장실 어디예요?") 로봇을 세우지 않는다 — 아래 question 규칙의 위치 질문 예외와 달리 question
+  으로 위치만 답한다(가고 싶다고 하면 그때 바꾸기다).
+- navigate(확정): 로봇의 마지막 말이 "OO로 안내해드릴까요?" 또는 "…OO로 바꿀까요?"이고 사용자가
+  긍정(네·응·그래·맞아·좋아·어, "그래 빨리 가자"처럼 재촉이 붙어도 긍정)했다. destination_candidate=OO,
+  need_confirm=false, reply="" (출발 안내는 미션이 말한다). "지금 XX로 가는 중이에요. OO로 바꿀까요?"의
+  답이면 OO 다(XX 가 아니다). 확인 질문을 또 하지 마라 — 긍정에 다시 물으면 사용자는 두 번 답해야 한다.
+- 대기 중 목적지: 대화 단계가 '대기 중'·'손 놓기 기다림'이어도 목적지를 말하면 평소처럼
+  navigate(새 목적지)다 — 대기는 출발할 때 끝난다. "다 됐어"·"다녀왔어"처럼 볼일이 끝났다고만
+  하면 finish, reply="" 다(로봇 본체가 "네, 어디로 모실까요?"라고 묻는다).
 - 정정: 확인 질문에 "아니 XX로 가자"처럼 다른 목적지를 말하면 XX 로 navigate, need_confirm=true,
   reply=XX 로 다시 묻는 확인 질문("아, XX요? XX로 안내해드릴까요?").
 - deny: 확인 질문이나 제안에 부정만 하고 대안이 없다("아니", "아니요", "됐어"). reply="".
@@ -837,10 +912,14 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 - resume: 다시 출발. 처음이면 need_confirm=true, reply="{RESUME_CONFIRM}". 방금 그렇게 물었고 긍정이면 need_confirm=false, reply="".
 - question: 이동이 아닌 정보 질문이나 로봇에게 건 가벼운 말(인사·고맙다·농담·"왜 안 가?").
   reply 에 네 말로 **한두 문장(50자 안팎)** 으로 답한다. 아는 것 = 목적지 목록(별칭·위치)·[지금
-  상황]·대화 이력. "OO 교수님 방이 어디야?"·"세미나실이 어디지?"처럼 **목록에 있는 곳의
+  상황]·대화 이력. 안내 중이 아닐 때 "OO 교수님 방이 어디야?"·"세미나실이 어디지?"처럼 **목록에 있는 곳의
   위치를 물으면 intent 는 question 이 아니라 navigate** 다(need_confirm=true, destination_candidate=
   그 곳, reply="407호는 로봇관 4층이에요. 안내해드릴까요?"). question 으로 두면 뒤따르는 "응"이
-  갈 곳 없는 긍정이 되어 로봇이 움직이지 않는다(21:11 실기). "몇 층이야?"는 [지금 상황]의 건물/층
+  갈 곳 없는 긍정이 되어 로봇이 움직이지 않는다(21:11 실기). 단, 물은 곳이 [지금 상황]의 직전에 간
+  곳(방금 도착한 곳)이고 그곳의 '방향' 줄("- 화장실 방향: 오른쪽")이 있으면 navigate 가 아니라 question
+  으로 그 줄대로 답한다("화장실은 오른쪽에 있어요."). 이 방향은 도착했을 때 로봇(뒤에서 손잡이를 잡은
+  사용자) 기준 입구 쪽이다. "어디서 기다린다고?"·"어디서 기다려?"는 '대기 장소' 줄로 답하고(줄이
+  없으면 지금 있는 곳에서 기다린다고 답한다). "몇 층이야?"는 [지금 상황]의 건물/층
   (목적지 목록에 같은 방 번호가 다른 건물로 있어도 절대 섞지 말고 이 줄의 건물만 답한다), "지금 어디
   있어?"는 지금 있는 곳, "지금 어디 가?"는 안내 중,
   "아까 어디 갔었지?"는 직전에 간 곳, "어디 가려고 했더라?"는 하려다 만 곳, "몇 시야?"는 시각,
@@ -965,12 +1044,16 @@ def _finalize(
     pending_command: Optional[str] = None,
     user_text: str = "",
     local: bool = False,
+    robot_state: Optional[RobotState] = None,
 ) -> VicaIntent:
     """LLM 초안 + 코드 매칭으로 최종 VicaIntent 를 만든다. (결정/안전은 코드 담당)
 
     pending 은 코드가 대화 이력에서 확인한 '대기 중인 확인 질문'의 목적지다.
     draft.is_confirmation 은 이것과 대조해서만 믿는다 — 확인 질문이 없었는데
     LLM 이 true 를 줘도(모델 오판) 확인 절차를 건너뛸 수 없다.
+
+    robot_state 는 주행 중 바꾸기 질문(2026-10-07)에만 쓴다 — 안내 주행 중이면 확인
+    문구 대신 "지금 OO로 가는 중이에요. XX로 바꿀까요?"를 만든다.
     """
     result = VicaIntent(
         intent=draft.intent,
@@ -1031,6 +1114,20 @@ def _finalize(
             result.matched_destination_id = matched.id
             result.reply = matched.confirm_prompt
             result.need_confirm = True
+            current = _guiding_destination(robot_state)
+            if current and current == matched.name:
+                # 지금 가는 곳을 또 말했다 — 바꿀 것이 없다. 미션에 보낼 요청이 아니다.
+                result.intent = "question"
+                result.destination_candidate = None
+                result.matched_destination_id = ""
+                result.need_confirm = False
+                result.reply = ALREADY_GOING.format(cur=current, cur_josa=_josa_euro(current))
+            elif current:
+                # 안내 주행 중 다른 곳 — 로봇이 서서 바꿀지 묻는다(2026-10-07 사용자 결정).
+                # 미션은 이 제안에 말하지 않고 물은 목적지를 기억한다.
+                result.reply = CHANGE_DESTINATION_QUESTION.format(
+                    cur=current, cur_josa=_josa_euro(current),
+                    new=matched.name, new_josa=_josa_euro(matched.name))
 
     if draft.intent in ("cancel", "pause", "resume"):
         if draft.intent == "pause":

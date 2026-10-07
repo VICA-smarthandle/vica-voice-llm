@@ -249,3 +249,62 @@ def test_emergency_never_expires():
     q = TtsQueue()
     q.push(EMERGENCY, "안전을 위해 멈추겠습니다.", now=0.0)
     assert q.pop(now=60.0) is not None
+
+
+# ---- 배경 알림 ambient (2026-10-07, 대기 중 10초 알림 M3 전용) -------------------
+#
+# 작업 계획 탭 M3: "가장 낮은 우선순위. 다른 말이 나가는 중이면 기다리지 않고 버림"
+# — 쌓이면 대화가 끝난 뒤 한꺼번에 터진다. 재생 중 다른 말이 오면 비키는 것은 노드
+# (ros_tts_node._enqueue) 몫이고, 큐는 받기·버리기·줄 선 것 비키기를 맡는다.
+from src.tts_queue import AMBIENT, AMBIENT_TTL_SEC, PRIORITIES  # noqa: E402
+
+BEACON = "동행안내로봇 비카가 대기 중입니다."
+
+
+def test_ambient_is_the_lowest_priority_and_parses():
+    assert PRIORITIES[-1] == AMBIENT
+    assert parse_request(f"ambient:{BEACON}") == (AMBIENT, BEACON)
+    assert build_request(AMBIENT, BEACON) == f"ambient:{BEACON}"
+
+
+def test_ambient_plays_when_nothing_else_is_going_on():
+    q = TtsQueue()
+    assert q.push(AMBIENT, BEACON, now=0.0, busy=False).accepted
+    assert q.pop(now=0.1).text == BEACON
+
+
+def test_ambient_is_dropped_while_speaking():
+    q = TtsQueue()
+    result = q.push(AMBIENT, BEACON, now=0.0, busy=True)
+    assert not result.accepted
+    assert len(q) == 0
+
+
+def test_ambient_is_dropped_when_something_is_queued():
+    q = TtsQueue()
+    q.push(NARRATION, "안내를 시작합니다.", now=0.0)
+    assert not q.push(AMBIENT, BEACON, now=0.1).accepted
+    assert len(q) == 1
+
+
+def test_queued_ambient_yields_to_new_speech():
+    q = TtsQueue()
+    q.push(AMBIENT, BEACON, now=0.0)
+    result = q.push(RESPONSE, "네?", now=0.1)
+    assert result.accepted and BEACON in result.dropped
+    assert q.pop(now=0.2).text == "네?"
+    assert q.pop(now=0.3) is None
+
+
+def test_ambient_does_not_wait_long_in_the_queue():
+    q = TtsQueue()
+    q.push(AMBIENT, BEACON, now=0.0)
+    assert q.pop(now=AMBIENT_TTL_SEC + 0.1) is None
+    assert q.take_expired() == [BEACON]
+
+
+def test_dropped_ambient_does_not_block_the_next_beat():
+    """버린 알림은 중복 억제 기록에 남지 않는다 — 다음 박자에 또 판단한다."""
+    q = TtsQueue()
+    assert not q.push(AMBIENT, BEACON, now=0.0, busy=True).accepted
+    assert q.push(AMBIENT, BEACON, now=0.5, busy=False).accepted

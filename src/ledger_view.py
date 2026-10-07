@@ -8,7 +8,9 @@ from __future__ import annotations
 from .schema import RobotState
 
 DIALOG_KO = {
-    "idle": "대기(안내 없음)",
+    # "대기(안내 없음)"였다. 대기 장소 작업(2026-10-07)으로 진짜 '대기'(waiting)가 셋
+    # 생겨 헷갈리므로 "안내 없음"으로 바꿨다(사용자 결정).
+    "idle": "안내 없음",
     "awaiting_user": "인사 답 대기",
     "confirming": "목적지 확인 대기",
     "seeking": "호출 방향으로 회전 중",
@@ -26,6 +28,11 @@ DIALOG_KO = {
     "asking_next": "도착 질문 중",
     "asking_wait_time": "대기 시간 질문 중",
     "waiting": "대기 중",
+    # 대기 장소 (2026-10-07, ROS mission_logic State 의 새 값 셋). 대기의 일부라 남은
+    # 시간이 흐른다. 빠지면 영어 이름이 그대로 LLM 에 간다 — 시험이 미션 상태 전부를 본다.
+    "waiting_release": "손 놓기 기다림(손을 놓으면 혼자 대기 장소로 감)",
+    "moving_to_wait_spot": "대기 장소로 혼자 이동 중",
+    "moving_back_to_dest": "대기 장소가 막혀 입구 앞으로 돌아가는 중",
     "returning": "제자리로 복귀 중",
     "estopped": "비상 정지",
     "failed": "이동 실패",
@@ -70,6 +77,10 @@ def render_ledger(state: RobotState, *, awaiting_answer: bool, now_text: str) ->
         lines.append(f"- 직전에 간 곳: {state.last_destination} ({_ago(state.last_arrived_age_sec)} 도착)")
     else:
         lines.append("- 직전에 간 곳: 아직 없음")
+    if state.door_side:
+        # 도착할 때 미션이 정한 입구 쪽(로봇 = 뒤에서 손잡이를 잡은 사용자 기준). 도착
+        # 멘트 M1 과 같은 값이라 "화장실 어디야?"에 같은 답이 나온다(2026-10-07).
+        lines.append(f"- {state.last_destination or '목적지'} 방향: {state.door_side}")
     if state.aborted_destination:
         lines.append(f"- 하려다 만 곳: {state.aborted_destination}")
     lines.append(f"- 대화 단계: {DIALOG_KO.get(state.dialog_state, state.dialog_state)}")
@@ -78,6 +89,9 @@ def render_ledger(state: RobotState, *, awaiting_answer: bool, now_text: str) ->
         lines.append(f"- 대기: {state.wait_minutes}분 요청{left}")
     else:
         lines.append("- 대기: 없음")
+    if state.wait_place:
+        # "어디서 기다린다고?"의 답. 대기 장소 없는 제자리 대기는 칸이 비어 줄이 없다.
+        lines.append(f"- 대기 장소: {state.wait_place}")
     lines.append(f"- 시각: {now_text}")
     lines.append(f"- 배터리: {state.battery_pct}%" if state.battery_pct >= 0 else "- 배터리: 모름")
     if awaiting_answer:

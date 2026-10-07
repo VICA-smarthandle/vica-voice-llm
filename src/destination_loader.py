@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from .mission_phrases import ARRIVED_FALLBACK
 from .schema import DestinationData
 
 # 기본 목적지 파일 경로 (프로젝트 루트 기준).
@@ -33,11 +34,16 @@ def _josa_euro(word: str) -> str:
 
 
 def _fill_defaults(dest: DestinationData) -> DestinationData:
-    """confirm_prompt / arrival_message 가 비어 있으면 name 으로 채운다."""
+    """confirm_prompt / arrival_message 가 비어 있으면 name 으로 채운다.
+
+    도착 멘트는 미션이 빈 칸일 때 말하는 문장(MSG_ARRIVED_FALLBACK, "OO에 도착했습니다.")과
+    글자가 같아야 TTS 의 미리 합성이 맞는다. 예전 "OO 앞에 도착했습니다."는 앱이 만들어
+    저장하던 문장이었고, 10-07 앱이 멘트를 비워 저장하면서 미션 문장과 어긋났다.
+    """
     if not dest.confirm_prompt:
         dest.confirm_prompt = f"{dest.name}{_josa_euro(dest.name)} 안내해드릴까요?"
     if not dest.arrival_message and dest.is_approachable:
-        dest.arrival_message = f"{dest.name} 앞에 도착했습니다."
+        dest.arrival_message = ARRIVED_FALLBACK.format(name=dest.name)
     return dest
 
 

@@ -67,7 +67,18 @@ def generate_launch_description() -> LaunchDescription:
                     ["destinations_yaml:=", destinations_yaml],
                 ],
             ),
-            _python_node("src.ros_tts_node", "vica_tts"),
+            # TTS 도 같은 목적지 경로를 받는다(2026-10-07) — 켤 때 확인 질문·도착 멘트·
+            # 입구 방향(M1)을 이 지도의 목적지로 미리 합성한다. 안 넘기면 옛 기본 지도
+            # (vica_map_0630)를 데워 첫 도착 말이 0.9초쯤 늦는다.
+            _python_node(
+                "src.ros_tts_node",
+                "vica_tts",
+                [
+                    "--ros-args",
+                    "-p",
+                    ["destinations_yaml:=", destinations_yaml],
+                ],
+            ),
             # 웨이크워드 앞단: 호출(비카야) + 긴급어(whisper 검증) — LLM 우회 안전 경로.
             # 기존 ros_emergency_node(whisper 상시)를 대체한다. 롤백 = 아랫줄을
             # ros_emergency_node 로 되돌리고 push-to-talk STT 를 별도 실행.

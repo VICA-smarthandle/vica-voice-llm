@@ -48,9 +48,10 @@ from . import audio_cue
 from .approach_chime import ApproachChime
 from .destination_loader import load_destinations
 from .ment_cache import MentCache
+from .mission_phrases import ARRIVAL_QUESTIONS, merged_prewarm, standalone_prewarm
 from .synth_cache import SynthCache
 from .tts import VicaTTS
-from .tts_queue import TtsQueue, parse_request
+from .tts_queue import AMBIENT, TtsQueue, parse_request
 from .tts_text import split_sentences
 
 # 재생이 끝난 뒤 감시를 다시 열기까지의 여유. 스피커 잔향과 마이크 입력 지연 때문에
@@ -83,11 +84,21 @@ class TtsNode(Node):
         self._queue = TtsQueue()
         self._preempt = threading.Event()
         self._running = True
+        # 지금 재생 중인 말의 등급(없으면 None). 배경 알림을 버리거나 끊는 판단에 쓴다.
+        self._playing_priority = None
         # 합성 결과 캐시 + 합성 직렬화 잠금 (워밍업 스레드와 재생 스레드가
         # 동시에 모델을 부르지 않게). 자주 나오는 고정 문장은 기동 시 미리
         # 합성해 첫 사용부터 0초로 만든다.
         self._synth_cache = SynthCache()
         self._synth_lock = threading.Lock()
+        # 미리 합성할 목적지 파일. launch 가 LLM·웨이크워드 노드와 같은 값을 넘긴다
+        # (2026-10-07). 예전엔 환경변수가 없으면 vica_map_0630 고정이라 다른 지도를 띄워도
+        # 옛 지도 문장을 데웠다 — 도착 M1 을 목적지마다 미리 만들기로 해 맞아야 한다.
+        self.declare_parameter(
+            "destinations_yaml",
+            str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
+                / "destinations.yaml"),
+        )
         threading.Thread(target=self._prewarm_synth, daemon=True).start()
 
         self._state_pub = self.create_publisher(Bool, "/vica/tts_state", 10)
@@ -141,7 +152,17 @@ class TtsNode(Node):
     def _enqueue(self, priority: str, text: str) -> None:
         if not text:
             return
-        result = self._queue.push(priority, text, now=time.time())
+        now = time.time()
+        # 배경 알림(ambient, 대기 중 10초 알림)은 다른 말이 나가는 중이면 버린다 — 생각 중
+        # 운율도 대화 중이라는 뜻이라 같이 본다(2026-10-07, 작업 계획 탭 M3).
+        busy = self._playing_priority is not None or now < self._thinking_until
+        result = self._queue.push(priority, text, now=now, busy=busy)
+        if (result.accepted and priority != AMBIENT
+                and self._playing_priority == AMBIENT):
+            # 재생 중인 배경 알림은 할 말에 바로 비킨다.
+            self._preempt.set()
+            self._tts.stop()
+            self.get_logger().info(f"배경 알림 중단 — 할 말 우선: {text}")
 
         # 사라진 말은 반드시 남긴다. 조용히 버리면 "왜 그 안내가 안 나왔는지"를
         # 사후에 추적할 수 없다 (docs/voice-improvement-backlog.md 3절).
@@ -149,7 +170,7 @@ class TtsNode(Node):
             self.get_logger().warn(f"발화 무시({result.reason}): {text}")
             return
         if result.dropped:
-            why = "긴급 선점" if result.preempt else "큐 정원 초과"
+            why = "긴급 선점" if result.preempt else "큐 정원 초과·배경 알림 비킴"
             for lost in result.dropped:
                 self.get_logger().warn(f"발화 폐기({why}): {lost}")
 
@@ -237,7 +258,11 @@ class TtsNode(Node):
                 continue
 
             self.get_logger().info(f"재생[{item.priority}]: {item.text}")
-            completed = self._speak(item.text)
+            self._playing_priority = item.priority
+            try:
+                completed = self._speak(item.text)
+            finally:
+                self._playing_priority = None
             self._chime.on_speech_end(time.time())   # 말 직후 한숨 쉬고 차임
             # 완주·중단 불문 종료를 알린다 — 응답 시계의 기점 (docstring).
             done = String()
@@ -289,35 +314,48 @@ class TtsNode(Node):
         (2026-08-28 실측 0.9초대). 실패해도 재생 경로가 그때그때 합성한다.
         """
         # 접수 신호("확인할게요" 풀)는 2026-09-01 배경 운율로 대체돼 뺐다.
-        phrases: list[str] = []
+        # 도착 발화(도착 멘트 + M1 입구 방향 + 질문)는 미션이 한 발화로 보내고 _speak 는
+        # 통문장 녹음이 없으면 문장마다 합성 보관함만 본다 — 그래서 그 문장들은 따로 구워져
+        # 있어도 문장 단위로 데운다(2026-10-07). 데운 문장은 고정해 LRU 에 밀리지 않게 한다.
+        standalone: list[str] = []
+        merged: list[str] = []
+        yaml_path = ""
         try:
-            # 로봇 지도의 목적지 파일 — wakeword 노드의 장소 귀띔과 같은 경로
+            # 로봇 지도의 목적지 파일 — launch 가 LLM·웨이크워드 노드와 같은 값을 넘긴다.
             yaml_path = os.environ.get(
                 "VICA_DESTINATIONS_YAML",
-                str(Path.home() / "vica_data" / "destinations" / "vica_map_0630"
-                    / "destinations.yaml"))
-            for dest in load_destinations(yaml_path):
-                phrases += [dest.confirm_prompt, dest.arrival_message]
+                str(self.get_parameter("destinations_yaml").value))
+            dests = load_destinations(yaml_path)
+            standalone = standalone_prewarm(dests)
+            merged = merged_prewarm(dests)
         except Exception as exc:
             self.get_logger().warn(f"목적지 멘트 워밍업 생략: {exc}")
+            merged = list(ARRIVAL_QUESTIONS)
+        # 혼자 말해지는 문장은 통문장 녹음이 있으면 건너뛴다(_speak 가 녹음을 튼다).
+        chunks: list[str] = []
+        for phrase in standalone:
+            if not self._ments.lookup(phrase):
+                chunks += split_sentences(phrase)
+        for phrase in merged:
+            chunks += split_sentences(phrase)
         started = time.monotonic()
         count = 0
-        for phrase in phrases:
-            for chunk in split_sentences(phrase):
-                if not self._running:
-                    return
-                if self._ments.lookup(chunk) or self._synth_cache.get(chunk):
-                    continue
-                try:
-                    with self._synth_lock:
-                        wav, rate = self._tts.synthesize(chunk)
-                    self._synth_cache.put(chunk, wav, rate)
-                    count += 1
-                except Exception as exc:
-                    self.get_logger().warn(f"워밍업 합성 실패({chunk!r}): {exc}")
-                    return
+        for chunk in chunks:
+            if not self._running:
+                return
+            if self._synth_cache.get(chunk):
+                continue
+            try:
+                with self._synth_lock:
+                    wav, rate = self._tts.synthesize(chunk)
+                self._synth_cache.put(chunk, wav, rate, pinned=True)
+                count += 1
+            except Exception as exc:
+                self.get_logger().warn(f"워밍업 합성 실패({chunk!r}): {exc}")
+                return
         self.get_logger().info(
-            f"고정 문장 워밍업 완료: {count}건, {time.monotonic() - started:.1f}초")
+            f"고정 문장 워밍업 완료({yaml_path}): {count}건, "
+            f"{time.monotonic() - started:.1f}초")
 
     def shutdown(self) -> None:
         self._running = False

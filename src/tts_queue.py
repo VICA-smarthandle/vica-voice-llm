@@ -7,6 +7,9 @@ vica_ros2_ws 의 mission_logic.Say(priority=...) 다.
     emergency  안전 관련. 하던 말을 끊고 즉시 재생한다.
     response   사용자 발화에 대한 답. 대기 중인 안내보다 먼저 나간다.
     narration  상태 안내. 기본값.
+    ambient    배경 알림(2026-10-07, 대기 중 10초 알림 M3 전용). 다른 말이 나가는
+               중이거나 줄 서 있으면 기다리지 않고 버린다 — 쌓이면 대화가 끝난 뒤
+               한꺼번에 터진다. 재생 중 다른 말이 오면 비킨다(노드 몫).
 
 같은 우선순위끼리는 들어온 순서(FIFO)를 지킨다.
 
@@ -24,13 +27,16 @@ from typing import Optional
 # 결정적 정보라 낡아도 말한다. (회전 멘트 특례는 2026-09-11 회전 안내 제거와
 # 함께 뺐다.)
 NARRATION_TTL_SEC = 6.0
+# 배경 알림은 들어오자마자 나가거나 버려진다. 꺼내기 직전 잠깐 밀린 정도만 봐준다.
+AMBIENT_TTL_SEC = 1.0
 
 EMERGENCY = "emergency"
 RESPONSE = "response"
 NARRATION = "narration"
+AMBIENT = "ambient"
 
 # 앞에 올수록 먼저 재생된다.
-PRIORITIES = (EMERGENCY, RESPONSE, NARRATION)
+PRIORITIES = (EMERGENCY, RESPONSE, NARRATION, AMBIENT)
 _ORDER = {name: index for index, name in enumerate(PRIORITIES)}
 
 DEFAULT_PRIORITY = NARRATION
@@ -120,7 +126,8 @@ class TtsQueue:
         with self._lock:
             return len(self._items)
 
-    def push(self, priority: str, text: str, now: float) -> PushResult:
+    def push(self, priority: str, text: str, now: float, busy: bool = False) -> PushResult:
+        """busy: 지금 무엇이 재생 중인가(노드가 알려 준다) — 배경 알림만 본다."""
         text = (text or "").strip()
         if not text:
             return PushResult(accepted=False, reason="빈 문자열")
@@ -128,6 +135,10 @@ class TtsQueue:
             priority = DEFAULT_PRIORITY
 
         with self._lock:
+            if priority == AMBIENT and (busy or self._items):
+                # 다른 말이 나가거나 기다리는 중 — 기다리지 않고 버린다. 중복 억제
+                # 기록에도 남기지 않는다(다음 박자의 같은 알림은 새로 판단한다).
+                return PushResult(accepted=False, reason="배경 알림 — 다른 말 중")
             self._forget_old(now)
             if text in self._recent:
                 return PushResult(accepted=False, reason="직전과 같은 문장")
@@ -144,9 +155,15 @@ class TtsQueue:
                 self._sort()
                 return PushResult(accepted=True, preempt=True, dropped=dropped)
 
+            yielded: tuple[str, ...] = ()
+            if priority != AMBIENT:
+                # 배경 알림은 다른 말에 비킨다 — 줄 서 있던 것은 버린다(재생 중인 것은
+                # 노드가 끊는다).
+                yielded = tuple(i.text for i in self._items if i.priority == AMBIENT)
+                self._items = [i for i in self._items if i.priority != AMBIENT]
             self._items.append(item)
             self._sort()
-            return PushResult(accepted=True, dropped=self._trim())
+            return PushResult(accepted=True, dropped=yielded + self._trim())
 
     def pop(self, now: Optional[float] = None) -> Optional[Utterance]:
         import time as _time
@@ -169,6 +186,8 @@ class TtsQueue:
             age = now - item.queued_at
             if item.priority == NARRATION:
                 return age <= NARRATION_TTL_SEC
+            if item.priority == AMBIENT:
+                return age <= AMBIENT_TTL_SEC
             return True  # emergency·일반 response 는 낡아도 말한다
 
         kept, dropped = [], []

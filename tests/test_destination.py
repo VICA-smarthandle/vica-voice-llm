@@ -22,7 +22,8 @@ class FillDefaultsTest(unittest.TestCase):
         d = DestinationData(id="x", name="안내센터")  # confirm/arrival 비어 있음
         _fill_defaults(d)
         self.assertEqual(d.confirm_prompt, "안내센터로 안내해드릴까요?")
-        self.assertEqual(d.arrival_message, "안내센터 앞에 도착했습니다.")
+        # 미션의 빈 칸 도착 문장(MSG_ARRIVED_FALLBACK)과 같은 글자 — 미리 합성이 맞게(10-07).
+        self.assertEqual(d.arrival_message, "안내센터에 도착했습니다.")
 
     def test_keep_existing(self):
         d = DestinationData(id="x", name="식당", confirm_prompt="이미 있음")

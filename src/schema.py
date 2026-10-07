@@ -40,6 +40,10 @@ class DestinationData(BaseModel):
     pose: DestinationPose = Field(default_factory=DestinationPose)
     confirm_prompt: str = ""
     arrival_message: str = ""
+    # 입구 방향(도, 지도 기준, 2026-10-07 대기 장소). 있으면 미션이 도착 때 "화장실은
+    # 오른쪽에 있습니다."(M1)를 이어 말하므로 TTS 가 그 네 문장을 미리 합성한다.
+    # 목록·지시문에는 쓰지 않는다(LLM 은 [지금 상황]의 방향 줄로 답한다).
+    door_yaw: Optional[float] = None
 
 
 # intent 종류와 안전 플래그는 정해진 값만 허용한다 (오타/임의값 방지).
@@ -114,6 +118,9 @@ class RobotState(BaseModel):
     wait_minutes: int = -1
     wait_left_sec: int = -1
     battery_pct: int = -1
+    # ---- 대기 장소 (2026-10-07). 옛 미션 메시지엔 없어 "" 로 온다 ----
+    door_side: str = ""     # 마지막 도착 기준 목적지 입구 쪽 "앞"/"뒤"/"오른쪽"/"왼쪽"
+    wait_place: str = ""    # 지금 기다리는 곳 "입구 오른쪽"·"입구 앞" 등. 대기 아님·제자리 대기는 ""
 
 
 def should_forward_intent(intent) -> bool:
