@@ -88,13 +88,18 @@ def to_stereo(wave: np.ndarray) -> np.ndarray:
 
 
 def prepare(wave: np.ndarray, rate: int,
-            device_rate: Optional[int], device_channels: int) -> np.ndarray:
+            device_rate: Optional[int], device_channels: int,
+            peak_dbfs: Optional[float] = None) -> np.ndarray:
     """재생 직전 변환 파이프라인. 정규화는 리샘플 뒤에 한다 —
-    리샘플이 최고점을 미세하게 바꿀 수 있기 때문이다."""
+    리샘플이 최고점을 미세하게 바꿀 수 있기 때문이다.
+
+    peak_dbfs: 이 소리만의 최고점. 없으면 말소리 기준(VICA_TTS_PEAK_DBFS).
+    순음·종소리는 같은 최고점이라도 말보다 훨씬 크게 들려 따로 낮춘다.
+    """
     out = np.asarray(wave, dtype=np.float32)
     if device_rate is not None:
         out = resample(out, rate, device_rate)
-    out = normalize_peak(out)
+    out = normalize_peak(out, peak_dbfs)
     if device_channels >= 2:
         out = to_stereo(out)
     return out
@@ -248,7 +253,8 @@ def _persistent_stream(index: Optional[int], rate: int, channels: int):
 
 # ---------------------------------------------------------------- 재생
 def play(wave: np.ndarray, rate: int, blocking: bool = False,
-         should_stop: Optional[Callable[[], bool]] = None) -> None:
+         should_stop: Optional[Callable[[], bool]] = None,
+         peak_dbfs: Optional[float] = None) -> None:
     """정규화·리샘플 후 재생한다. 실패 처리는 호출자 몫(예외 그대로 전파) —
     TTS 는 원인을 로그에 남기고, 효과음은 조용히 넘어가는 식으로 서로 다르다.
 
@@ -274,7 +280,7 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False,
         raise RuntimeError(
             "reSpeaker 재생 장치를 찾을 수 없다 (연결 또는 VICA_TTS_DEVICE 확인)")
     index, out_rate, channels = device
-    out = prepare(wave, rate, out_rate, channels)
+    out = prepare(wave, rate, out_rate, channels, peak_dbfs)
 
     if not blocking:
         sd.play(out, out_rate, device=index)

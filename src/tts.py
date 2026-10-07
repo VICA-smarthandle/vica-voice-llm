@@ -65,16 +65,17 @@ class VicaTTS:
             print(f"[TTS] 재생 실패: {exc}", file=sys.stderr)
             return False
 
-    def play_audio(self, wav, sample_rate: int, should_stop=None) -> bool:
+    def play_audio(self, wav, sample_rate: int, should_stop=None, peak_dbfs=None) -> bool:
         """이미 만들어 둔 파형을 재생한다 (고정 멘트 캐시용 — 합성 생략).
 
         speak() 와 같은 단일 출구(audio_out)를 쓰므로 AEC 참조·stop() 중단이
-        동일하게 동작한다. should_stop 은 audio_out.play 로 그대로 넘긴다.
+        동일하게 동작한다. should_stop·peak_dbfs 는 audio_out.play 로 그대로 넘긴다.
         """
         try:
             from . import audio_out
 
-            audio_out.play(wav, sample_rate, blocking=True, should_stop=should_stop)
+            audio_out.play(wav, sample_rate, blocking=True, should_stop=should_stop,
+                           peak_dbfs=peak_dbfs)
             return True
         except Exception as exc:
             import sys

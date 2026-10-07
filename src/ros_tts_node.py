@@ -42,8 +42,10 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, String
+from vica_interfaces.msg import RobotState as RobotStateMsg
 
 from . import audio_cue
+from .approach_chime import ApproachChime
 from .destination_loader import load_destinations
 from .ment_cache import MentCache
 from .synth_cache import SynthCache
@@ -101,6 +103,20 @@ class TtsNode(Node):
         self._thinking_pos = 0
         self._thinking_wave = audio_cue.thinking_loop()
         self.create_subscription(Bool, "/vica/thinking", self._on_thinking, 10)
+        # 사람 접근 차임 (2026-10-07 사용자 결정): 미션이 시각장애인에게 다가가는
+        # 중(dialog_state "approaching")이라 알리는 동안 2초마다 종 두 음 "딩—동↗"
+        # 으로 위치를 알린다. 첫 인사("안내로봇 비카가 다가가고 있어요")는 미션이
+        # 말한다. 말이 우선이고, 생각 중 운율처럼 tts_state 는 켜지 않는다(감시 유지).
+        chime_on = os.environ.get("VICA_APPROACH_CHIME", "on").strip().lower() not in (
+            "off", "0", "false")
+        self._chime = ApproachChime(enabled=chime_on)
+        self._chime_wave = audio_cue.approach_chime()
+        try:
+            # 순음·종소리는 같은 최고점이라도 말보다 크게 들린다 — 말(-3)보다 낮춘다.
+            self._chime_dbfs = float(os.environ.get("VICA_APPROACH_CHIME_DBFS", "-12"))
+        except ValueError:
+            self._chime_dbfs = -12.0
+        self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
 
         self._worker = threading.Thread(target=self._playback_loop, daemon=True)
         self._worker.start()
@@ -154,6 +170,17 @@ class TtsNode(Node):
             # 경계(0.2초)에서 스스로 멈춘다.
             self._thinking_until = 0.0
 
+    def _on_robot_state(self, msg: RobotStateMsg) -> None:
+        self._chime.on_robot_state(msg.dialog_state, time.time())
+
+    def _play_chime(self) -> None:
+        """사람 접근 차임 한 번. 할 말이 들어오거나 선점되면 그 자리에서 비킨다."""
+        self._chime.played(time.time())
+        self._tts.play_audio(
+            self._chime_wave, audio_cue.SAMPLE_RATE,
+            should_stop=lambda: self._preempt.is_set() or len(self._queue) > 0,
+            peak_dbfs=self._chime_dbfs)
+
     def _play_thinking_slice(self) -> None:
         """운율 한 조각(0.2초)을 재생한다. 조각 사이마다 큐를 다시 본다."""
         wave = self._thinking_wave
@@ -203,12 +230,15 @@ class TtsNode(Node):
             if item is None:
                 if time.time() < self._thinking_until:
                     self._play_thinking_slice()
+                elif self._chime.due(time.time()):
+                    self._play_chime()
                 else:
                     time.sleep(IDLE_POLL_SEC)
                 continue
 
             self.get_logger().info(f"재생[{item.priority}]: {item.text}")
             completed = self._speak(item.text)
+            self._chime.on_speech_end(time.time())   # 말 직후 한숨 쉬고 차임
             # 완주·중단 불문 종료를 알린다 — 응답 시계의 기점 (docstring).
             done = String()
             done.data = item.text

@@ -63,3 +63,38 @@ def thinking_loop() -> np.ndarray:
         parts.append(tone(f, THINKING_NOTE_SEC, THINKING_VOLUME))
         parts.append(gap)
     return np.concatenate(parts)
+
+
+# 사람 접근 차임 (2026-10-07 사용자 결정 — 시청 페이지 차임 1번 "딩—동↗").
+# 후진음("삐—")은 "피하라"로 들려 쓰지 않는다. 아래에서 위로 오르는 종 두 음이
+# "반갑게 다가온다"를 알리고, 배음이 섞인 종소리라 순음보다 방향을 잡기 쉽다.
+# '생각 중' 운율의 도·미·솔과 겹치지 않는 라(880)→레(1175)다.
+APPROACH_CHIME_NOTES_HZ = (880.0, 1174.66)
+APPROACH_CHIME_GAP_SEC = 0.24          # 둘째 음을 치는 시각
+APPROACH_CHIME_NOTE_SEC = 1.0          # 음 하나의 여운 길이
+# (배수, 세기, 줄어드는 시간): 배음마다 따로 잦아든다 — 종소리 결.
+APPROACH_CHIME_PARTIALS = ((1, 1.0, 0.45), (2, 0.28, 0.25), (3, 0.10, 0.14))
+APPROACH_CHIME_ATTACK_SEC = 0.004      # 딸깍 없이 치는 짧은 시작
+
+
+def _bell_note(freq_hz: float) -> np.ndarray:
+    samples = int(APPROACH_CHIME_NOTE_SEC * SAMPLE_RATE)
+    t = np.arange(samples) / SAMPLE_RATE
+    wave = np.zeros(samples, dtype=np.float64)
+    for multiple, amp, fade_sec in APPROACH_CHIME_PARTIALS:
+        # fade_sec 동안 약 5 % 로 잦아든다(시간 상수 = fade_sec / 3).
+        wave += amp * np.exp(-t * 3.0 / fade_sec) * np.sin(2 * np.pi * freq_hz * multiple * t)
+    attack = max(1, int(APPROACH_CHIME_ATTACK_SEC * SAMPLE_RATE))
+    wave[:attack] *= np.linspace(0.0, 1.0, attack)
+    return wave
+
+
+def approach_chime() -> np.ndarray:
+    """종 두 음 "딩—동↗" 한 번. 재생 크기는 부르는 쪽이 정한다(audio_out peak_dbfs)."""
+    gap = int(APPROACH_CHIME_GAP_SEC * SAMPLE_RATE)
+    first, second = (_bell_note(f) for f in APPROACH_CHIME_NOTES_HZ)
+    wave = np.zeros(gap + len(second), dtype=np.float64)
+    wave[: len(first)] += first
+    wave[gap:] += second
+    peak = float(np.max(np.abs(wave)))
+    return (wave / peak).astype(np.float32) if peak > 0 else wave.astype(np.float32)
