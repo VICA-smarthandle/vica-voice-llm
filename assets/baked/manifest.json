@@ -86,5 +86,6 @@
  "handle_grip_request.wav": "스마트핸들 손잡이를 잡아주세요!",
  "handle_grip_confirmed.wav": "확인되었습니다!",
  "handle_grip_lost.wav": "안전을 위해 손잡이를 다시 잡아주세요",
- "mission_msg_handle_hint.wav": "손잡이가 진동하고 있습니다. 잡아주세요."
+ "mission_msg_handle_hint.wav": "손잡이가 진동하고 있습니다. 잡아주세요.",
+ "mission_msg_approach_coming.wav": "동행로봇 비카가 다가가고 있어요."
 }

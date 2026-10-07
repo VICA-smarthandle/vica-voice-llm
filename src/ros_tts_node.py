@@ -105,7 +105,7 @@ class TtsNode(Node):
         self.create_subscription(Bool, "/vica/thinking", self._on_thinking, 10)
         # 사람 접근 차임 (2026-10-07 사용자 결정): 미션이 시각장애인에게 다가가는
         # 중(dialog_state "approaching")이라 알리는 동안 2초마다 종 두 음 "딩—동↗"
-        # 으로 위치를 알린다. 첫 인사("안내로봇 비카가 다가가고 있어요")는 미션이
+        # 으로 위치를 알린다. 첫 인사("동행로봇 비카가 다가가고 있어요")는 미션이
         # 말한다. 말이 우선이고, 생각 중 운율처럼 tts_state 는 켜지 않는다(감시 유지).
         chime_on = os.environ.get("VICA_APPROACH_CHIME", "on").strip().lower() not in (
             "off", "0", "false")

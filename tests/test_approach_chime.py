@@ -87,7 +87,7 @@ def test_rings_every_period():
 
 
 def test_waits_a_breath_after_speech():
-    """첫 인사 "안내로봇 비카가 다가가고 있어요"가 끝나자마자 겹쳐 울리지 않는다."""
+    """첫 인사 "동행로봇 비카가 다가가고 있어요"가 끝나자마자 겹쳐 울리지 않는다."""
     c = chime()
     c.on_robot_state("approaching", 0.0)
     c.on_speech_end(2.5)
