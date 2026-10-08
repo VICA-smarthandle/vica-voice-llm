@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .destination_loader import _josa_euro
 from .destination_matcher import match_destination
+from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from . import local_rules
@@ -268,7 +269,10 @@ def _question_destination(text: str, destinations: Sequence[DestinationData]):
     if not text:
         return None
     for dest in destinations:
-        if dest.confirm_prompt and dest.confirm_prompt == text:
+        # 미션이 확인 질문 중 다른 목적지로 다시 묻는 "네, XX로 안내해드릴까요?"(2026-10-08 결정
+        # 4)도 그 목적지의 확인 질문이다 — 못 알아보면 "응"이 앞서 물은 곳으로 붙는다.
+        if dest.confirm_prompt and text in (
+                dest.confirm_prompt, CONFIRM_SWITCH.format(prompt=dest.confirm_prompt)):
             return dest
     # 이름이 다른 이름의 끝과 겹치면("화장실"·"남자 화장실") 긴 쪽이 맞다.
     matches = [
@@ -601,6 +605,10 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
                 need_confirm=False,
             )
         if word in _NEGATIVES:
+            if pending_command == "cancel":
+                # "안내를 취소할까요?"에 아니요 — 미션이 받고 "안내를 계속하겠습니다."라고
+                # 답한다(2026-10-08 반응표). 여기서 따로 말하면 두 목소리다.
+                return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
             return VicaIntent(
                 intent="unknown",
                 confidence=1.0,

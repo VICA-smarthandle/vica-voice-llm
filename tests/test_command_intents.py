@@ -45,12 +45,20 @@ class TestCommandConfirmFlow:
         assert result.intent == "cancel"
         assert result.need_confirm is False
 
-    def test_no_after_cancel_question_continues(self):
+    def test_no_after_cancel_question_goes_to_the_mission(self):
+        """취소 확인의 "아니요"는 미션이 받아 "안내를 계속하겠습니다."라고 답한다(2026-10-08)."""
         history = [HumanMessage("취소해줘"), AIMessage(CANCEL_CONFIRM)]
+        result = parse_intent("아니요", [DEST], history=history)
+        assert result.intent == "deny"
+        assert result.reply == ""
+        assert result.need_confirm is False
+
+    def test_no_after_resume_question_is_still_answered_here(self):
+        """"다시 출발할까요?"는 음성이 쥔 질문이라 미션이 모른다 — 대답은 지금처럼 여기서."""
+        history = [AIMessage(RESUME_CONFIRM)]
         result = parse_intent("아니요", [DEST], history=history)
         assert result.intent == "unknown"
         assert result.reply == COMMAND_DECLINED
-        assert result.need_confirm is False
 
     def test_yes_after_resume_question_confirms(self):
         history = [AIMessage(RESUME_CONFIRM)]

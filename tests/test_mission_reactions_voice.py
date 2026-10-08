@@ -5,7 +5,9 @@
 from src import langchain_intent_parser as parser
 from src import local_rules
 from src.langchain_intent_parser import _build_system_prompt
-from src.mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src.mission_phrases import CONFIRM_SWITCH, WAIT_FINISH_ASK, WAIT_NEED_ASK
 from src.mission_question import mission_is_asking, quiet_for_mission
 from src.replies import CANCEL_CONFIRM, RETRY_PROMPT, WAKE_GREETING
 from src.schema import DestinationData, VicaIntent
@@ -85,3 +87,22 @@ class TestQuietForMission:
         kept = quiet_for_mission(_i("navigate", "화장실로 안내해드릴까요?", need_confirm=True),
                                  "idle", "", 1.0)
         assert kept.reply == "화장실로 안내해드릴까요?"
+
+
+# ---- Task 15: "네, XX로 안내해드릴까요?"도 확인 질문이다 -----------------------------
+ELEV = DestinationData(id="elev", name="엘리베이터", confirm_prompt="엘리베이터로 안내해드릴까요?")
+
+
+def test_switch_question_points_at_the_new_destination():
+    history = [AIMessage(DEST.confirm_prompt), HumanMessage("아니 엘리베이터로 가자"),
+               AIMessage(CONFIRM_SWITCH.format(prompt=ELEV.confirm_prompt))]
+    assert parser._pending_confirm_destination(history, [DEST, ELEV]) is ELEV
+    assert parser._recent_confirm_destination(history, [DEST, ELEV]) is ELEV
+
+
+def test_yes_to_the_switch_question_confirms_the_new_destination():
+    history = [AIMessage(DEST.confirm_prompt), HumanMessage("아니 엘리베이터로 가자"),
+               AIMessage(CONFIRM_SWITCH.format(prompt=ELEV.confirm_prompt))]
+    result = parser._shortcut_intent("응", history, [DEST, ELEV])
+    assert result is not None and result.intent == "navigate"
+    assert result.matched_destination_id == "elev"
