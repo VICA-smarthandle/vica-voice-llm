@@ -8,9 +8,12 @@ ros_node 는 rclpy 없이 시험할 수 없어 판단은 여기 순수 함수로
 """
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, BaseMessage
+
 from .local_rules import ANSWER_WAIT_STATES
 from .mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
-from .replies import CANCEL_CONFIRM, WAKE_GREETING
+from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING
+from .schema import VicaIntent
 
 # 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다.
 MISSION_QUESTIONS = frozenset({WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM})
@@ -40,3 +43,35 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
             and dialog_state in APPROACH_ANSWER_STATES):
         return intent.model_copy(update={"reply": ""})
     return intent
+
+
+# ---- 음성이 쥔 "다시 출발할까요?" 다시 묻기 (2026-10-08) -------------------------------
+# 미션은 이 질문을 모른다(schema.should_forward_intent 가 확인 전 resume 을 쥔다). 그래서
+# 다시 묻기도 음성이 한다 — 못 알아들은 답이나 빈손으로 닫힌 듣기 창에 한 번만.
+def _robot_lines(history: list[BaseMessage]) -> list[str]:
+    return [m.content for m in history if isinstance(m, AIMessage)]
+
+
+def resume_reasked(history: list[BaseMessage]) -> bool:
+    """이미 한 번 다시 물었나 — 로봇 말 마지막 두 줄이 모두 "다시 출발할까요?"."""
+    lines = _robot_lines(history or [])
+    return len(lines) >= 2 and lines[-1] == RESUME_CONFIRM and lines[-2] == RESUME_CONFIRM
+
+
+def reask_held_resume(intent, history: list[BaseMessage]):
+    """"다시 출발할까요?"에 못 알아들은 답(unknown)이면 같은 질문을 한 번 다시 묻는 intent 로
+    바꾼다. 확인 전 resume 이라 미션에는 가지 않고 말만 나간다. 그 밖에는 그대로."""
+    if intent.intent != "unknown" or getattr(intent, "safety_flag", "") == "emergency":
+        return intent
+    lines = _robot_lines(history or [])
+    if not lines or lines[-1] != RESUME_CONFIRM or resume_reasked(history):
+        return intent
+    return VicaIntent(intent="resume", confidence=1.0, reply=RESUME_CONFIRM, need_confirm=True)
+
+
+def should_reask_resume_on_silence(history: list[BaseMessage]) -> bool:
+    """듣기 창이 빈손으로 닫혔을 때 "다시 출발할까요?"를 한 번 다시 물을까. 질문 뒤 사용자
+    말이 없었고(마지막 줄이 그 질문) 아직 다시 묻지 않았을 때만."""
+    if not history or not isinstance(history[-1], AIMessage):
+        return False
+    return history[-1].content == RESUME_CONFIRM and not resume_reasked(history)

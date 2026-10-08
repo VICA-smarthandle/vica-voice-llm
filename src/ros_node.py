@@ -42,15 +42,17 @@ from .langchain_intent_parser import (
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
-from .mission_question import quiet_for_mission
+from .mission_question import (quiet_for_mission, reask_held_resume,
+                               should_reask_resume_on_silence)
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .situation_board import SituationBoard, parse_goal_event_name
-from .replies import COMMAND_DECLINED, LLM_UNAVAILABLE, RETRY_PROMPT, WAKE_GREETING, expects_answer
+from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
+                      WAKE_GREETING, expects_answer)
 from .ros_convert import intent_to_msg, msg_to_robot_state
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
-from .tts_queue import request_for_intent
+from .tts_queue import RESPONSE, build_request, request_for_intent
 
 
 # 재청취 창 문맥으로 보는 시간. 질문 발화(수 초) + 청취 창 + 답 처리까지
@@ -150,6 +152,8 @@ class LlmIntentNode(Node):
         # (2026-08-31 야간 실기). "비카야" 직접 호출은 대답할 자격을 되살린다.
         self._followup_until = 0.0
         self.create_subscription(Bool, "/vica/listen_request", self._on_listen_request, 10)
+        # 듣기 창이 빈손으로 닫혔다 — 음성이 쥔 "다시 출발할까요?"를 한 번 다시 묻는다(2026-10-08).
+        self.create_subscription(String, "/vica/listen_state", self._on_listen_state_for_resume, 10)
         self.create_subscription(String, "/vica/wake", self._on_wake_signal, 10)
 
         # ----- 클라우드→로컬 자동 전환 (2026-09-19 설계) ------------------------
@@ -352,6 +356,9 @@ class LlmIntentNode(Node):
         llm_first(소리 모드 모델 전결): 재청취 기각을 하지 않는다 — 대꾸할지 침묵할지
         (reply 가 빈 문자열)는 모델이 정했다.
         """
+        # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
+        #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
+        intent = reask_held_resume(intent, self._history.messages)
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -424,6 +431,19 @@ class LlmIntentNode(Node):
             self._history.extend([HumanMessage(text)])
         else:
             self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+
+    def _on_listen_state_for_resume(self, msg: String) -> None:
+        """듣기 창이 빈손으로 닫혔다. 마지막 로봇 말이 음성이 쥔 "다시 출발할까요?"이고 아직
+        다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다."""
+        if not (msg.data or "").startswith("empty"):
+            return
+        if not should_reask_resume_on_silence(self._history.messages):
+            return
+        self.get_logger().info("다시 출발 확인 — 대답이 없어 한 번 다시 묻는다")
+        self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
+        self._listen_pub.publish(Bool(data=True))
+        if not self._spoken_history:
+            self._history.extend([AIMessage(RESUME_CONFIRM)])
 
     def _apply_misheard_rule(self, intent: VicaIntent, text: str) -> VicaIntent:
         """로컬 규칙: 창 밖 못 알아들은 말의 대꾸를 고정 문구 한 번 → 침묵으로 바꾼다."""

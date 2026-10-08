@@ -8,8 +8,10 @@ from src.langchain_intent_parser import _build_system_prompt
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.mission_phrases import CONFIRM_SWITCH, WAIT_FINISH_ASK, WAIT_NEED_ASK
-from src.mission_question import mission_is_asking, quiet_for_mission
-from src.replies import CANCEL_CONFIRM, RETRY_PROMPT, WAKE_GREETING
+from src.mission_question import (mission_is_asking, quiet_for_mission, reask_held_resume,
+                                  resume_reasked, should_reask_resume_on_silence)
+from src.replies import CANCEL_CONFIRM, RESUME_CONFIRM, RETRY_PROMPT, WAKE_GREETING
+from src.schema import should_forward_intent
 from src.schema import DestinationData, VicaIntent
 
 DEST = DestinationData(id="wc", name="화장실", confirm_prompt="화장실로 안내해드릴까요?")
@@ -106,3 +108,29 @@ def test_yes_to_the_switch_question_confirms_the_new_destination():
     result = parser._shortcut_intent("응", history, [DEST, ELEV])
     assert result is not None and result.intent == "navigate"
     assert result.matched_destination_id == "elev"
+
+
+# ---- Task 16: 음성이 쥔 "다시 출발할까요?" 다시 묻기 ----------------------------------
+class TestHeldResumeReask:
+    def test_strange_answer_reasks_once(self):
+        history = [HumanMessage("가자?"), AIMessage(RESUME_CONFIRM), HumanMessage("음냐")]
+        out = reask_held_resume(_i("unknown", ""), history)
+        assert (out.intent, out.need_confirm, out.reply) == ("resume", True, RESUME_CONFIRM)
+        assert not should_forward_intent(out)          # 미션에는 안 간다 — 말만 나간다
+
+    def test_second_strange_answer_is_left_alone(self):
+        history = [AIMessage(RESUME_CONFIRM), HumanMessage("음냐"), AIMessage(RESUME_CONFIRM),
+                   HumanMessage("음냐")]
+        assert resume_reasked(history)
+        out = reask_held_resume(_i("unknown", ""), history)
+        assert out.intent == "unknown"
+
+    def test_other_questions_are_not_touched(self):
+        history = [AIMessage(CANCEL_CONFIRM)]
+        assert reask_held_resume(_i("unknown", ""), history).intent == "unknown"
+
+    def test_silence_reasks_once(self):
+        assert should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM)])
+        assert not should_reask_resume_on_silence(
+            [AIMessage(RESUME_CONFIRM), HumanMessage("음냐"), AIMessage(RESUME_CONFIRM)])
+        assert not should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM), HumanMessage("네")])
