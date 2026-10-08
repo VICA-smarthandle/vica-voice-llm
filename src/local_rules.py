@@ -32,7 +32,7 @@ LOCAL_NUM_CTX = int(os.environ.get("VICA_LOCAL_NUM_CTX", "4096"))
 # 맞추지 않는다 — 작은 모델은 글이 길수록 느려지고 규칙을 놓친다.
 LOCAL_PROMPT_RULES = """
 [로컬 추가 규칙 — 이 규칙이 위 규칙보다 먼저다]
-1. 로봇의 마지막 말이 "안내를 받으시겠어요?"면 답은 affirm 또는 deny 만 고른다.
+1. 로봇의 마지막 말이 "안내를 받으시겠어요?"면 답은 affirm 또는 deny 다. 목적지를 말하면 navigate.
 2. 로봇의 마지막 말이 "여기서 대기할까요?"·"안내를 마칠까요?" 같은 도착 질문이면
    답은 affirm·deny·wait·finish 만 고른다. 목적지를 다시 제안하지 않는다.
 3. 사용자가 시간만 말하면("한 5분?", "십 분") intent 는 wait 다.
