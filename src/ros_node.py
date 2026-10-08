@@ -42,6 +42,7 @@ from .langchain_intent_parser import (
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
+from .mission_question import quiet_for_mission
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
 from .situation_board import SituationBoard, parse_goal_event_name
@@ -380,6 +381,15 @@ class LlmIntentNode(Node):
         if self._local and not llm_first:
             intent = self._apply_misheard_rule(intent, text)
 
+        # 2-3) 미션이 질문 중이면 못 알아들은 답에 LLM 은 말하지 않는다 — 미션이 같은 질문을
+        #      한 번 다시 한다. 접근 질문·돌아서기 중 목적지 답의 확인 질문도 미션 몫이다
+        #      (2026-10-08 미션 요청 반응표). 판단은 순수 함수(mission_question)가 한다.
+        last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
+        quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
+                                    time.time() - last_t)
+        silenced = quieted is not intent
+        intent = quieted
+
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
         if should_forward_intent(intent):
@@ -408,7 +418,9 @@ class LlmIntentNode(Node):
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
-        if self._spoken_history:
+        if self._spoken_history or silenced:
+            # 2-3 에서 지운 대답은 기록에 빈 줄로 남기지 않는다 — 물어 둔 질문이 마지막 로봇
+            # 말로 남아야 다음 "네"가 그 질문의 답이 된다.
             self._history.extend([HumanMessage(text)])
         else:
             self._history.extend([HumanMessage(text), AIMessage(intent.reply)])

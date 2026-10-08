@@ -5,7 +5,10 @@
 from src import langchain_intent_parser as parser
 from src import local_rules
 from src.langchain_intent_parser import _build_system_prompt
-from src.schema import DestinationData
+from src.mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
+from src.mission_question import mission_is_asking, quiet_for_mission
+from src.replies import CANCEL_CONFIRM, RETRY_PROMPT, WAKE_GREETING
+from src.schema import DestinationData, VicaIntent
 
 DEST = DestinationData(id="wc", name="화장실", confirm_prompt="화장실로 안내해드릴까요?")
 
@@ -38,3 +41,47 @@ class TestPromptRules:
 
     def test_local_rule_allows_destination_answer(self):
         assert "목적지를 말하면 navigate" in local_rules.LOCAL_PROMPT_RULES
+
+
+# ---- Task 14: 미션이 질문 중이면 LLM 은 말하지 않는다 --------------------------------
+def _i(kind, reply, need_confirm=False, safety="normal"):
+    return VicaIntent(intent=kind, reply=reply, need_confirm=need_confirm, safety_flag=safety)
+
+
+class TestQuietForMission:
+    def test_question_states_are_asking(self):
+        for state in ("confirming", "asking_next", "asking_wait_time", "awaiting_user"):
+            assert mission_is_asking(state, "", 999.0), state
+        assert not mission_is_asking("navigating", "", 1.0)
+
+    def test_mission_questions_in_waiting_count_while_fresh(self):
+        for q in (WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM):
+            assert mission_is_asking("waiting", q, 10.0), q
+            assert not mission_is_asking("waiting", q, 41.0), q
+
+    def test_unknown_reply_is_silenced_while_asking(self):
+        out = quiet_for_mission(_i("unknown", RETRY_PROMPT), "asking_next", "", 1.0)
+        assert out.intent == "unknown" and out.reply == ""
+
+    def test_clarify_and_question_keep_their_words(self):
+        """LLM 이 되묻거나 정보로 답하면 그대로 — 미션도 그때는 끼어들지 않는다."""
+        for kind in ("clarify", "question"):
+            out = quiet_for_mission(_i(kind, "어느 화장실이요?"), "confirming", "", 1.0)
+            assert out.reply == "어느 화장실이요?", kind
+
+    def test_wake_greeting_and_emergency_are_kept(self):
+        assert quiet_for_mission(_i("unknown", WAKE_GREETING), "asking_next", "", 1.0).reply
+        assert quiet_for_mission(_i("unknown", "멈춥니다", safety="emergency"),
+                                 "asking_next", "", 1.0).reply
+
+    def test_not_asking_keeps_the_reply(self):
+        out = quiet_for_mission(_i("unknown", RETRY_PROMPT), "idle", "", 1.0)
+        assert out.reply == RETRY_PROMPT
+
+    def test_destination_answer_to_approach_is_left_to_the_mission(self):
+        out = quiet_for_mission(_i("navigate", "화장실로 안내해드릴까요?", need_confirm=True),
+                                "awaiting_user", "", 1.0)
+        assert out.reply == ""
+        kept = quiet_for_mission(_i("navigate", "화장실로 안내해드릴까요?", need_confirm=True),
+                                 "idle", "", 1.0)
+        assert kept.reply == "화장실로 안내해드릴까요?"
