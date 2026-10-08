@@ -8,6 +8,8 @@
         대기 중 비긴급 발화 폐기. 웨이크워드 노드가 재생 중 호출·긴급·질문
         답변을 감지했을 때 보낸다. 긴급 발화는 큐에 남는다.
 발행: /vica/tts_state   (std_msgs/Bool) - 재생 중 여부
+      /vica/tts_now     (std_msgs/String) - 지금 재생을 시작하는 문장(2026-10-08). 귀 노드가
+        '비카야'가 든 로봇 말에 스스로 호출되지 않게 막는 데 쓴다.
       /vica/tts_done    (std_msgs/String) - 한 발화가 **끝난 시점**(완주든
         중단이든)에 그 문장을 발행한다. Mission 이 질문의 응답 대기(8초)를
         "발화 종료 시점"부터 세는 근거다. 예전엔 완주만 알렸는데, 그러면
@@ -103,6 +105,7 @@ class TtsNode(Node):
 
         self._state_pub = self.create_publisher(Bool, "/vica/tts_state", 10)
         self._done_pub = self.create_publisher(String, "/vica/tts_done", 10)
+        self._now_pub = self.create_publisher(String, "/vica/tts_now", 10)
         self._publish_state(False)  # 시작 상태를 명시적으로 알린다
 
         self.create_subscription(String, "/vica/tts_request", self._on_request, 10)
@@ -281,6 +284,7 @@ class TtsNode(Node):
         cached = self._ments.lookup(text)
         if cached is not None:
             wav, rate = cached
+            self._now_pub.publish(String(data=text))
             self._publish_state(True)
             try:
                 self._tts.play_audio(wav, rate, should_stop=self._preempt.is_set)
@@ -292,6 +296,7 @@ class TtsNode(Node):
         for chunk in split_sentences(text):
             if self._preempt.is_set():
                 return False
+            self._now_pub.publish(String(data=chunk))
             self._publish_state(True)
             try:
                 hit = self._synth_cache.get(chunk)

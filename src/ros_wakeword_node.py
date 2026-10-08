@@ -7,6 +7,7 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
       /vica/tts_stop  (std_msgs/Empty)                  ← barge-in: 재생 즉시 중단 요청
       /vica/wake      (std_msgs/String)                 ← "wake" 호출 / "rescue" 창 안 구제
 구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 경계 (뮤트 또는 AEC 모드)
+      /vica/tts_now (std_msgs/String)                   ← 지금 재생하는 문장 (자기 목소리 호출 무시)
       /vica/listen_request (std_msgs/Bool)              ← 질문 후 재청취 예약 (true=예약)
       /vica/wake_reply (std_msgs/String)                ← 미션의 호출 판정 listen/ignore (2026-10-07)
 
@@ -51,7 +52,7 @@ from .stt_guard import strip_robot_echo
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
-from .wakeword_monitor import WakewordMonitor
+from .wakeword_monitor import LISTEN_START_SEC, WakewordMonitor
 
 # 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
@@ -87,6 +88,8 @@ class WakewordNode(Node):
         self._stop_pub = self.create_publisher(Empty, "/vica/tts_stop", 10)
         self._tts_speaking = False
         self.create_subscription(Bool, "/vica/tts_state", self._on_tts_state, 10)
+        # 로봇이 '비카야'가 든 문장을 말하는 동안은 호출을 확정하지 않는다(2026-10-08).
+        self.create_subscription(String, "/vica/tts_now", self._on_tts_now, 10)
         # 질문을 말한 노드(LLM node, Mission Manager)가 true 를 보내면, 그 질문
         # TTS 가 끝나는 순간 웨이크워드 없이 청취 창을 연다. "안내를 취소할까요?"
         # 에 "아니요" 한마디를 하려고 "비카야"를 다시 부를 필요가 없게 한다.
@@ -185,7 +188,11 @@ class WakewordNode(Node):
             doa_gate=self._doa_gate,
             user_doa_width=self._user_doa_width,
             wake_gate=self._wake_by_mission,
+            on_wake_score=self._on_wake_score,
         )
+        self.get_logger().info(
+            f"호출 문턱 {self._monitor.gate_a.threshold:.2f} · "
+            f"말 시작 기다림 {LISTEN_START_SEC:.1f}s")
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
         # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
         # 전송 거부). D7 동결의 승인된 유일한 예외 (dsp_state 모듈 주석).
@@ -390,6 +397,16 @@ class WakewordNode(Node):
             self.get_logger().info("질문 예약 — TTS 종료 후 재청취 창을 연다")
         else:
             self._monitor.disarm_followup()
+
+    def _on_tts_now(self, msg: String) -> None:
+        self._monitor.note_robot_speech(msg.data)
+
+    def _on_wake_score(self, kind: str, peak: float) -> None:
+        # 문턱을 숫자로 고르기 위한 기록(2026-10-08). fire=확정, near=아깝게 놓침,
+        # self=로봇 자기 말이라 무시.
+        label = {"fire": "확정", "near": "놓침", "self": "자기 말 무시"}.get(kind, kind)
+        self.get_logger().info(
+            f"🎯 호출 점수 {label}: {peak:.2f} (문턱 {self._monitor.gate_a.threshold:.2f})")
 
     def _on_tts_state(self, msg: Bool) -> None:
         self._tts_speaking = bool(msg.data)

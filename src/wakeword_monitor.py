@@ -111,6 +111,12 @@ LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
 # 안에는 침묵-마감을 무시한다. 산정: 관측된 정상 대기 최대 1.94초 + 여유
 # 0.5초. 질문(재청취) 창은 30초짜리라 적용하지 않는다.
 LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
+# 자유 창 말 시작 기다림 (2026-10-08 사용자 결정 6초). 창이 열린 뒤 이 안에 말이 시작되지
+# 않으면 빈손으로 닫는다 — 말이 시작되면 말끝(0.8초)·상한(LISTEN_MAX_SEC)은 그대로다.
+# 근거: 08-16~10-06 로그 1,377창에서 말 시작이 중앙 1.2초·99 % 7.7초였고, 5초 넘어
+# 든 34건 중 진짜 명령은 9건뿐(나머지는 재호출·유령·로봇 에코·옆사람 잡담). 호출을
+# 잘못 들었을 때 15초 동안 잡소리를 모으던 것을 줄인다. 질문 창(30초)에는 걸지 않는다.
+LISTEN_START_SEC = float(os.environ.get("VICA_LISTEN_START_SEC", "6.0"))
 # 반짝 무효화 문턱 [실측 2026-09-01]: 에코 반짝의 VAD 연속 구간은 전부
 # ≤0.14초(mic_probe, 로봇 단독 발화 조건), 진짜 발화의 최단은 0.48초
 # (실기 계측 15표본). 그 한가운데 — 이보다 짧은 "발화"는 자유 창에서
@@ -132,6 +138,39 @@ HEAD_PRE_ROLL_FRAMES = 8
 # 시작에서 최악 약 4초(주행 잠금 2초 + 트리 전환 2초) 붙잡힐 수 있어 그 위에 여유를 둔다.
 # 늦게 온 판정이 다음 호출에 붙지 않게 호출마다 번호를 주고받는다(wake:N → listen:N).
 WAKE_REPLY_TIMEOUT_SEC = float(os.environ.get("VICA_WAKE_REPLY_TIMEOUT_SEC", "6.0"))
+
+
+# 호출어 확정 문턱 (2026-10-08 사용자 결정 0.6 → 0.7). 놓친 호출은 사용자가 다시
+# 부르면 되지만, 잘못 들은 호출은 창 하나 분량의 잡소리를 LLM 으로 보낸다. 바꿀 때는
+# 로그의 호출 점수(확정·아깝게 놓침)를 보고 고른다. 이상한 값이면 기본값으로 돈다.
+WAKE_THRESHOLD_DEFAULT = 0.7
+
+
+def wake_threshold_from_env() -> float:
+    raw = os.environ.get("VICA_WAKE_THRESHOLD", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return WAKE_THRESHOLD_DEFAULT
+    return value if 0.0 < value < 1.0 else WAKE_THRESHOLD_DEFAULT
+
+
+WAKE_THRESHOLD = wake_threshold_from_env()
+# 이 점수를 넘은 소리 덩어리는 확정되지 않아도 '아깝게 놓침'으로 최고 점수를 알린다.
+WAKE_NEAR_MISS_FLOOR = 0.4
+# 로봇이 '비카야'가 든 문장을 말하는 동안과 끝난 뒤 이만큼은 호출을 확정하지 않는다
+# (2026-10-08). 로그상 "'비카야'라고 말씀해 주세요" 재생 직후 호출이 37회 중 4회였다.
+# 꼬리는 스피커→마이크 지연과 방 울림 몫이다. 긴급어는 막지 않는다.
+SELF_WAKE_TAIL_SEC = 0.5
+# 무시의 상한 — 재생 끝 소식이 끝내 안 와도(TTS 노드가 죽는 등) 이 뒤엔 다시 부를 수
+# 있다. 가장 긴 '비카야' 문장(온보딩, 약 8초)의 두 배 넘게 둔다.
+SELF_WAKE_MAX_SEC = 20.0
+WAKE_WORD_IN_SPEECH = "비카야"
+
+
+def has_wake_word(text: str) -> bool:
+    """로봇이 말할 문장에 호출어가 들어 있는가."""
+    return WAKE_WORD_IN_SPEECH in (text or "")
 
 
 def _frame_rms(frame) -> float:
@@ -230,6 +269,7 @@ class WakewordMonitor:
         on_listen_state: Optional[Callable[[str], None]] = None,
         on_wake_doa: Optional[Callable[[float], None]] = None,
         on_user_audio: Optional[Callable[[np.ndarray], None]] = None,
+        on_wake_score: Optional[Callable[[str, float], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -238,7 +278,7 @@ class WakewordMonitor:
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         listen_hint: Optional[str] = None,
-        gate_a: float = 0.6,
+        gate_a: float = WAKE_THRESHOLD,
         gate_b: float = 0.5,
         cooldown_a: float = 1.5,
         cooldown_b: float = 2.0,
@@ -265,6 +305,9 @@ class WakewordMonitor:
         # 소리→의도 직행(audio 모드, 2026-09-20 실험). None 이면 text 모드와
         # 동일하게 아무것도 하지 않는다.
         self._on_user_audio = on_user_audio
+        # 호출 점수 기록 (2026-10-08) — ("fire"|"near"|"self", 최고 점수). 문턱을
+        # 숫자로 고르기 위한 재료다. 판정에는 쓰지 않는다.
+        self._on_wake_score = on_wake_score or (lambda kind, peak: None)
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -302,6 +345,17 @@ class WakewordMonitor:
         # 쿨다운 0: 여기서는 발동이 아니라 사실 기록만 하므로 중복이 무해하다.
         self.gate_a_listen = FrameGate(gate_a, persist=2, cooldown_sec=0.0)
         self._gate_b_base = gate_b   # set_speaking 이 재생 중 완화/복원한다
+        # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
+        self._wake_peak = 0.0
+        self._wake_episode = False
+        self._wake_episode_reported = False
+        self._wake_episode_self = False
+        # 자기 목소리 무시: 지금 '비카야'가 든 문장을 말하는 중이면 True, 끝난 뒤엔 꼬리 시각.
+        self._self_guard_active = False
+        self._self_guard_since = 0.0
+        self._self_guard_until = 0.0
+        # 로봇 말이 마지막으로 끝난 시각 — 자유 창의 말 시작 기다림은 이때부터도 센다.
+        self._speech_ended_at = 0.0
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
@@ -450,6 +504,73 @@ class WakewordMonitor:
     def disarm_followup(self) -> None:
         self._followup_armed = False
 
+    # ---------------------------------------------------------- 자기 목소리 무시
+    def note_robot_speech(self, text: str, now: Optional[float] = None) -> None:
+        """TTS 가 지금 재생을 시작한 문장(/vica/tts_now). '비카야'가 들어 있으면 그 재생이
+        끝나고 SELF_WAKE_TAIL_SEC 뒤까지 호출을 확정하지 않는다. 다음 문장 소식이 재생
+        종료 소식보다 먼저 와도 꼬리만큼만 더 막고 풀린다."""
+        now = time.time() if now is None else now
+        if has_wake_word(text):
+            # 시각을 먼저 쓰고 표시를 나중에 켠다 — 마이크 스레드가 그 사이에 읽어도
+            # 옛 시각으로 '상한 넘음'을 잘못 판단하지 않게.
+            self._self_guard_since = now
+            self._self_guard_active = True
+        else:
+            self._end_self_guard(now)
+
+    def _end_self_guard(self, now: float) -> None:
+        if self._self_guard_active:
+            self._self_guard_until = now + SELF_WAKE_TAIL_SEC   # 꼬리 시각 먼저
+            self._self_guard_active = False
+
+    def _self_guarded(self, now: float) -> bool:
+        if self._self_guard_active and now - self._self_guard_since > SELF_WAKE_MAX_SEC:
+            self._self_guard_active = False     # 끝 소식 유실 — 영영 못 부르게 두지 않는다
+        return self._self_guard_active or now < self._self_guard_until
+
+    # ---------------------------------------------------------------- 호출 점수
+    def _feed_wake(self, score: float, now: float) -> bool:
+        """호출 관문에 점수를 넣고 확정이면 True. 자기 목소리 무시 중이면 관문을 비우고
+        확정하지 않는다(쿨다운도 쓰지 않는다 — 끝난 직후의 진짜 호출을 막지 않게).
+
+        WAKE_NEAR_MISS_FLOOR 를 넘은 소리 덩어리마다 최고 점수를 한 번 알린다: 확정되면
+        그 순간 "fire", 확정 없이 끝나면 "near", 자기 목소리로 문턱을 넘었으면 "self".
+        """
+        guarded = self._self_guarded(now)
+        if guarded:
+            self.gate_a.reset()
+            fired = False
+        else:
+            fired = self.gate_a.feed(score, now)
+        if score >= WAKE_NEAR_MISS_FLOOR or fired:
+            self._wake_episode = True
+            self._wake_peak = max(self._wake_peak, score)
+            self._wake_episode_self = self._wake_episode_self or guarded
+            if fired and not self._wake_episode_reported:
+                self._wake_episode_reported = True
+                self._report_wake_score("fire", self._wake_peak)
+        elif self._wake_episode:
+            if not self._wake_episode_reported:
+                if not self._wake_episode_self:
+                    self._report_wake_score("near", self._wake_peak)
+                elif self._wake_peak >= self.gate_a.threshold:
+                    self._report_wake_score("self", self._wake_peak)
+            self._reset_wake_episode()
+        return fired
+
+    def _report_wake_score(self, kind: str, peak: float) -> None:
+        # 기록일 뿐이다 — 기록이 실패해도 호출 판정과 마이크 스레드는 계속 간다.
+        try:
+            self._on_wake_score(kind, peak)
+        except Exception:
+            pass
+
+    def _reset_wake_episode(self) -> None:
+        self._wake_peak = 0.0
+        self._wake_episode = False
+        self._wake_episode_reported = False
+        self._wake_episode_self = False
+
     # ---------------------------------------------------------------- mute
     def set_muted(self, muted: bool, now: Optional[float] = None,
                   failsafe_sec: float = 10.0) -> None:
@@ -470,6 +591,8 @@ class WakewordMonitor:
             return
 
         self._muted = False
+        self._speech_ended_at = now
+        self._end_self_guard(now)
         self._ring.clear()
         self.gate_a.reset()
         self.gate_b.reset()
@@ -507,6 +630,8 @@ class WakewordMonitor:
                 self._collect = []
                 self._followup_armed = True
             return
+        self._speech_ended_at = now
+        self._end_self_guard(now)
         if self._followup_armed:
             self._followup_armed = False
             self._report_barge_miss()
@@ -557,7 +682,10 @@ class WakewordMonitor:
             # 창 안 호출 관찰: **창을 새로 열지 않는다.** 열면 이어지는 말이
             # 통째로 날아간다("비카야 화장실로 가자"). 들었다는 사실만 남기고
             # 판정은 전사가 나온 뒤에 한다 (LISTEN_WAKE_RESCUE_* 참조).
-            if self.gate_a_listen.feed(float(scores["a"]), now):
+            # 로봇이 '비카야'를 말하는 중이면 관찰도 하지 않는다(자기 목소리 무시).
+            if self._self_guarded(now):
+                self.gate_a_listen.reset()
+            elif self.gate_a_listen.feed(float(scores["a"]), now):
                 self._listen_heard_wake = True
             return self._listen_step(frame, now, vad)
 
@@ -565,7 +693,7 @@ class WakewordMonitor:
         if fire_b:
             self._enter_postroll()
             return None
-        if self.gate_a.feed(float(scores["a"]), now):
+        if self._feed_wake(float(scores["a"]), now):
             self.gate_b.reset()
             # '비카야'는 새 대화다 — 옛 질문의 재청취 예약을 지운다. 남겨 두면
             # 로봇 말이 끝나는 순간 set_speaking(False) 가 '질문 답' 창을 다시
@@ -682,6 +810,7 @@ class WakewordMonitor:
         self._listen_speech_started_at = 0.0
         self._listen_heard_wake = False
         self.gate_a_listen.reset()
+        self._reset_wake_episode()
         self.last_listen_timing = None
         # 말머리 소급 (2026-09-01, 블랙박스 방식): 창이 열리기 직전에 이미
         # 말이 시작됐다면 링버퍼에서 그 머리를 줍는다 — "정확한 타이밍에
@@ -718,6 +847,7 @@ class WakewordMonitor:
         self._saved_listen = self._collect if from_listen else None
         self._collect = []
         self.gate_a.reset()
+        self._reset_wake_episode()   # 긴급 소리 뒤에 '놓침' 기록이 따라 찍히지 않게
         self._postroll_from_listen = from_listen
 
     def _verify_emergency(self, now: float) -> str:
@@ -820,8 +950,17 @@ class WakewordMonitor:
             self._listen_voiced_sec = 0.0
             self._listen_speech_started_at = 0.0
             silence_done = False
+        # 자유 창 말 시작 기다림 (LISTEN_START_SEC) — 말이 시작되면 이 조건은 빠진다.
+        # 로봇이 말하는 동안은 세지 않고, 말이 끝난 뒤부터 다시 센다 — 안내 도중에
+        # 부르면 사용자는 로봇 말이 끝나기를 기다렸다 말한다.
+        start_wait_over = (not self._listen_is_followup
+                           and not self._listen_started_speech
+                           and not self._speaking
+                           and now - max(self._listen_opened_at, self._speech_ended_at)
+                           >= LISTEN_START_SEC)
         done = (
             now - self._listen_opened_at >= max_sec
+            or start_wait_over
             or (silence_done and now - self._listen_opened_at >= min_open)
         )
         if not done:

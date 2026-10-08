@@ -88,7 +88,7 @@
  "handle_grip_lost.wav": "안전을 위해 손잡이를 다시 잡아주세요",
  "mission_msg_handle_hint.wav": "손잡이가 진동하고 있습니다. 잡아주세요.",
  "mission_msg_approach_coming.wav": "동행로봇 비카가 다가가고 있어요.",
- "mission_msg_wait_beacon.wav": "동행안내로봇 비카가 대기 중입니다.",
+ "mission_msg_wait_beacon.wav": "비카가 대기 중입니다.",
  "mission_msg_wait_spot_blocked.wav": "대기 자리가 막혀 입구 앞에서 기다리겠습니다.",
  "mission_msg_wait_expired.wav": "대기 시간이 종료되어 제자리로 돌아갑니다.",
  "mission_msg_estop_wake.wav": "지금은 비상 멈춤 상태입니다.",

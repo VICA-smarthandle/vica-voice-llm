@@ -258,7 +258,7 @@ def test_emergency_never_expires():
 # (ros_tts_node._enqueue) 몫이고, 큐는 받기·버리기·줄 선 것 비키기를 맡는다.
 from src.tts_queue import AMBIENT, AMBIENT_TTL_SEC, PRIORITIES  # noqa: E402
 
-BEACON = "동행안내로봇 비카가 대기 중입니다."
+BEACON = "비카가 대기 중입니다."
 
 
 def test_ambient_is_the_lowest_priority_and_parses():
