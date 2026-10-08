@@ -81,6 +81,27 @@ class TestSentences:
         assert _fill_defaults(dest).confirm_prompt == ml.say_destination(
             ml.MSG_CONFIRM_PROMPT_FALLBACK, "식당")
 
+    def test_mission_reaction_sentences(self, ml):
+        """미션 요청 반응표(2026-10-08) 새 문장·장소 말이 미션과 같은 글자다."""
+        assert mp.WAIT_NEED_ASK == ml.MSG_WAIT_NEED_ASK
+        assert mp.CONFIRM_SWITCH == ml.MSG_CONFIRM_SWITCH
+        assert mp.WAIT_PLACE_AT_DESTINATION == ml.WAIT_PLACE_AT_DESTINATION
+        # 안내 주행 중 "다시 가자"의 답 — 음성 replies.ALREADY_GOING 과 같은 글자.
+        for name in ("409호", "식당", "화장실"):
+            assert ml.say_destination(ml.MSG_ALREADY_GOING, name) == replies.ALREADY_GOING.format(
+                cur=name, cur_josa=_josa_euro(name))
+
+    def test_front_sentences_match_mission_formatting(self, ml):
+        mission = {ml.MSG_WAIT_SPOT_CONFIRM.format(minutes=m, place=ml.WAIT_PLACE_AT_DESTINATION)
+                   for m in mp.BAKED_WAIT_MINUTES}
+        mission.add(ml.MSG_WAIT_SPOT_DEFAULT.format(place=ml.WAIT_PLACE_AT_DESTINATION))
+        assert set(mp.wait_front_sentences().values()) == mission
+        assert len(mission) == 6
+
+    def test_switch_question_is_prewarmed(self):
+        dests = [DestinationData(id="x", name="식당", confirm_prompt="식당으로 안내해드릴까요?")]
+        assert "네, 식당으로 안내해드릴까요?" in mp.standalone_prewarm(dests)
+
     def test_door_side_words_cover_every_mission_answer(self, ml):
         seen = {ml.door_side_word(door, robot)
                 for door in range(0, 360, 5) for robot in range(0, 360, 7)}

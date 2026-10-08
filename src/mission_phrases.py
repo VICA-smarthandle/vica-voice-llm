@@ -45,6 +45,9 @@ ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
 WAIT_NEED_ASK = "안내가 필요 없으신가요?"
 # 확인 질문 중 다른 목적지를 확정하면 "네, " + 그 목적지의 확인 질문(사용자 결정 4).
 CONFIRM_SWITCH = "네, {prompt}"
+# 대기 장소가 없는 목적지로 돌아가 기다릴 때(홈 가는 중 "기다려", 결정 1)의 장소 말 — 미션
+# WAIT_PLACE_AT_DESTINATION. 대기 장소가 막혔을 때(M6 뒤) 상황판의 말과 같다.
+WAIT_PLACE_AT_DESTINATION = "입구 앞"
 
 # 숫자로 끝나는 이름을 읽을 때 마지막 숫자의 받침(영·일·삼·육·칠·팔 있음, 이·사·오·구 없음).
 _DIGIT_HAS_BATCHIM = {
@@ -87,6 +90,18 @@ def wait_spot_sentences() -> dict[str, str]:
     return out
 
 
+def wait_front_sentences() -> dict[str, str]:
+    """구워 둘 '입구 앞' M2·M2′ 6문장(2026-10-08 결정 1). 파일 이름 → 문장."""
+    out = {
+        f"mission_msg_wait_front_{minutes}": WAIT_SPOT_CONFIRM.format(
+            minutes=minutes, place=WAIT_PLACE_AT_DESTINATION)
+        for minutes in BAKED_WAIT_MINUTES
+    }
+    out["mission_msg_wait_front_default"] = WAIT_SPOT_DEFAULT.format(
+        place=WAIT_PLACE_AT_DESTINATION)
+    return out
+
+
 def baked_mission_ments() -> dict[str, str]:
     """이번 작업에서 녹음으로 굽는 미션 문장 전부(작업 계획 탭 '소리 준비').
 
@@ -100,8 +115,11 @@ def baked_mission_ments() -> dict[str, str]:
         "mission_msg_wait_expired": WAIT_EXPIRED,
         "mission_msg_estop_wake": ESTOP_WAKE,
         "mission_msg_wait_finish_ask": WAIT_FINISH_ASK,
+        # 미션 요청 반응표(2026-10-08) — 대기 중 "취소"의 질문(결정 3).
+        "mission_msg_wait_need_ask": WAIT_NEED_ASK,
     }
     out.update(wait_spot_sentences())
+    out.update(wait_front_sentences())
     return out
 
 
@@ -111,8 +129,12 @@ def _unique(phrases: Iterable[str]) -> list[str]:
 
 
 def standalone_prewarm(destinations: Iterable) -> list[str]:
-    """혼자 말해지는 문장 — 목적지 확인 질문. 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
-    return _unique(d.confirm_prompt for d in destinations)
+    """혼자 말해지는 문장 — 목적지 확인 질문과, 확인 질문 중 다른 목적지로 다시 묻는 "네, …"
+    (2026-10-08 결정 4). 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
+    dests = list(destinations)
+    phrases = [d.confirm_prompt for d in dests]
+    phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
+    return _unique(phrases)
 
 
 def merged_prewarm(destinations: Iterable) -> list[str]:
