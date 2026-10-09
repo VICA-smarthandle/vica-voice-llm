@@ -33,9 +33,19 @@ def mission_is_asking(dialog_state: str, last_robot_text: str, last_robot_age_se
 
 def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
                       last_robot_age_sec: float):
-    """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다."""
+    """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다.
+    주행 중 "다시 가자"는 확인 질문도 뺀다 — 미션이 가는 곳을 말한다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
         return intent
+    if intent.intent == "pause":
+        # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
+        # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).
+        return intent.model_copy(update={"reply": ""})
+    if intent.intent == "resume" and intent.need_confirm and dialog_state == "navigating":
+        # 이미 가는 중의 "다시 가자" — 움직일 일이 없어 확인할 것이 없다. 확정으로 보내 미션이
+        # "지금 OO로 가는 중이에요"라고 답하게 한다(2026-10-09 사용자 결정, 주행 중만. 그 밖은
+        # 일시정지·손 놓침·홈 가다 세운 뒤처럼 이 말에 실제로 움직이는 상태라 묻는다).
+        return intent.model_copy(update={"reply": "", "need_confirm": False})
     if (intent.intent == "unknown" and intent.reply != WAKE_GREETING
             and mission_is_asking(dialog_state, last_robot_text, last_robot_age_sec)):
         return intent.model_copy(update={"reply": ""})
@@ -69,9 +79,14 @@ def reask_held_resume(intent, history: list[BaseMessage]):
     return VicaIntent(intent="resume", confidence=1.0, reply=RESUME_CONFIRM, need_confirm=True)
 
 
-def should_reask_resume_on_silence(history: list[BaseMessage]) -> bool:
+def should_reask_resume_on_silence(history: list[BaseMessage], last_robot_text: str,
+                                   last_robot_age_sec: float) -> bool:
     """듣기 창이 빈손으로 닫혔을 때 "다시 출발할까요?"를 한 번 다시 물을까. 질문 뒤 사용자
-    말이 없었고(마지막 줄이 그 질문) 아직 다시 묻지 않았을 때만."""
+    말이 없었고(마지막 줄이 그 질문) 아직 다시 묻지 않았을 때만. 그 질문이 방금(ASK_FRESH_SEC 안)
+    로봇의 마지막 말이어야 한다 — 글자 모드는 기록에 미션 말이 없어, 2분 뒤 "비카야" → "네?"
+    → 조용함에도 옛 질문이 기록 끝에 남아 있다(2026-10-09 검토 I-8)."""
     if not history or not isinstance(history[-1], AIMessage):
+        return False
+    if (last_robot_text or "").strip() != RESUME_CONFIRM or last_robot_age_sec > ASK_FRESH_SEC:
         return False
     return history[-1].content == RESUME_CONFIRM and not resume_reasked(history)

@@ -1157,7 +1157,8 @@ def _finalize(
     if draft.intent in ("cancel", "pause", "resume"):
         if draft.intent == "pause":
             # 서는 방향은 되묻지 않는다 — 오분류해도 잠시 서는 것뿐(안전한 실패).
-            # 감속 정지 실행과 수락/거절 판정은 Mission Manager 몫이다.
+            # 감속 정지 실행과 수락/거절 판정은 Mission Manager 몫이다. 이 reply 는
+            # ros_node 2-3(quiet_for_mission)이 지운다 — 대답도 미션이 한다(2026-10-09).
             result.reply = PAUSE_ACK
             result.need_confirm = False
         elif pending_command == draft.intent:

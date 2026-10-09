@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.mission_phrases import CONFIRM_SWITCH, WAIT_FINISH_ASK, WAIT_NEED_ASK
 from src.mission_question import (mission_is_asking, quiet_for_mission, reask_held_resume,
                                   resume_reasked, should_reask_resume_on_silence)
-from src.replies import CANCEL_CONFIRM, RESUME_CONFIRM, RETRY_PROMPT, WAKE_GREETING
+from src.replies import CANCEL_CONFIRM, PAUSE_ACK, RESUME_CONFIRM, RETRY_PROMPT, WAKE_GREETING
 from src.schema import should_forward_intent
 from src.schema import DestinationData, VicaIntent
 
@@ -130,7 +130,47 @@ class TestHeldResumeReask:
         assert reask_held_resume(_i("unknown", ""), history).intent == "unknown"
 
     def test_silence_reasks_once(self):
-        assert should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM)])
+        assert should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM)], RESUME_CONFIRM, 6.0)
         assert not should_reask_resume_on_silence(
-            [AIMessage(RESUME_CONFIRM), HumanMessage("음냐"), AIMessage(RESUME_CONFIRM)])
-        assert not should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM), HumanMessage("네")])
+            [AIMessage(RESUME_CONFIRM), HumanMessage("음냐"), AIMessage(RESUME_CONFIRM)],
+            RESUME_CONFIRM, 6.0)
+        assert not should_reask_resume_on_silence([AIMessage(RESUME_CONFIRM), HumanMessage("네")],
+                                                  RESUME_CONFIRM, 6.0)
+
+
+# ---- 최종 검토 수리 (2026-10-09, 사용자 승인) ---------------------------------------
+class TestReviewFixes:
+    def test_resume_while_driving_skips_the_question(self):
+        """이미 가는 중의 "다시 가자" — 확인 없이 미션에 보내고 말은 미션이 한다("지금 OO로
+        가는 중이에요"). 움직임이 없으니 물을 것이 없다(검토 I-1, 사용자 결정 10-09)."""
+        out = quiet_for_mission(_i("resume", RESUME_CONFIRM, need_confirm=True),
+                                "navigating", "", 1.0)
+        assert (out.intent, out.need_confirm, out.reply) == ("resume", False, "")
+        assert should_forward_intent(out)
+
+    def test_resume_elsewhere_keeps_the_question(self):
+        """주행 중이 아니면 지금처럼 묻는다 — 일시정지·손 놓침·홈 가다 세운 뒤·바꾸기 질문은
+        "다시 가자"에 로봇이 실제로 움직인다."""
+        for state in ("paused", "paused_handle", "idle", "confirming", "waiting", "asking_next"):
+            out = quiet_for_mission(_i("resume", RESUME_CONFIRM, need_confirm=True), state, "", 1.0)
+            assert (out.need_confirm, out.reply) == (True, RESUME_CONFIRM), state
+            assert not should_forward_intent(out), state
+
+    def test_pause_is_left_to_the_mission(self):
+        """"잠깐" — 미션이 모든 상태에서 답한다. 음성까지 말하면 두 목소리다(검토 I-2)."""
+        for state in ("navigating", "confirming", "paused", "idle", "awaiting_user",
+                      "waiting", "returning"):
+            out = quiet_for_mission(_i("pause", PAUSE_ACK), state, "", 1.0)
+            assert (out.intent, out.reply) == ("pause", ""), state
+
+    def test_emergency_pause_keeps_its_words(self):
+        out = quiet_for_mission(_i("pause", PAUSE_ACK, safety="emergency"), "navigating", "", 1.0)
+        assert out.reply == PAUSE_ACK
+
+    def test_old_resume_question_is_not_reasked(self):
+        """빈손 창의 다시 묻기는 그 질문이 방금(40초 안) 로봇의 마지막 말일 때만 — 2분 뒤
+        "비카야" → "네?" → 조용함에 옛 질문을 꺼내지 않는다(검토 I-8, 글자 모드)."""
+        history = [HumanMessage("다시 가자"), AIMessage(RESUME_CONFIRM)]
+        assert should_reask_resume_on_silence(history, RESUME_CONFIRM, 8.0)
+        assert not should_reask_resume_on_silence(history, RESUME_CONFIRM, 120.0)
+        assert not should_reask_resume_on_silence(history, WAKE_GREETING, 2.0)

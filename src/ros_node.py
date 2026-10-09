@@ -437,7 +437,9 @@ class LlmIntentNode(Node):
         다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다."""
         if not (msg.data or "").startswith("empty"):
             return
-        if not should_reask_resume_on_silence(self._history.messages):
+        last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
+        if not should_reask_resume_on_silence(self._history.messages, last_text,
+                                              time.time() - last_t):
             return
         self.get_logger().info("다시 출발 확인 — 대답이 없어 한 번 다시 묻는다")
         self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
