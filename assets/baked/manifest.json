@@ -110,5 +110,7 @@
  "mission_msg_wait_spot_across_20.wav": "20분 동안 입구 맞은편에서 기다리겠습니다. 돌아오시면 '비카야'라고 불러 주세요.",
  "mission_msg_wait_spot_across_30.wav": "30분 동안 입구 맞은편에서 기다리겠습니다. 돌아오시면 '비카야'라고 불러 주세요.",
  "mission_msg_wait_spot_across_default.wav": "최대 30분 동안 입구 맞은편에서 기다리겠습니다. 돌아오시면 '비카야'라고 불러 주세요.",
- "mission_msg_wait_finish_ask.wav": "네, 어디로 모실까요?"
+ "mission_msg_wait_finish_ask.wav": "네, 어디로 모실까요?",
+ "mission_msg_obstacle_avoid.wav": "앞에 장애물이 있어 피해 갈게요.",
+ "mission_msg_obstacle_slow.wav": "앞에 장애물이 있어 천천히 갈게요."
 }
