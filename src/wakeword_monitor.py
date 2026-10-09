@@ -354,6 +354,8 @@ class WakewordMonitor:
         self._self_guard_active = False
         self._self_guard_since = 0.0
         self._self_guard_until = 0.0
+        # 미션이 접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 호출을 끈다(set_wake_suppressed).
+        self._wake_suppressed = False
         # 로봇 말이 마지막으로 끝난 시각 — 자유 창의 말 시작 기다림은 이때부터도 센다.
         self._speech_ended_at = 0.0
 
@@ -523,7 +525,16 @@ class WakewordMonitor:
             self._self_guard_until = now + SELF_WAKE_TAIL_SEC   # 꼬리 시각 먼저
             self._self_guard_active = False
 
+    # ---------------------------------------------------------- 접근 질문 중 호출 끄기
+    def set_wake_suppressed(self, suppressed: bool) -> None:
+        """미션이 접근 질문의 답을 기다리는 동안 '비카야'를 호출로 확정하지 않는다(2026-10-09 사용자 결정 —
+        run82 에서 그 호출이 질문을 접어 이어진 대답이 버려졌다). 자기 목소리 무시와 같은 관문을 써서
+        호출 확정과 창 안 호출 구제를 함께 막는다. 긴급어(모델 B)는 그대로 듣는다."""
+        self._wake_suppressed = bool(suppressed)
+
     def _self_guarded(self, now: float) -> bool:
+        if self._wake_suppressed:
+            return True
         if self._self_guard_active and now - self._self_guard_since > SELF_WAKE_MAX_SEC:
             self._self_guard_active = False     # 끝 소식 유실 — 영영 못 부르게 두지 않는다
         return self._self_guard_active or now < self._self_guard_until

@@ -37,6 +37,12 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
     주행 중 "다시 가자"는 확인 질문도 뺀다 — 미션이 가는 곳을 말한다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
         return intent
+    if dialog_state == "awaiting_user" and intent.intent != "question":
+        # 접근 질문('안내를 받으시겠어요?') 중에는 질문에만 소리 내어 답한다. 되묻기·"네?"·확인 질문은
+        # 지우고 다시 묻기는 미션이 한다(2026-10-09 사용자 결정 — run82 17:19 LLM 이 "어느 곳으로 안내를
+        # 원하시나요?"라고 물은 직후 미션은 떠났다). "다시 가자"는 쥐지 않고 미션에 보내 다시 묻게 한다.
+        return intent.model_copy(update={"reply": "", "need_confirm": False}
+                                 if intent.intent == "resume" else {"reply": ""})
     if intent.intent == "pause":
         # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
         # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).

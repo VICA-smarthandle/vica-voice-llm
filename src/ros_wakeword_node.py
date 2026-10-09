@@ -42,6 +42,7 @@ from rclpy.node import Node
 from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
                           UInt8MultiArray)
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
+from vica_interfaces.msg import RobotState as RobotStateMsg
 
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, apply_agc_desired_level,
@@ -106,6 +107,9 @@ class WakewordNode(Node):
         self._wake_by_mission = os.environ.get(
             "VICA_WAKE_BY_MISSION", "on").strip().lower() not in ("off", "0", "false")
         self.create_subscription(String, "/vica/wake_reply", self._on_wake_reply, 10)
+        # 미션이 접근 질문의 답을 기다리는 동안(dialog_state=awaiting_user)은 '비카야'를 끈다(2026-10-09).
+        self._wake_off = False
+        self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
 
         # (옛 판) 호출에는 항상 "네?"로 답한다. 짧은 신호음만으로는 언제 말해야
         # 하는지 알 수 없다는 로봇팀 실사용 피드백(2026-08-20)으로, 첫 호출만
@@ -332,6 +336,15 @@ class WakewordNode(Node):
         msg.data = "wake"
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
+
+    def _on_robot_state(self, msg: RobotStateMsg) -> None:
+        """접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 '비카야'를 호출로 듣지 않는다(2026-10-09
+        사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
+        self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
+        off = msg.dialog_state == "awaiting_user"
+        if off != self._wake_off:
+            self._wake_off = off
+            self.get_logger().info("🔕 접근 질문 중 — '비카야' 끔" if off else "🔔 '비카야' 다시 켬")
 
     def _on_wake_reply(self, msg: String) -> None:
         """미션의 "비카야" 판정("listen:N"/"ignore:N") — 쥔 호출 창의 말을 넘길지 버릴지."""

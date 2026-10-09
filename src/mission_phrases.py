@@ -42,6 +42,8 @@ ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
 # 주행 중 장애물 안내(2026-10-09 미션에 넣음, 사용자 선택 A1·S1). 미션 MSG_OBSTACLE_* 와 같은 글자.
 OBSTACLE_AVOID = "앞에 장애물이 있어 피해 갈게요."
 OBSTACLE_SLOW = "앞에 장애물이 있어 천천히 갈게요."
+# 접근 질문을 한 번 다시 묻는 말(2026-10-09 사용자 결정). 미션 MSG_APPROACH_REASK 와 같은 글자.
+APPROACH_REASK = "안내를 받으시겠어요?"
 
 # ---- 미션 요청 반응표 (2026-10-08) --------------------------------------------------
 # 대기 중 "취소" — 안내를 끝낼지 묻는다(사용자 결정 3, 사용자 문구).
@@ -123,6 +125,8 @@ def baked_mission_ments() -> dict[str, str]:
         # 주행 중 장애물 안내(2026-10-09) — ambient 라 바로 나가야 한다. 실시간 합성은 늦다.
         "mission_msg_obstacle_avoid": OBSTACLE_AVOID,
         "mission_msg_obstacle_slow": OBSTACLE_SLOW,
+        # 접근 질문 다시 묻기(2026-10-09) — 첫 질문과 같은 목소리로 굽는다.
+        "mission_msg_approach_reask": APPROACH_REASK,
     }
     out.update(wait_spot_sentences())
     out.update(wait_front_sentences())
