@@ -39,6 +39,9 @@ WAIT_EXPIRED = "대기 시간이 종료되어 제자리로 돌아갑니다."    
 WAIT_FINISH_ASK = "네, 어디로 모실까요?"
 # 비상 정지 중 "비카야" — "네?" 없이 이 한 마디만(호출 반응표).
 ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
+# 주행 중 장애물 안내(2026-10-09 미션에 넣음, 사용자 선택 A1·S1). 미션 MSG_OBSTACLE_* 와 같은 글자.
+OBSTACLE_AVOID = "앞에 장애물이 있어 피해 갈게요."
+OBSTACLE_SLOW = "앞에 장애물이 있어 천천히 갈게요."
 
 # ---- 미션 요청 반응표 (2026-10-08) --------------------------------------------------
 # 대기 중 "취소" — 안내를 끝낼지 묻는다(사용자 결정 3, 사용자 문구).
@@ -117,6 +120,9 @@ def baked_mission_ments() -> dict[str, str]:
         "mission_msg_wait_finish_ask": WAIT_FINISH_ASK,
         # 미션 요청 반응표(2026-10-08) — 대기 중 "취소"의 질문(결정 3).
         "mission_msg_wait_need_ask": WAIT_NEED_ASK,
+        # 주행 중 장애물 안내(2026-10-09) — ambient 라 바로 나가야 한다. 실시간 합성은 늦다.
+        "mission_msg_obstacle_avoid": OBSTACLE_AVOID,
+        "mission_msg_obstacle_slow": OBSTACLE_SLOW,
     }
     out.update(wait_spot_sentences())
     out.update(wait_front_sentences())

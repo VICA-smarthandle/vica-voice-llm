@@ -73,6 +73,8 @@ class TestSentences:
         assert mp.WAIT_SPOT_BLOCKED == ml.MSG_WAIT_SPOT_BLOCKED
         assert mp.WAIT_EXPIRED == ml.MSG_WAIT_EXPIRED
         assert mp.ESTOP_WAKE == ml.MSG_ESTOP_WAKE
+        assert mp.OBSTACLE_AVOID == ml.MSG_OBSTACLE_AVOID   # 주행 중 장애물 안내(2026-10-09)
+        assert mp.OBSTACLE_SLOW == ml.MSG_OBSTACLE_SLOW
         assert mp.WAIT_FINISH_ASK == ml.MSG_WAIT_FINISH_ASK
         assert replies.WAKE_GREETING == ml.MSG_WAKE_GREETING
         # 빈 확인 문구를 미션이 직접 물을 때의 문장 = 음성 기본 확인 문구(미리 합성됨).
