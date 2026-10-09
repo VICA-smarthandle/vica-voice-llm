@@ -229,4 +229,34 @@ class TestAudioPrompt:
         text = parser.build_audio_prompt([DEST])
         for key in ("몇 층", "지금 어디", "어디 가려고", "몇 시", "배터리"):
             assert key in text, key
-        assert "안내 데스크" in text   # 조언 금지 문구는 유지
+        assert "물어보라는 식의 조언" in text   # 조언 금지 문구는 유지
+        # 금지 문구에 장소 이름을 쓰지 않는다 — 모델이 되묻기에 "안내데스크"를 지어냈다(10-08 11:33).
+        assert "안내 데스크" not in text
+
+
+class TestAudioPromptStyle:
+    """대답을 짧고 차분하게, 장소는 목록 안에서만 (2026-10-09 사용자: 길고 자유분방하고 목록에 없는
+    곳까지 말한다. 최근 2주 LLM 대답 128개 중 50자 넘음 11개·최대 88자)."""
+
+    def test_reply_is_about_30_chars(self):
+        text = parser.build_audio_prompt([DEST])
+        assert "30자 안팎" in text
+        assert "60자" not in text and "50자 안팎" not in text
+
+    def test_one_question_at_a_time(self):
+        assert "질문은 하나만" in parser.build_audio_prompt([DEST])
+
+    def test_calm_tone_without_variation(self):
+        text = parser.build_audio_prompt([DEST])
+        assert "차분" in text
+        assert "밝고 친근한" not in text and "조금씩 다르게" not in text
+
+    def test_place_names_only_from_the_list(self):
+        text = parser.build_audio_prompt([DEST])
+        assert "목록에 없는 장소" in text and "지어내지 않는다" in text
+
+    def test_rule_examples_are_not_places_to_say(self):
+        assert "설명용" in parser.build_audio_prompt([DEST])
+
+    def test_reask_without_listing_examples(self):
+        assert "예시를 늘어놓지 않는다" in parser.build_audio_prompt([DEST])
