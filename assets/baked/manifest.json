@@ -113,5 +113,6 @@
  "mission_msg_wait_finish_ask.wav": "네, 어디로 모실까요?",
  "mission_msg_obstacle_avoid.wav": "앞에 장애물이 있어 피해 갈게요.",
  "mission_msg_obstacle_slow.wav": "앞에 장애물이 있어 천천히 갈게요.",
- "mission_msg_approach_reask.wav": "안내를 받으시겠어요?"
+ "mission_msg_approach_reask.wav": "안내를 받으시겠어요?",
+ "mission_msg_approach_unanswered.wav": "필요하시면 '비카야'라고 불러 주세요."
 }

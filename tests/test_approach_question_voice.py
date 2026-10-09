@@ -4,6 +4,8 @@
    말 끊기·"네?"·호출 창 바꾸기·미션 판정 대기가 모두 없다. 긴급어(멈춰)는 그대로 듣는다.
 2. LLM: 이 동안은 질문(question)에만 소리 내어 답한다. 되묻기(clarify)·"네?"·"네, 말씀하세요."·
    확인 질문은 지운다 — 다시 묻기("안내를 받으시겠어요?")는 미션이 한다(목소리 하나).
+3. LLM 지시문: 그 질문의 답은 한 문장으로 답만 하고 "?"로 끝내지 않는다(18:12 실기 — "…비카입니다.
+   말씀해 주세요?"·"잠깐만요, 안내를 시작할까요?" 뒤에 미션이 또 물어 질문이 겹쳤다, 사용자 결정 1번).
 """
 from __future__ import annotations
 
@@ -11,9 +13,10 @@ from pathlib import Path
 
 import numpy as np
 
+from src import langchain_intent_parser as parser
 from src.mission_question import quiet_for_mission
 from src.replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING
-from src.schema import VicaIntent
+from src.schema import DestinationData, VicaIntent
 from src.wakeword_monitor import POST_ROLL_FRAMES, WakewordMonitor
 
 LOUD = np.full(1280, 3000, dtype=np.int16)
@@ -128,3 +131,28 @@ def test_resume_goes_to_the_mission_so_it_can_reask():
     out = quiet_for_mission(_i("resume", RESUME_CONFIRM, need_confirm=True), "awaiting_user", "", 1.0)
     assert (out.reply, out.need_confirm) == ("", False)
     assert should_forward_intent(out)
+
+
+# ---- 3. LLM 지시문 — 접근 질문 중 답은 한 문장, 되묻지 않는다 --------------------------------------
+
+DEST = DestinationData(id="x", name="식당", confirm_prompt="식당으로 안내해드릴까요?")
+APPROACH_RULE = "한 문장으로 답만 하고 \"?\"로 끝내지 않는다"
+
+
+def test_audio_prompt_answers_the_approach_question_without_asking_back():
+    text = parser.build_audio_prompt([DEST])
+    assert "인사 답 대기" in text
+    assert APPROACH_RULE in text
+    assert "말씀해 주세요" in text and "안내를 시작할까요?" in text     # 실기에 붙었던 말을 금지 예로 든다
+
+
+def test_audio_prompt_question_mark_rule_names_the_exception():
+    """[말투]의 '답을 들어야 하는 말은 "?"로 끝낸다'와 부딪치지 않게 예외를 적는다."""
+    text = parser.build_audio_prompt([DEST])
+    assert "접근 질문 중 question 답은 예외" in text
+
+
+def test_text_prompt_has_the_same_rule():
+    text = parser._build_system_prompt([DEST])
+    assert "인사 답 대기" in text
+    assert APPROACH_RULE in text

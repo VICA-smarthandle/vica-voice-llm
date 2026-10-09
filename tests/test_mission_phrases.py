@@ -76,6 +76,7 @@ class TestSentences:
         assert mp.OBSTACLE_AVOID == ml.MSG_OBSTACLE_AVOID   # 주행 중 장애물 안내(2026-10-09)
         assert mp.OBSTACLE_SLOW == ml.MSG_OBSTACLE_SLOW
         assert mp.APPROACH_REASK == ml.MSG_APPROACH_REASK   # 접근 질문 다시 묻기(2026-10-09)
+        assert mp.APPROACH_UNANSWERED == ml.MSG_APPROACH_UNANSWERED   # 대답 없이 물러날 때(2026-10-09 '나')
         assert mp.WAIT_FINISH_ASK == ml.MSG_WAIT_FINISH_ASK
         assert replies.WAKE_GREETING == ml.MSG_WAKE_GREETING
         # 빈 확인 문구를 미션이 직접 물을 때의 문장 = 음성 기본 확인 문구(미리 합성됨).
