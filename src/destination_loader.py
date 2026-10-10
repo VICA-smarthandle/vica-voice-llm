@@ -67,6 +67,21 @@ def load_destinations(path: Path | str = DEFAULT_PATH) -> list[DestinationData]:
     ]
 
 
+def load_voice_destinations(path: Path | str = DEFAULT_PATH) -> list[DestinationData]:
+    """LLM 이 볼 목적지 — 공개 목적지 + 비공개 목적지를 '접근 불가'로 (2026-10-10 사용자 결정 A).
+
+    비공개를 아예 빼면 LLM 은 "408호"를 없는 곳으로 알고 비슷한 공개 목적지(407호)로 바꿔
+    출발했다(10-10 run85 18:08·18:09). 접근 불가로 보여 주면 그 이름으로 navigate 를 내고,
+    코드가 확인 없이 미션에 넘겨, 미션 관문이 거절한다("비공개 목적지는 안내할 수 없습니다.").
+    STT 귀띔·TTS 미리 합성 등 다른 곳은 그대로 load_destinations(공개만)를 쓴다.
+    """
+    return [
+        destination if destination.authorization == "public"
+        else destination.model_copy(update={"is_approachable": False})
+        for destination in _load_from_yaml(path)
+    ]
+
+
 def build_place_hint(destinations, max_chars: int = 200) -> str:
     """장소 이름·별칭을 STT 귀띔(whisper initial_prompt)용 한 줄로 만든다.
 

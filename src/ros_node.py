@@ -34,7 +34,7 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
 from . import local_rules
 from .building_directory import directory_path, format_directory_block, load_directory
-from .destination_loader import load_destinations
+from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
 from .langchain_intent_parser import (
@@ -628,7 +628,10 @@ class LlmIntentNode(Node):
         threading.Thread(target=work, daemon=True, name="ab-shadow").start()
 
     def _reload_destinations_if_changed(self, force: bool = False) -> None:
-        """저장 노드가 YAML을 교체하면 다음 발화 전에 public catalog를 갱신한다."""
+        """저장 노드가 YAML을 교체하면 다음 발화 전에 catalog를 갱신한다.
+
+        비공개 목적지도 '접근 불가'로 넣는다(load_voice_destinations, 2026-10-10 사용자 결정 A).
+        """
         try:
             mtime_ns = self._destinations_path.stat().st_mtime_ns
         except FileNotFoundError:
@@ -643,21 +646,18 @@ class LlmIntentNode(Node):
         if not force and mtime_ns == self._destinations_mtime_ns:
             return
         try:
-            loaded = load_destinations(self._destinations_path)
+            loaded = load_voice_destinations(self._destinations_path)
         except Exception as exc:
             self.get_logger().error(
                 f"목적지 catalog reload 실패, 이전 목록 유지: {exc}"
             )
             return
-        self._destinations = [
-            destination
-            for destination in loaded
-            if destination.authorization == "public"
-        ]
+        self._destinations = loaded
         self._destinations_mtime_ns = mtime_ns
         self._directory = load_directory(directory_path())
+        private = sum(1 for d in loaded if d.authorization != "public")
         self.get_logger().info(
-            f"public 목적지 {len(self._destinations)}개 로드: "
+            f"목적지 {len(loaded)}개 로드(비공개 {private}개는 접근 불가로): "
             f"{self._destinations_path}"
         )
 
