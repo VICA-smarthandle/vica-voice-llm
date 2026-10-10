@@ -115,6 +115,36 @@ def test_other_replies_are_left_to_the_mission():
         assert out.intent == intent.intent
 
 
+def test_question_answer_that_asks_back_is_not_spoken():
+    """10-10 12:07 — "그래"를 question 으로 잘못 받아 "어디로 안내해드릴까요?"를 말했고, 2초 뒤 미션이
+    "안내를 받으시겠어요?"를 다시 물어 두 입이 연달아 다른 질문을 했다(사용자 결정 1-나: 말하지 않는다)."""
+    out = quiet_for_mission(_i("question", "어디로 안내해드릴까요?"), "awaiting_user", "", 1.0)
+    assert out.reply == ""
+    assert out.intent == "question"          # 미션은 그대로 받아 곧바로 다시 묻는다
+
+
+def test_answer_with_a_trailing_question_is_not_spoken():
+    out = quiet_for_mission(_i("question", "저는 시각장애인 안내로봇 비카입니다. 말씀해 주세요?"),
+                            "awaiting_user", "", 1.0)
+    assert out.reply == ""
+
+
+def test_answer_inviting_speech_is_not_spoken():
+    """대답을 청하는 끝말("말씀해 주세요.")도 되묻기다 — 귀가 이미 '대답을 청하는 말'로 보는 꼴(expects_answer)."""
+    out = quiet_for_mission(_i("question", "네, 말씀해 주세요."), "awaiting_user", "", 1.0)
+    assert out.reply == ""
+
+
+def test_plain_answer_is_still_spoken():
+    out = quiet_for_mission(_i("question", "저는 시각장애인 안내로봇 비카입니다."), "awaiting_user", "", 1.0)
+    assert out.reply == "저는 시각장애인 안내로봇 비카입니다."
+
+
+def test_questions_outside_the_approach_question_are_unchanged():
+    out = quiet_for_mission(_i("question", "화장실로 가시려는 건가요?"), "idle", "", 99.0)
+    assert out.reply == "화장실로 가시려는 건가요?"
+
+
 def test_emergency_words_are_kept():
     out = quiet_for_mission(_i("unknown", "멈추겠습니다.", safety="emergency"), "awaiting_user", "", 1.0)
     assert out.reply == "멈추겠습니다."

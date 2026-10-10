@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 
 from .local_rules import ANSWER_WAIT_STATES
 from .mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
-from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING
+from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING, expects_answer
 from .schema import VicaIntent
 
 # 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다.
@@ -43,6 +43,12 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
         # 원하시나요?"라고 물은 직후 미션은 떠났다). "다시 가자"는 쥐지 않고 미션에 보내 다시 묻게 한다.
         return intent.model_copy(update={"reply": "", "need_confirm": False}
                                  if intent.intent == "resume" else {"reply": ""})
+    if dialog_state == "awaiting_user" and expects_answer(intent.reply):
+        # 질문의 답이라도 되묻거나 말을 청하며 끝나면("?"·"말씀해 주세요.") 말하지 않는다 — 미션이 곧바로
+        # "안내를 받으시겠어요?"를 다시 묻는다(2026-10-10 사용자 결정 1-나). 10-10 12:07 "그래"를 question 으로
+        # 잘못 받아 "어디로 안내해드릴까요?"를 말했고, 2초 뒤 미션이 다시 물어 두 입이 연달아 다른 질문을 했다.
+        # 지시문(10-09, 한 문장·"?" 금지)만으로는 못 막았다.
+        return intent.model_copy(update={"reply": ""})
     if intent.intent == "pause":
         # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
         # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).
