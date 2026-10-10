@@ -45,7 +45,8 @@ from .mission_phrases import WAIT_BEACON
 from .mission_question import (quiet_for_mission, reask_held_resume,
                                should_reask_resume_on_silence)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import audio_turn_applies, get_realtime_client, pcm16_from_audio_msg
+from .realtime_intent import (ab_shadow_enabled, audio_turn_applies, get_realtime_client,
+                              pcm16_from_audio_msg)
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
@@ -135,6 +136,8 @@ class LlmIntentNode(Node):
         # 실행기는 같은 주기에 준비된 구독을 생성 순서로 부른다. 소리가
         # 텍스트보다 먼저 처리돼야 이중 발행이 없다(항목 C).
         self._audio_turn: dict = {}   # 직전 소리 발화의 결과(그림자 비교·실패 시 텍스트 인계용)
+        # 그림자 비교(같은 발화를 글자 경로 GPT 로도 판단해 로그만)는 기본 꺼짐(2026-10-10 사용자 결정).
+        self._ab_shadow = ab_shadow_enabled()
         self._last_text_publish_t = 0.0   # 텍스트 경로가 방금 발행했으면 소리 경로를 생략한다
         self._last_text_publish_intent = ""   # 그때 낸 intent — 멈춤 중복 발행 방지용
         # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
@@ -142,7 +145,8 @@ class LlmIntentNode(Node):
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
         self.get_logger().info(
-            f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}")
+            f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
+            f" | 비교 기록(GPT): {'켬' if self._ab_shadow else '꺼짐'}")
 
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
@@ -596,7 +600,17 @@ class LlmIntentNode(Node):
 
         history/robot_state 는 turn 이 소리 경로 호출 '직전'에 찍어 둔 스냅샷을
         쓴다(항목 A) — turn 에 없을 때만(구조상 거의 없다) 지금 값으로 대신한다.
+
+        글자 경로 호출은 VICA_AB_SHADOW 가 켜졌을 때만 한다(2026-10-10 사용자 결정, 기본 꺼짐) —
+        꺼져 있으면 GPT 를 부르지 않고 소리 경로 결과와 받아쓰기만 한 줄 남긴다.
         """
+        a = turn.get("intent")
+        audio_part = (f"{a.intent}/{a.matched_destination_id or '-'} {turn.get('dt', 0.0):.2f}s"
+                      if a is not None else "?")
+        if not self._ab_shadow:
+            self.get_logger().info(
+                f"[A/B] audio={audio_part} | text=꺼짐 | heard='{turn.get('heard', '')}' | whisper='{text}'")
+            return
         history = turn.get("history", self._history.messages)
         robot_state = turn.get("robot_state", self._robot_state)
         destinations = self._destinations
@@ -608,9 +622,6 @@ class LlmIntentNode(Node):
                 text_part = f"{shadow.intent}/{shadow.matched_destination_id or '-'} {time.monotonic() - started:.2f}s"
             except Exception as exc:
                 text_part = f"실패({type(exc).__name__}) {time.monotonic() - started:.2f}s"
-            a = turn.get("intent")
-            audio_part = (f"{a.intent}/{a.matched_destination_id or '-'} {turn.get('dt', 0.0):.2f}s"
-                          if a is not None else "?")
             self.get_logger().info(
                 f"[A/B] audio={audio_part} | text={text_part} | heard='{turn.get('heard', '')}' | whisper='{text}'")
 

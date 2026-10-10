@@ -320,3 +320,14 @@ def audio_turn_applies(turn: dict, now: float, max_age_sec: float = AUDIO_TURN_M
         return False
     t = turn.get("t")
     return t is not None and 0.0 <= (now - t) <= max_age_sec
+
+
+def ab_shadow_enabled() -> bool:
+    """audio 모드에서 같은 발화를 글자 경로(GPT)로도 판단해 [A/B] 비교 기록을 남길까 (VICA_AB_SHADOW).
+
+    기본은 꺼짐(2026-10-10 사용자 결정). 비교 결과는 로봇 동작에 쓰지 않는데 말할 때마다 OpenAI
+    호출이 하나 더 나갔고, 그 호출이 실패하면 백엔드가 로컬로 대피해 비교용으로 로컬 모델까지
+    돌았다. Realtime 이 실패했을 때 글자 경로가 대신 판단하는 예비 길은 이 스위치와 무관하다.
+    매번 환경변수를 읽는다 — 시험이 monkeypatch 로 켜고 끌 수 있게.
+    """
+    return os.environ.get("VICA_AB_SHADOW", "").strip().lower() in ("1", "true", "on", "yes")
