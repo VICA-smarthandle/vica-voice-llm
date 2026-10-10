@@ -246,6 +246,19 @@ class TestAudioPromptStyle:
     def test_one_question_at_a_time(self):
         assert "질문은 하나만" in parser.build_audio_prompt([DEST])
 
+    def test_one_sentence_by_default(self):
+        """문장마다 TTS 가 새로 만들어 문장 사이에 빈틈이 생긴다 — 가급적 한 문장(2026-10-10 사용자)."""
+        text = parser.build_audio_prompt([DEST], directory_block="\n[다른 층 장소]\n- 세미나실: 로봇관 3층\n")
+        assert "가급적 한 문장" in text and "빈틈" in text
+        assert "두 문장" not in text
+        # 규칙 속 예시 답도 한 문장이어야 모델이 따라 한다.
+        for two in ("4층이에요. 안내해드릴까요?", "목록에 없어요. 학과사무실", "잘 못 들었어요. 다시"):
+            assert two not in text, two
+
+    def test_text_path_one_sentence_too(self):
+        text = parser._build_system_prompt([DEST])
+        assert "가급적 한 문장" in text and "빈틈" in text
+
     def test_calm_tone_without_variation(self):
         text = parser.build_audio_prompt([DEST])
         assert "차분" in text
