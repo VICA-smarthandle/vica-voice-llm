@@ -100,3 +100,33 @@ class TestWaitSpotLines:
         st = RobotState(dialog_state="waiting", last_destination="화장실", wait_minutes=10)
         text = render_ledger(st, awaiting_answer=False, now_text="09:01")
         assert "방향:" not in text and "- 대기 장소" not in text
+
+
+class TestChangeQuestionLine:
+    """대기 중 "화장실 가자"에 "사회 복지창구로 가는 중인데 바꿀까요?"(2026-10-10 run84) —
+    상황표 끝에 바꾸기 질문 '안 됨' 한 줄(V3, 재현 13/20 → 3/20, 사용자 결정).
+    글자 경로 _guiding_destination 과 같은 기준: 주행 중이 아니고 가는 곳이 비었을 때만."""
+
+    LINE = "- 목적지 바꾸기 질문(\"…로 바꿀까요?\"): 안 됨"
+
+    def test_waiting_gets_line_at_end(self):
+        st = RobotState(dialog_state="waiting", place_here="사회 복지창구 앞",
+                        last_destination="사회 복지창구", wait_minutes=5, wait_left_sec=272,
+                        wait_place="입구 왼쪽")
+        text = render_ledger(st, awaiting_answer=False, now_text="15:05")
+        assert self.LINE in text
+        assert "지금 가는 곳이 없다. 다른 곳을 말하면 그곳의 확인 질문만 한다" in text
+        assert text.rstrip("\n").splitlines()[-1].startswith(self.LINE)
+
+    def test_idle_gets_line(self):
+        text = render_ledger(RobotState(dialog_state="idle"), awaiting_answer=True, now_text="09:01")
+        assert self.LINE in text
+
+    def test_navigating_has_no_line(self):
+        st = RobotState(dialog_state="navigating", active_destination="화장실", is_moving=True)
+        assert self.LINE not in render_ledger(st, awaiting_answer=False, now_text="09:01")
+
+    def test_paused_with_destination_has_no_line(self):
+        # 일시정지는 가는 곳이 남아 있다 — "가는 곳이 없다"가 거짓이 되므로 줄을 안 낸다.
+        st = RobotState(dialog_state="paused", active_destination="화장실", is_paused=True)
+        assert self.LINE not in render_ledger(st, awaiting_answer=False, now_text="09:01")

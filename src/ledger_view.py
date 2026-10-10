@@ -96,4 +96,10 @@ def render_ledger(state: RobotState, *, awaiting_answer: bool, now_text: str) ->
     lines.append(f"- 배터리: {state.battery_pct}%" if state.battery_pct >= 0 else "- 배터리: 모름")
     if awaiting_answer:
         lines.append("- 로봇이 방금 질문하고 답을 기다리는 중: 예 (지금 들리는 말은 그 답일 가능성이 높다)")
+    if state.dialog_state != "navigating" and not state.active_destination:
+        # 대기 중 "화장실 가자"에 "사회 복지창구로 가는 중인데 바꿀까요?"(2026-10-10 run84).
+        # 지시문 금지만으로는 남아 맨 끝에 스위치 한 줄을 둔다(재현 7/20 → 3/20, 사용자 결정 V3).
+        # 기준은 글자 경로 _guiding_destination 과 같다. 일시정지는 가는 곳이 남아 있어 안 낸다.
+        lines.append("- 목적지 바꾸기 질문(\"…로 바꿀까요?\"): 안 됨 — 지금 가는 곳이 없다. "
+                     "다른 곳을 말하면 그곳의 확인 질문만 한다")
     return HEADER + "\n".join(lines) + "\n"
