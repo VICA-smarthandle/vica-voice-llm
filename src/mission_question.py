@@ -8,6 +8,8 @@ ros_node 는 rclpy 없이 시험할 수 없어 판단은 여기 순수 함수로
 """
 from __future__ import annotations
 
+from typing import Sequence
+
 from langchain_core.messages import AIMessage, BaseMessage
 
 from .local_rules import ANSWER_WAIT_STATES
@@ -31,8 +33,32 @@ def mission_is_asking(dialog_state: str, last_robot_text: str, last_robot_age_se
             and last_robot_age_sec <= ASK_FRESH_SEC)
 
 
+def confirming_same_place(intent, dialog_state: str, last_robot_text: str,
+                          place_names: Sequence[str] = ()) -> bool:
+    """확인 질문("OO로 안내해드릴까요?")에 답을 기다리는 중 같은 곳을 또 제안했나.
+
+    미션은 확인 중인 그 목적지의 재제안을 승낙으로 보고 바로 출발한다(09-01 규칙) — 그때 LLM 의 확인
+    질문까지 나가면 묻는 말과 출발 안내가 겹친다(10-10 18:34 "그럼 407호"). 미션은 확인 중인 곳을
+    로봇 상태로 알리지 않아서, 로봇이 마지막으로 한 질문 속 목적지 이름으로 판단한다. 이름이 다른 이름
+    속에 들어 있을 수 있어("화장실"·"남자 화장실") 질문 속 가장 긴 이름과 견준다.
+    """
+    if dialog_state != "confirming" or intent.intent != "navigate" or not intent.need_confirm:
+        return False
+    name = (intent.destination_candidate or "").strip()
+    last = (last_robot_text or "").strip()
+    if not name or not last.endswith("?") or name not in last:
+        return False
+    if not place_names:
+        return True
+    # 질문 속 목적지가 그 하나뿐이어야 확인 질문이다 — "남자 화장실과 여자 화장실 중 어디로 갈까요?"
+    # 같은 고르기 질문의 답("여자")은 재제안이 아니다(지우면 미션도 조용해 아무도 말하지 않는다).
+    named = [n for n in place_names if n and n in last]
+    outer = [n for n in named if not any(m != n and n in m for m in named)]
+    return outer == [name]
+
+
 def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
-                      last_robot_age_sec: float):
+                      last_robot_age_sec: float, place_names: Sequence[str] = ()):
     """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다.
     주행 중 "다시 가자"는 확인 질문도 뺀다 — 미션이 가는 곳을 말한다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
@@ -52,6 +78,15 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
     if intent.intent == "pause":
         # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
         # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).
+        return intent.model_copy(update={"reply": ""})
+    if intent.intent == "cancel":
+        # 취소도 미션이 모든 상태에서 답한다(주행·일시정지 "안내를 취소할까요?", 대기 "안내가 필요 없으신가요?",
+        # 안내 없음 "지금은 안내 중이 아닙니다." 등 — 2026-10-11 20상태 확인). 음성까지 말하면 두 목소리다
+        # (10-10 21:26:52 대기 중 "안내를 취소할까요?"+"안내가 필요 없으신가요?", 18:07 안내 없음). 주행 중엔
+        # 같은 글자라 TTS 가 2초 안 중복을 합쳐 안 들렸을 뿐이다. 질문의 답 "네"는 기록에 남는 미션 질문에 붙는다.
+        return intent.model_copy(update={"reply": ""})
+    if confirming_same_place(intent, dialog_state, last_robot_text, place_names):
+        # 확인 중인 곳을 또 말했다 — 미션이 승낙으로 받고 출발하며 "안내를 시작합니다"를 말한다(2026-10-11).
         return intent.model_copy(update={"reply": ""})
     if intent.intent == "resume" and intent.need_confirm and dialog_state == "navigating":
         # 이미 가는 중의 "다시 가자" — 움직일 일이 없어 확인할 것이 없다. 확정으로 보내 미션이

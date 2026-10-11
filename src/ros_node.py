@@ -397,7 +397,7 @@ class LlmIntentNode(Node):
         #      (2026-10-08 미션 요청 반응표). 판단은 순수 함수(mission_question)가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
-                                    time.time() - last_t)
+                                    time.time() - last_t, [d.name for d in self._destinations])
         silenced = quieted is not intent
         intent = quieted
 

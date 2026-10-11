@@ -12,6 +12,8 @@ Mission Manager 의 안내 멘트(MSG_*)는 vica_ros2_ws 쪽에 있다. 그쪽�
 """
 from __future__ import annotations
 
+from .mission_phrases import josa_eun_neun
+
 # 긴급어 감지 시의 응답. 실제 정지는 E-stop 래치 체인이 수행한다.
 EMERGENCY_REPLY = "안전을 위해 멈추겠습니다."
 
@@ -162,15 +164,34 @@ WAKE_GREETING = "네?"
 
 
 
+# "?" 없이 대답을 청하는 끝말(띄어쓰기·끝 문장부호 무시). 2026-10-11 사용자 결정 — 10-08 집계에서
+# 말을 청하고도 귀가 안 열린 33건 중 28건이 이 끝말이었고(맨 "비카야"에 "네, 말씀하세요." 19건),
+# 이 목록으로 새로 열리는 헛창은 6주에 1건("…필요하면 말씀하세요.")이었다.
+INVITE_ENDINGS = ("말씀하세요", "말씀해주세요", "말씀을해주세요", "말씀해주시겠어요", "알려주세요",
+                  "다시해주세요", "말해주세요")
+
+
 def expects_answer(reply: str) -> bool:
     """이 발화가 사용자 답을 기대하는가 — 재청취 창을 열지 판정.
 
     의도 종류(need_confirm·clarify)만 보던 옛 열쇠는 LLM 이 자유 생성한
     질문("무엇을 도와드릴까요?", intent=unknown)을 놓쳤다 — 질문해 놓고
-    안 듣는 사건의 원인(2026-08-28). 문장 꼴로 판정한다.
+    안 듣는 사건의 원인(2026-08-28). 문장 꼴로 판정한다: "?"로 끝나거나 INVITE_ENDINGS 로 끝난다.
     """
     reply = reply.strip()
-    return reply.endswith("?") or reply.endswith("말씀해 주세요.")
+    if reply.endswith("?"):
+        return True
+    tail = "".join(ch for ch in reply if not ch.isspace()).rstrip(".!~…")
+    return tail.endswith(INVITE_ENDINGS)
+
+
+def choose_between(names) -> str:
+    """두 곳 이상에 똑같이 걸리는 말에 되묻는 말 — "남자 화장실과 여자 화장실 중 어디로 갈까요?"(2026-10-11)."""
+    names = [n for n in names if n]
+    if len(names) == 2:
+        a, b = names
+        return f"{a}{'과' if josa_eun_neun(a) == '은' else '와'} {b} 중 어디로 갈까요?"
+    return f"{', '.join(names)} 중 어디로 갈까요?"
 
 
 def all_phrases() -> dict[str, str]:

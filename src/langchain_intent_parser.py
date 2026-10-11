@@ -15,7 +15,7 @@ from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field, ValidationError
 
 from .destination_loader import _josa_euro
-from .destination_matcher import match_destination
+from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
@@ -35,6 +35,7 @@ from .replies import (
     RESUME_CONFIRM,
     RETRY_PROMPT,
     WAKE_GREETING,
+    choose_between,
 )
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 
@@ -195,6 +196,9 @@ def _build_system_prompt(
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
+- 들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실"이 남자 화장실·여자 화장실 둘 다)
+  navigate 로 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
+  여자 화장실 중 어디로 갈까요?"). 하나만 들어 묻지도 않는다(2026-10-11 실기).
 - navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish 로
   분류하면 reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
 - 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로, 가급적 한 문장으로 써라. 알려 줄 말과
@@ -202,6 +206,8 @@ def _build_system_prompt(
   빈틈이 생긴다(2026-10-10 사용자). 정보와 되묻기까지만이다 —
   "알겠습니다"·"할게요" 같은 약속, "안내해드릴까요?"·"계속 안내할까요?"처럼 로봇이 할 일을 권하는
   말은 쓰지 않는다(로봇 본체가 모르는 약속이 된다). 목록에 있는 곳을 권하려면 navigate 로 내라.
+  되묻는 말만 "?"로 끝내고, 대답·안내·모른다는 말은 "."로 끝낸다 — 평서문에 "?"를 붙이면 질문처럼
+  들리고 로봇이 쓸데없이 귀를 연다(2026-10-11).
 - 로봇의 마지막 말이 "…안내를 받으시겠어요?"(대화 단계 '인사 답 대기')이면 question 의 reply 는
   한 문장으로 답만 하고 "?"로 끝내지 않는다 — 로봇 본체가 이어서 다시 묻는다(2026-10-09 실기).
 - 확신이 없으면 confidence 를 낮춰라.
@@ -899,6 +905,10 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
 - navigate(새 목적지): 가고 싶은 곳을 말했다. 직접("407호 가자")도 간접("배 아파"→화장실)도 된다.
   destination_candidate=목록의 name 그대로, need_confirm=true, reply=네 말로 만든 확인 질문
   (목적지 name 을 그대로 넣고 반드시 "?"로 끝낸다. 예: "화장실로 안내해드릴까요?").
+  들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실 가고 싶어"가 남자 화장실·여자 화장실
+  둘 다) 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과 여자 화장실
+  중 어디로 갈까요?"). 하나만 들어 "남자 화장실인가요?"처럼 묻지도 않는다(2026-10-11 실기: 같은 말에
+  "여자 화장실로 안내해드릴까요?"·"남자 화장실인가요?").
 - navigate(주행 중 바꾸기): [지금 상황]의 대화 단계가 '안내 중(주행)'인데 '안내 중' 줄의 곳(OO)이
   아닌 다른 목적지(XX)로 가고 싶다고 했다("화장실 가고 싶어", "식당으로 가자", "배 아파").
   destination_candidate=XX, need_confirm=true, reply="지금 OO로 가는 중이에요. XX로 바꿀까요?"
@@ -1009,8 +1019,10 @@ reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-
 목소리를 새로 만들어서 문장과 문장 사이에 빈틈이 생긴다(2026-10-10 사용자). 농담·추측·맞장구("~하겠죠", "~하시군요")와 예시 늘어놓기, 변명·긴 설명은
 넣지 않는다. "죄송해요", "제가 헷갈리게 했나요", "이름표나 안내판을 확인해 보세요" 같은 사과·자책·
 조언은 쓰지 않는다. 모르면 "그건 제가 몰라요." 한 문장이면 된다. 같은 자리에서는 같은 말로 묻는다.
-답을 들어야 하는 말은 반드시 "?"로 끝낸다(그래야 로봇이 듣는다 — 접근 질문 중 question 답은 예외, 로봇
-본체가 다시 묻는다).
+답을 들어야 하는 말(되묻기·확인 질문)만 "?"로 끝낸다(그래야 로봇이 듣는다 — 접근 질문 중 question 답은 예외,
+로봇 본체가 다시 묻는다). 묻는 말에 대한 대답·안내·모른다는 말은 평서문이니 "."로 끝낸다 — 평서문에 "?"를
+붙이면 말끝이 올라가 질문처럼 들리고 로봇이 쓸데없이 귀를 연다(2026-10-11: "성별은 추정할 수 없어요?",
+"목록에 408호는 없어요?" — 질문 대답 30개 중 18개가 "?"로 끝났다).
 reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel)는 로봇 본체가 이어서
 말하므로 네가 말을 보태지 않는다.
 {state_block}{situation}"""
@@ -1036,11 +1048,13 @@ def parse_intent_audio(
         draft = _IntentDraft(**result.draft)
     except ValidationError as exc:
         raise ValueError(f"set_intent 인자가 _IntentDraft 와 맞지 않는다: {exc}") from exc
-    intent = deliver_audio_draft(draft, destinations)
+    intent = deliver_audio_draft(draft, destinations, robot_state.dialog_state if robot_state else "",
+                                 robot_state.active_destination if robot_state else "")
     return intent, heard, result.latency_sec, {"src": "llm", "usage": result.usage}
 
 
-def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData]) -> VicaIntent:
+def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
+                        dialog_state: str = "", active: str = "") -> VicaIntent:
     """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만."""
     result = VicaIntent(
         intent=draft.intent,
@@ -1050,7 +1064,16 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
         need_confirm=bool(draft.need_confirm),
         safety_flag="normal",
     )
-    if draft.intent == "navigate":
+    tied = tied_destinations(draft.destination_candidate, list(destinations)) if draft.intent == "navigate" else []
+    asked = _choice_in_reply(result.reply, destinations, active) if draft.intent == "navigate" else []
+    if len(tied) > 1:
+        _ask_which(result, tied, dialog_state)
+    elif len(asked) > 1:
+        # 입으로는 "남자 화장실과 여자 화장실 중 어디로…?"라고 고르게 하면서 목적지는 한쪽 정확한 이름으로 냈다
+        # (2026-10-11 run90 18:44:43 — 미션이 그곳을 확인하는 중이 돼 다음 "남자 화장실로 가자"에 출발 안내와 LLM
+        # 확인 질문이 겹쳤다). 고르기 질문이면 목적지를 보내지 않는다.
+        _ask_which(result, asked, dialog_state)
+    elif draft.intent == "navigate":
         matched = match_destination(draft.destination_candidate, list(destinations))
         if matched is None:
             # 목록에 없는 이름 — id 가 없으니 미션에 보낼 수 없다. 되묻기로.
@@ -1090,6 +1113,48 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
     else:                                    # question / unknown — 모델의 reply 그대로 (빈 말이면 침묵)
         result.need_confirm = False
     return result
+
+# 접근 질문("안내를 받으시겠어요?")에 답하는 단계 — mission_question.APPROACH_ANSWER_STATES 와 같다.
+_APPROACH_STATES = frozenset({"awaiting_user", "turning"})
+
+
+def _choice_in_reply(reply: str, destinations: Sequence[DestinationData], active: str = "") -> list[DestinationData]:
+    """되묻는 말(끝 "?")에 든 목적지들 — 다른 이름 속에 든 짧은 이름은 빼고, 지금 가는 곳(active)도 뺀다.
+
+    둘 이상이면 고르기 질문이다. 주행 중 "지금 OO로 가는 중이에요. XX로 바꿀까요?"의 OO 는 지금 가는 곳이라
+    세지 않는다(XX 하나만 남아 그대로 바꾸기 질문).
+    """
+    reply = (reply or "").strip()
+    if not reply.endswith("?"):
+        return []
+    named = [d for d in destinations if d.name and d.name in reply]
+    outer = [d for d in named if not any(o.name != d.name and d.name in o.name for o in named)]
+    return [d for d in outer if d.name != active]
+
+
+def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state: str = "") -> VicaIntent:
+    """두 곳 이상에 똑같이 걸린 navigate 를 되묻기로 바꾼다 — 한쪽을 고르지 않는다(2026-10-11 사용자 결정).
+
+    10-11 실기: "화장실 가고 싶어"(남자·여자 화장실 둘 다 별칭 '화장실')에 한쪽을 짐작했다. 지시문으로 막아도
+    모델이 이름 대신 '화장실'로 navigate 를 내면 match_destination 이 목록 앞쪽을 골라 미션이 그곳을 확인하는
+    중이 됐다. 모델의 되묻는 말이 후보를 다 들면 그대로, 아니면 코드가 묻는다.
+    접근 질문 중이면 되묻지 않고 목적지 없는 수락(navigate)으로 둔다 — 미션은 되묻기를 수락으로 안 받고
+    "안내를 받으시겠어요?"를 다시 묻는데, 목적지 없는 navigate 는 수락으로 받고 돌아선 뒤 직접 목적지를 묻는다.
+    """
+    if dialog_state in _APPROACH_STATES:
+        result.destination_candidate = None
+        result.matched_destination_id = ""
+        result.reply = ""
+        return result
+    names = [d.name for d in tied]
+    keep = result.reply.strip().endswith("?") and all(n in result.reply for n in names)
+    result.intent = "clarify"
+    result.destination_candidate = None
+    result.matched_destination_id = ""
+    result.need_confirm = False
+    result.reply = result.reply if keep else choose_between(names)
+    return result
+
 
 def _finalize(
     draft: _IntentDraft,
@@ -1145,7 +1210,10 @@ def _finalize(
         result.wait_minutes = minutes if minutes else -1
         return result
 
-    if draft.intent == "navigate":
+    tied = tied_destinations(draft.destination_candidate, list(destinations)) if draft.intent == "navigate" else []
+    if len(tied) > 1:
+        _ask_which(result, tied, robot_state.dialog_state if robot_state else "")
+    elif draft.intent == "navigate":
         matched = match_destination(draft.destination_candidate, list(destinations))
         if matched is None:
             # LLM 이 목록에 없는 목적지를 골랐다 -> 되묻기로 안전하게 강등.

@@ -94,3 +94,21 @@ class TestExpectsAnswer:
     def test_statements_do_not(self, reply):
         from src.replies import expects_answer
         assert expects_answer(reply) is False
+
+    @pytest.mark.parametrize("reply", [
+        "네, 말씀하세요.",            # 맨 "비카야"에 LLM 이 가장 자주 하던 답(10-08 집계 19건)
+        "네? 말씀하세요.",
+        "다시 말씀해 주세요",
+        "말씀을 해 주세요.",
+        "가실 곳을 알려주세요.",
+        "한 번만 다시 해주세요.",
+    ])
+    def test_invite_endings_expect_answer(self, reply):
+        # 2026-10-11: "?" 없이 말을 청해도 귀를 연다
+        from src.replies import expects_answer
+        assert expects_answer(reply) is True
+
+    @pytest.mark.parametrize("reply", ["안내를 종료합니다.", "말씀 감사합니다.", "알려 드릴게요."])
+    def test_other_statements_still_do_not(self, reply):
+        from src.replies import expects_answer
+        assert expects_answer(reply) is False
