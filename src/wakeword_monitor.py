@@ -34,6 +34,7 @@ import numpy as np
 
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from .mission_phrases import OBSTACLE_STOP
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
 from .wakeword_gate import FrameGate, match_emergency_transcript
@@ -171,6 +172,17 @@ WAKE_WORD_IN_SPEECH = "비카야"
 def has_wake_word(text: str) -> bool:
     """로봇이 말할 문장에 호출어가 들어 있는가."""
     return WAKE_WORD_IN_SPEECH in (text or "")
+
+
+# 로봇이 이 문장을 말하는 동안은 마이크를 닫는다(2026-10-10 사용자 결정). 장애물 정지 안내의 '정지'는
+# 긴급어(모델 B)라 자기 목소리로 비상정지가 걸릴 수 있다. 재생이 끝나면(TTS 끝 소식) 다시 열고, 닫힌 동안
+# 쌓인 소리와 관문은 비운다. 그 2초쯤은 사용자 '멈춰'도 못 듣지만, 로봇은 이미 서는 중이다.
+MIC_OFF_PHRASES = frozenset({OBSTACLE_STOP})
+
+
+def mic_off_while_saying(text: str) -> bool:
+    """이 로봇 말을 하는 동안 마이크를 닫는가."""
+    return (text or "").strip() in MIC_OFF_PHRASES
 
 
 def _frame_rms(frame) -> float:
@@ -354,6 +366,8 @@ class WakewordMonitor:
         self._self_guard_active = False
         self._self_guard_since = 0.0
         self._self_guard_until = 0.0
+        # MIC_OFF_PHRASES 문장을 말하느라 마이크를 닫았나 — 그 재생이 끝나면 연다.
+        self._mic_off_speech = False
         # 미션이 접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 호출을 끈다(set_wake_suppressed).
         self._wake_suppressed = False
         # 로봇 말이 마지막으로 끝난 시각 — 자유 창의 말 시작 기다림은 이때부터도 센다.
@@ -512,6 +526,10 @@ class WakewordMonitor:
         끝나고 SELF_WAKE_TAIL_SEC 뒤까지 호출을 확정하지 않는다. 다음 문장 소식이 재생
         종료 소식보다 먼저 와도 꼬리만큼만 더 막고 풀린다."""
         now = time.time() if now is None else now
+        if mic_off_while_saying(text):
+            # 재생 시작 소식보다 먼저 닫는다. 여는 것은 그 재생의 끝 소식(set_speaking·set_muted False)이다.
+            self.set_muted(True, now)
+            self._mic_off_speech = True
         if has_wake_word(text):
             # 시각을 먼저 쓰고 표시를 나중에 켠다 — 마이크 스레드가 그 사이에 읽어도
             # 옛 시각으로 '상한 넘음'을 잘못 판단하지 않게.
@@ -602,6 +620,7 @@ class WakewordMonitor:
             return
 
         self._muted = False
+        self._mic_off_speech = False
         self._speech_ended_at = now
         self._end_self_guard(now)
         self._ring.clear()
@@ -641,6 +660,14 @@ class WakewordMonitor:
                 self._collect = []
                 self._followup_armed = True
             return
+        if self._mic_off_speech:
+            # MIC_OFF_PHRASES 문장이 끝났다 — 닫았던 마이크를 연다. 닫힌 동안의 소리·관문은 비운다
+            # (끝부분의 '정지'가 긴급 검증의 직전 오디오로 남지 않게).
+            self._mic_off_speech = False
+            self._muted = False
+            self._ring.clear()
+            self.gate_a.reset()
+            self.gate_b.reset()
         self._speech_ended_at = now
         self._end_self_guard(now)
         if self._followup_armed:

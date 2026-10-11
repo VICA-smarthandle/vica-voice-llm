@@ -39,9 +39,12 @@ WAIT_EXPIRED = "대기 시간이 종료되어 제자리로 돌아갑니다."    
 WAIT_FINISH_ASK = "네, 어디로 모실까요?"
 # 비상 정지 중 "비카야" — "네?" 없이 이 한 마디만(호출 반응표).
 ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
-# 주행 중 장애물 안내(2026-10-09 미션에 넣음, 사용자 선택 A1·S1). 미션 MSG_OBSTACLE_* 와 같은 글자.
-OBSTACLE_AVOID = "앞에 장애물이 있어 피해 갈게요."
-OBSTACLE_SLOW = "앞에 장애물이 있어 천천히 갈게요."
+# 주행 중 장애물 안내(2026-10-09 미션에 넣음). 미션 MSG_OBSTACLE_* 와 같은 글자. 2026-10-10 사용자 결정으로
+# 로봇이 실제로 한 일(비켜 감·감속·정지) 셋으로 나누고 문구를 바꿨다. 정지 문장을 말하는 동안은 귀가 마이크를
+# 닫는다(wakeword_monitor.MIC_OFF_PHRASES — '정지'가 긴급어다).
+OBSTACLE_AVOID = "앞에 장애물이 있어 비켜갈게요."
+OBSTACLE_SLOW = "앞에 장애물이 있어 감속할게요."
+OBSTACLE_STOP = "앞에 장애물이 있어 정지합니다."
 # 접근 질문을 다시 묻는 말(2026-10-09 사용자 결정, 세 번까지). 미션 MSG_APPROACH_REASK 와 같은 글자.
 APPROACH_REASK = "안내를 받으시겠어요?"
 # 다시 묻기를 다 쓰고도 예·아니요를 못 들어 물러날 때(2026-10-09 사용자 결정 '나'). 미션 MSG_APPROACH_UNANSWERED.
@@ -127,6 +130,7 @@ def baked_mission_ments() -> dict[str, str]:
         # 주행 중 장애물 안내(2026-10-09) — ambient 라 바로 나가야 한다. 실시간 합성은 늦다.
         "mission_msg_obstacle_avoid": OBSTACLE_AVOID,
         "mission_msg_obstacle_slow": OBSTACLE_SLOW,
+        "mission_msg_obstacle_stop": OBSTACLE_STOP,
         # 접근 질문 다시 묻기(2026-10-09) — 첫 질문과 같은 목소리로 굽는다.
         "mission_msg_approach_reask": APPROACH_REASK,
         "mission_msg_approach_unanswered": APPROACH_UNANSWERED,

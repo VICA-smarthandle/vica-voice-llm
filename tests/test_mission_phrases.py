@@ -75,6 +75,10 @@ class TestSentences:
         assert mp.ESTOP_WAKE == ml.MSG_ESTOP_WAKE
         assert mp.OBSTACLE_AVOID == ml.MSG_OBSTACLE_AVOID   # 주행 중 장애물 안내(2026-10-09)
         assert mp.OBSTACLE_SLOW == ml.MSG_OBSTACLE_SLOW
+        assert mp.OBSTACLE_STOP == ml.MSG_OBSTACLE_STOP     # 정지 문장(2026-10-10)
+        # 긴급어('정지')가 든 미션 문장 = 말하는 동안 귀가 마이크를 닫는 문장(자기 목소리 비상정지 방지)
+        from src.wakeword_monitor import MIC_OFF_PHRASES
+        assert set(MIC_OFF_PHRASES) == set(ml.MIC_OFF_MESSAGES)
         assert mp.APPROACH_REASK == ml.MSG_APPROACH_REASK   # 접근 질문 다시 묻기(2026-10-09)
         assert mp.APPROACH_UNANSWERED == ml.MSG_APPROACH_UNANSWERED   # 대답 없이 물러날 때(2026-10-09 '나')
         assert mp.WAIT_FINISH_ASK == ml.MSG_WAIT_FINISH_ASK
