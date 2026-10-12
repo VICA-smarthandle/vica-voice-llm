@@ -53,7 +53,7 @@ def test_emergency_confirmed():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춰!")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
     assert len(events) == 1
     assert events[0].keyword == "멈춰"
@@ -66,14 +66,24 @@ def test_emergency_rejected_by_stt():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춤")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "reject"
     assert events == []
 
 
-def test_single_spike_no_stt_call():
-    # 1프레임 스파이크는 발동하지 않고 whisper 도 부르지 않는다
+def test_single_spike_goes_to_verify():
+    # 2026-10-12 사용자 결정: 한 조각이라도 0.5 이상이면 STT 확인으로 넘긴다(실측 — 놓친 진짜 "멈춰" 5번이
+    # 0.63~0.85 한 조각뿐이었다). 헛반응은 정확 매칭이 막는다.
     fake = Fake(scores=[(0, 0.9)] + [(0, 0)] * 10, text="멈춰")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)
+    assert fake.stt_calls == 1 and len(events) == 1
+
+
+def test_single_spike_below_half_no_stt_call():
+    # 0.5 미만 한 조각은 예전처럼 발동하지 않고 whisper 도 부르지 않는다
+    fake = Fake(scores=[(0, 0.45)] + [(0, 0)] * 10, text="멈춰")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 8, LOUD)
@@ -116,7 +126,7 @@ def test_emergency_preempts_listen():
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                        # wake → listen
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.0)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
     assert events[0].keyword == "정지"
     assert texts == []                            # 청취는 폐기됐다
@@ -130,7 +140,7 @@ def test_muted_suppresses_and_failsafe_unmutes():
     run_frames(m, 10, LOUD, t0=0.0)               # 억제 중 — 발동 없음
     assert events == []
     # fail-safe: 10초 뒤엔 해제 신호를 놓쳐도 자동 해제
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=11.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=11.0)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
 
 

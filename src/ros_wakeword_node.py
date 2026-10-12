@@ -53,7 +53,9 @@ from .stt_guard import strip_robot_echo
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
-from .wakeword_monitor import LISTEN_START_SEC, WakewordMonitor
+from .wakeword_monitor import (
+    LISTEN_START_SEC, WakewordMonitor, describe_emergency_check, describe_emergency_near,
+    ear_stt_model_names, save_emergency_clip)
 
 # 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
@@ -174,6 +176,11 @@ class WakewordNode(Node):
         # 소리→의도 직행(audio 모드, 2026-09-20 실험): 청취 클립을 LLM 노드로 보낸다.
         # text 모드(기본)에서는 아무것도 발행하지 않는다 — 지금과 동일.
         self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        # 긴급 관문 소리 저장(2026-10-12 사용자 결정) — 확정·기각·아깝게 놓침 때 들은 ~2.5 s 를 wav 로.
+        # 빠른 확인용 STT 를 현장 소리로 견주고 놓침을 다시 듣는 자료. "off" 면 끈다.
+        clip_dir = os.environ.get("VICA_ESTOP_CLIP_DIR", "~/vica_data/estop_clips").strip()
+        self._estop_clip_dir = None if clip_dir.lower() in ("", "off", "0", "false") else clip_dir
+        self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
 
         self._monitor = WakewordMonitor(
@@ -193,10 +200,18 @@ class WakewordNode(Node):
             user_doa_width=self._user_doa_width,
             wake_gate=self._wake_by_mission,
             on_wake_score=self._on_wake_score,
+            on_emergency_score=self._on_emergency_score,
         )
         self.get_logger().info(
             f"호출 문턱 {self._monitor.gate_a.threshold:.2f} · "
-            f"말 시작 기다림 {LISTEN_START_SEC:.1f}s")
+            f"말 시작 기다림 {LISTEN_START_SEC:.1f}s · "
+            f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'}")
+        single = self._monitor.gate_b.single
+        listen_stt, verify_stt = ear_stt_model_names()
+        self.get_logger().info(
+            f"긴급 관문 {self._monitor.gate_b.threshold:.2f} 2연속"
+            + (f" 또는 한 조각 {single:.2f}" if single is not None else " (한 조각 규칙 꺼짐)")
+            + f" · 긴급 확인 STT {verify_stt} · 대화 STT {listen_stt}")
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
         # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
         # 전송 거부). D7 동결의 승인된 유일한 예외 (dsp_state 모듈 주석).
@@ -244,7 +259,9 @@ class WakewordNode(Node):
         self._stop_pub.publish(Empty())
         self._pub_emergency.publish(emergency_to_msg(event))
         self.get_logger().warn(
-            f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})")
+            f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})"
+            + describe_emergency_check(self._monitor.last_emergency_check))
+        self._save_estop_clip(self._monitor.last_emergency_audio, self._monitor.last_emergency_check)
 
     def _on_tts_done_text(self, msg: String) -> None:
         now = time.time()
@@ -389,8 +406,28 @@ class WakewordNode(Node):
 
         반드시 남긴다 — "멈춰"가 씹혔을 때 관문을 못 넘은 것인지, 넘고
         기각된 것인지 이 로그 없이는 사후에 가릴 수 없다 (2026-08-24 실기).
+        청취 창 안 오발동·질문 답 대기 중 오발동도 여기로 온다(2026-10-12) — 꼬리에 어디서였는지와
+        관문 점수·STT 시간을 붙인다.
         """
-        self.get_logger().warn(f"긴급 관문 발동 → STT 기각 (전사: {text!r})")
+        self.get_logger().warn(f"긴급 관문 발동 → STT 기각 (전사: {text!r})"
+                               + describe_emergency_check(self._monitor.last_emergency_check))
+        self._save_estop_clip(self._monitor.last_emergency_audio, self._monitor.last_emergency_check)
+
+    def _on_emergency_score(self, info: dict) -> None:
+        """긴급 모델이 반응했지만 발동하지 않은 소리 — 점수 미달·한 조각만·쉬는 시간(2026-10-12)."""
+        self.get_logger().info(describe_emergency_near(info, self._monitor.gate_b.threshold))
+        self._save_estop_clip(info.get("audio"), info)
+
+    def _save_estop_clip(self, audio, info) -> None:
+        # 기록일 뿐이다 — 저장이 실패해도 긴급 판정과 마이크 스레드는 계속 간다. 경고는 한 번만.
+        if self._estop_clip_dir is None or audio is None or not info or len(audio) == 0:
+            return
+        try:
+            save_emergency_clip(self._estop_clip_dir, audio, info)
+        except Exception as exc:
+            if not self._estop_clip_warned:
+                self._estop_clip_warned = True
+                self.get_logger().warn(f"긴급 소리 저장 실패(이후 경고 생략): {exc}")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""

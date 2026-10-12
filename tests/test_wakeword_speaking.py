@@ -64,7 +64,7 @@ def test_emergency_heard_while_robot_is_speaking():
     m = make(fake, events, texts, wakes)
 
     m.set_speaking(True, now=0.0)   # TTS 재생 시작 — 귀는 열려 있다
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=0.1)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=0.1)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
     assert len(events) == 1 and events[0].keyword == "멈춰"
 
@@ -194,7 +194,7 @@ def test_ring_buffer_survives_tts_boundary():
     m.set_speaking(False, now=1.0)
     assert len(m._ring) == 10                 # 경계에서 비워지지 않았다
 
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.1)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.1)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
 
 

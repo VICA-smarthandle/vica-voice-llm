@@ -82,7 +82,7 @@ def test_stop_word_still_works_while_calls_are_off():
     fake = Fake([(0, 0.9), (0, 0.9)] + [(0, 0)] * POST_ROLL_FRAMES, text="멈춰!")
     m, _ = _make(fake, events)
     m.set_wake_suppressed(True)
-    out = _feed(m, [(LOUD, None)] * (2 + POST_ROLL_FRAMES), 0.0)
+    out = _feed(m, [(LOUD, None)] * (1 + POST_ROLL_FRAMES), 0.0)
     assert out[-1] == "emergency"
     assert len(events) == 1
 

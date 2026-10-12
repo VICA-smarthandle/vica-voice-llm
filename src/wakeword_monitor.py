@@ -25,9 +25,13 @@ CLI 데모:
 """
 from __future__ import annotations
 
+import json
 import os
 import time
+import wave
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -159,6 +163,36 @@ def wake_threshold_from_env() -> float:
 WAKE_THRESHOLD = wake_threshold_from_env()
 # 이 점수를 넘은 소리 덩어리는 확정되지 않아도 '아깝게 놓침'으로 최고 점수를 알린다.
 WAKE_NEAR_MISS_FLOOR = 0.4
+# 긴급("멈춰") 모델도 같다(2026-10-12 사용자 결정): 이 점수를 넘은 소리 덩어리가 발동 없이 끝나면 최고 점수·
+# 문턱 넘은 조각 수·쿨다운 여부를 알린다 — 외쳤는데 무시당한 것이 점수 미달인지 쉬는 시간인지 가른다.
+EMERGENCY_NEAR_MISS_FLOOR = 0.3
+# 긴급 관문의 한 조각 문턱(2026-10-12 사용자 결정) — 이 점수 이상이면 한 조각(80 ms)으로도 STT 확인에 넘긴다.
+# 실측 11:50~12:02: 놓친 진짜 "멈춰" 5번이 0.63~0.85 한 조각뿐이었고(2연속 규칙에 걸림), 저장 소리를 STT 에
+# 넣으면 5번 다 "멈춰"였다. 헛반응은 정확 매칭이 막는다. VICA_EMERGENCY_SINGLE_FRAME=off 면 옛 동작.
+EMERGENCY_SINGLE_FRAME_DEFAULT = 0.5
+
+
+def emergency_single_frame_from_env() -> Optional[float]:
+    """VICA_EMERGENCY_SINGLE_FRAME — 없으면 0.5, off 면 None(2연속 규칙만), 이상한 값이면 0.5."""
+    raw = os.environ.get("VICA_EMERGENCY_SINGLE_FRAME", "").strip().lower()
+    if raw in ("off", "none", "false", "no"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return EMERGENCY_SINGLE_FRAME_DEFAULT
+    return value if 0.0 < value < 1.0 else EMERGENCY_SINGLE_FRAME_DEFAULT
+
+
+def ear_stt_model_names() -> tuple[str, str]:
+    """귀가 띄우는 whisper 두 개의 이름 — (대화 받아쓰기, 긴급 확인).
+
+    2026-10-12 사용자 결정: 긴급 확인은 VICA_VERIFY_STT_MODEL(small)로 따로 띄워 1.5 s → 0.5 s. 대화는
+    VICA_STT_MODEL(LLM 노드와 같은 이름)을 따른다 — 예전엔 둘 다 VICA_VERIFY_STT_MODEL 하나를 썼다(.env 에서
+    두 이름 모두 turbo 였다). 이름이 같으면 하나만 띄운다.
+    """
+    return (os.environ.get("VICA_STT_MODEL", "medium"),
+            os.environ.get("VICA_VERIFY_STT_MODEL", "medium"))
 # 로봇이 '비카야'가 든 문장을 말하는 동안과 끝난 뒤 이만큼은 호출을 확정하지 않는다
 # (2026-10-08). 로그상 "'비카야'라고 말씀해 주세요" 재생 직후 호출이 37회 중 4회였다.
 # 꼬리는 스피커→마이크 지연과 방 울림 몫이다. 긴급어는 막지 않는다.
@@ -183,6 +217,73 @@ MIC_OFF_PHRASES = frozenset({OBSTACLE_STOP})
 def mic_off_while_saying(text: str) -> bool:
     """이 로봇 말을 하는 동안 마이크를 닫는가."""
     return (text or "").strip() in MIC_OFF_PHRASES
+
+
+# 긴급 관문 기록에 붙일 결과 이름(2026-10-12). "reject"·"emergency" 는 원래 로그 문구가 이미 말한다.
+_CHECK_RESULT_KO = {
+    "listen_resumed": "청취 창 안 — 긴급 아님, 듣기 이어감",
+    "followup_answer": "긴급 아님 — 질문 답으로 넘김",
+}
+
+
+def describe_emergency_check(check: Optional[dict]) -> str:
+    """긴급 관문 한 번의 기록 꼬리 — " · 관문 0.87 · 관문→판정 1.93 s (STT 1.61 s)".
+
+    비상정지 점검용(2026-10-12 사용자 결정): 말 끝 → 정지 중 어디가 긴지(모델·말끝 0.32 s·STT)를
+    로그만으로 가른다. 관문→판정 = 발동 프레임에서 STT 시작까지 + STT 걸린 시간.
+    """
+    if not check:
+        return ""
+    parts = []
+    if check.get("score") is not None:
+        parts.append(f"관문 {check['score']:.2f}")
+    stt = check.get("stt")
+    if stt is not None:
+        post = check.get("postroll")
+        if post is not None:
+            parts.append(f"관문→판정 {post + stt:.2f} s (STT {stt:.2f} s)")
+        else:
+            parts.append(f"STT {stt:.2f} s")
+    note = _CHECK_RESULT_KO.get(check.get("result", ""))
+    if note:
+        parts.append(note)
+    return "".join(f" · {x}" for x in parts)
+
+
+def describe_emergency_near(info: dict, threshold: float) -> str:
+    """긴급 모델이 문턱 근처까지 반응했지만 발동하지 않은 소리 한 덩어리의 기록 한 줄."""
+    line = f"🎯 긴급 점수 놓침: {info['peak']:.2f} (문턱 {threshold:.2f})"
+    if info.get("cooldown"):
+        after = info.get("after_fire")
+        line += " · 쉬는 시간 중 무시" + (f"(앞 반응 {after:.2f} s 뒤)" if after is not None else "")
+    elif info.get("frames_over"):
+        line += f" · 문턱 넘은 조각 {info['frames_over']}개(2개 연속 필요)"
+    return line
+
+
+def save_emergency_clip(directory, audio: np.ndarray, info: dict, wall_time: Optional[float] = None) -> Path:
+    """긴급 관문에서 들은 소리를 wav 로, 그 판정을 directory/clips.jsonl 한 줄로 남긴다(2026-10-12 사용자 결정).
+
+    STT 확인에 쓴 직전 ~2.5 s(확정·기각) 또는 아깝게 놓친 소리 덩어리 직후의 ~2.5 s. 빠른 확인용 STT 모델을
+    현장 소리로 견주고, "멈춰가" 같은 놓침을 다시 들으려는 자료다. 판정에는 쓰지 않는다.
+    """
+    directory = Path(directory).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.fromtimestamp(time.time() if wall_time is None else wall_time)
+    score = info.get("score", info.get("peak"))
+    name = (f"{stamp:%Y%m%d_%H%M%S}_{stamp.microsecond // 1000:03d}_{info.get('result', 'clip')}"
+            + (f"_{score:.2f}" if score is not None else "") + ".wav")
+    path = directory / name
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(np.asarray(audio, dtype=np.int16).tobytes())
+    row = {"time": stamp.isoformat(timespec="milliseconds"), "file": name}
+    row.update({k: v for k, v in info.items() if k != "audio"})
+    with open(directory / "clips.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
 
 
 def _frame_rms(frame) -> float:
@@ -282,6 +383,7 @@ class WakewordMonitor:
         on_wake_doa: Optional[Callable[[float], None]] = None,
         on_user_audio: Optional[Callable[[np.ndarray], None]] = None,
         on_wake_score: Optional[Callable[[str, float], None]] = None,
+        on_emergency_score: Optional[Callable[[dict], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -294,6 +396,7 @@ class WakewordMonitor:
         gate_b: float = 0.5,
         cooldown_a: float = 1.5,
         cooldown_b: float = 2.0,
+        single_b: object = "env",
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -320,6 +423,14 @@ class WakewordMonitor:
         # 호출 점수 기록 (2026-10-08) — ("fire"|"near"|"self", 최고 점수). 문턱을
         # 숫자로 고르기 위한 재료다. 판정에는 쓰지 않는다.
         self._on_wake_score = on_wake_score or (lambda kind, peak: None)
+        # 긴급 모델 '아깝게 놓침' 알림(2026-10-12) — {"peak","frames_over","cooldown","after_fire","audio"}.
+        self._on_emergency_score = on_emergency_score or (lambda info: None)
+        self._em_episode = False
+        self._em_peak = 0.0
+        self._em_over = 0
+        self._em_blocked = False
+        self._em_fired = False
+        self._em_started_at = 0.0
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -351,7 +462,9 @@ class WakewordMonitor:
         self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
-        self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
+        self.gate_b = FrameGate(
+            gate_b, persist=2, cooldown_sec=cooldown_b,
+            single=emergency_single_frame_from_env() if single_b == "env" else single_b)
         # 창 안 호출 관찰용 — 같은 문턱·지속을 쓰되 **별도 객체**다. gate_a 를
         # 그대로 먹이면 쿨다운이 소모돼 창이 닫힌 직후의 진짜 호출이 막힌다.
         # 쿨다운 0: 여기서는 발동이 아니라 사실 기록만 하므로 중복이 무해하다.
@@ -403,6 +516,12 @@ class WakewordMonitor:
         # 청취+STT 묶음 6.1초의 내역을 몰랐던 것이 도입 계기).
         self.last_listen_timing: Optional[dict] = None
         self._listen_speech_started_at = 0.0
+        # 마지막 긴급 관문 한 번의 기록 — 발동 점수·발동→STT 시작·STT 걸린 시간·어디서·결과
+        # (2026-10-12 사용자 결정, 비상정지 점검). 노드가 확정·기각 로그 끝에 붙인다.
+        self.last_emergency_check: Optional[dict] = None
+        self.last_emergency_audio: Optional[np.ndarray] = None
+        self._gate_fired_at: Optional[float] = None
+        self._gate_score: Optional[float] = None
         # 호출 판정 관문 (2026-10-07, 호출 반응표). 켜져 있으면 "비카야" 자유 창의 말은
         # 미션의 판정을 받아야 나간다 — 창은 지금처럼 호출 즉시 열어 "비카야 화장실 가자"
         # 한 호흡을 살리고, 판정 전에 나온 말은 쥐고 있다가 listen 이면 내보내고 ignore·
@@ -704,7 +823,7 @@ class WakewordMonitor:
             return None
 
         scores = self._predict(frame)
-        fire_b = self.gate_b.feed(float(scores["b"]), now)
+        fire_b = self._feed_emergency(float(scores["b"]), now)
 
         if self._state == "postroll":
             self._collect.append(frame)
@@ -715,6 +834,7 @@ class WakewordMonitor:
         if self._state == "listen":
             # 청취 중에도 긴급이 절대 우선 (명세 11절)
             if fire_b:
+                self._note_gate(now, float(scores["b"]))
                 self._enter_postroll(from_listen=True)
                 return None
             # 창 안 호출 관찰: **창을 새로 열지 않는다.** 열면 이어지는 말이
@@ -729,6 +849,7 @@ class WakewordMonitor:
 
         # idle
         if fire_b:
+            self._note_gate(now, float(scores["b"]))
             self._enter_postroll()
             return None
         if self._feed_wake(float(scores["a"]), now):
@@ -888,10 +1009,57 @@ class WakewordMonitor:
         self._reset_wake_episode()   # 긴급 소리 뒤에 '놓침' 기록이 따라 찍히지 않게
         self._postroll_from_listen = from_listen
 
+    def _feed_emergency(self, score: float, now: float) -> bool:
+        """긴급 관문에 점수를 넣고 발동이면 True — 판정은 gate_b 그대로다.
+
+        EMERGENCY_NEAR_MISS_FLOOR 를 넘은 소리 덩어리를 하나로 묶어, 발동 없이 끝나면 최고 점수·문턱 넘은 조각 수·
+        쿨다운으로 막혔는지를 알린다(기록일 뿐, 실패해도 감시는 계속 간다).
+        """
+        fired = self.gate_b.feed(score, now)
+        if score >= EMERGENCY_NEAR_MISS_FLOOR or fired:
+            if not self._em_episode:
+                self._em_episode, self._em_started_at = True, now
+                self._em_peak, self._em_over, self._em_blocked, self._em_fired = 0.0, 0, False, False
+            self._em_peak = max(self._em_peak, score)
+            self._em_over += score >= self.gate_b.threshold
+            self._em_blocked = self._em_blocked or self.gate_b.cooldown_blocked
+            self._em_fired = self._em_fired or fired
+        elif self._em_episode:
+            self._em_episode = False
+            if not self._em_fired:
+                info = {
+                    "result": "near", "peak": self._em_peak, "frames_over": self._em_over,
+                    "cooldown": self._em_blocked,
+                    "after_fire": (None if self._gate_fired_at is None
+                                   else self._em_started_at - self._gate_fired_at),
+                    "audio": np.concatenate([*self._ring]) if self._ring else np.zeros(0, np.int16),
+                }
+                try:
+                    self._on_emergency_score(info)
+                except Exception:
+                    pass
+        return fired
+
+    def _note_gate(self, now: float, score: float) -> None:
+        """긴급 관문이 발동한 프레임 시각·점수를 적어 둔다(기록용, 판정과 무관)."""
+        self._gate_fired_at = now
+        self._gate_score = score
+
     def _verify_emergency(self, now: float) -> str:
         audio = np.concatenate([*self._ring])   # 직전 ~2.5초 + 말끝
+        self.last_emergency_audio = audio       # 노드가 판정 기록과 함께 파일로 남긴다(2026-10-12)
+        stt_started = time.monotonic()
         text = self._transcribe(audio)
+        stt_sec = time.monotonic() - stt_started
         from_listen = self._postroll_from_listen
+        self.last_emergency_check = {
+            "score": self._gate_score,
+            "postroll": None if self._gate_fired_at is None else now - self._gate_fired_at,
+            "stt": stt_sec,
+            "where": "listen" if from_listen else "idle",
+            "text": text,
+            "result": "",
+        }
         self._postroll_from_listen = False
         self._state = "idle"
         self._collect = []
@@ -906,6 +1074,9 @@ class WakewordMonitor:
                 self._collect = (self._saved_listen or []) + self._collect
                 self._saved_listen = None
                 self._state = "listen"
+                # 예전엔 기록 없이 이어 들었다 — "잠깐 멈춰" 무정지를 가릴 수 없었다(2026-10-12).
+                self.last_emergency_check["result"] = "listen_resumed"
+                self._on_reject(text)
                 return "listen_resumed"
             text = text.strip()
             # 창 밖 오발동이라도 질문의 답을 기다리는 중(followup 예약)이면
@@ -916,16 +1087,20 @@ class WakewordMonitor:
                     and now - self._followup_armed_at
                     <= FOLLOWUP_ARM_TIMEOUT_SEC):
                 self._followup_armed = False
+                self.last_emergency_check["result"] = "followup_answer"
+                self._on_reject(text)
                 self.last_listen_stats = capture_stats(audio)
                 self._on_listen_state("closed")
                 self._on_user_text(text)
                 return "user_text"
+            self.last_emergency_check["result"] = "reject"
             self._on_reject(text)
             return "reject"
         if from_listen:
             self._saved_listen = None
             self._on_listen_state("empty")   # 청취는 긴급에 선점돼 폐기됐다
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
+        self.last_emergency_check["result"] = "emergency"
         self._on_emergency(event)
         return "emergency"
 
@@ -1115,17 +1290,21 @@ class WakewordMonitor:
             from . import stt  # noqa: F401
             from faster_whisper import WhisperModel
 
-            size = os.environ.get("VICA_VERIFY_STT_MODEL", "medium")
+            listen_name, verify_name = ear_stt_model_names()
             device = os.environ.get("VICA_STT_DEVICE", "cpu")
             compute = os.environ.get("VICA_STT_COMPUTE",
                                      "float16" if device == "cuda" else "int8")
-            wm = WhisperModel(size, device=device, compute_type=compute)
+            wm = WhisperModel(listen_name, device=device, compute_type=compute)
+            # 긴급 확인 전용(2026-10-12) — 실측 small 0.49 s vs turbo 1.50 s, 저장된 "멈춰" 18/18 같음,
+            # 현장 대화 182개 헛 긴급 0. 대화 받아쓰기는 turbo 그대로(small 은 대화 글자가 40 %만 같았다).
+            wm_verify = (wm if verify_name == listen_name
+                         else WhisperModel(verify_name, device=device, compute_type=compute))
 
             def _transcribe(audio: np.ndarray) -> str:
                 # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
                 # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5)
+                segs, _ = wm_verify.transcribe(audio.astype(np.float32) / 32768.0,
+                                               language="ko", beam_size=5)
                 return "".join(s.text for s in segs).strip()
 
             # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를

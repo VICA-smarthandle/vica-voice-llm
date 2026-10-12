@@ -145,7 +145,7 @@ def test_emergency_still_wins_inside_followup_listen():
     m.set_muted(True, now=0.1)
     m.set_muted(False, now=1.0)
 
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.0)
     assert results[-1] == "emergency"
     assert len(events) == 1 and events[0].keyword == "멈춰"
     assert texts == []            # 답변 발화로 처리되지 않았다

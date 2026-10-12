@@ -244,7 +244,7 @@ def test_emergency_still_fires_while_robot_says_wake_word():
                         predict=fake.predict, transcribe=fake.transcribe)
     m.note_robot_speech("'비카야'라고 불러주세요.", now=0.0)
     m.set_speaking(True, now=0.0)
-    out = _feed(m, [(LOUD, None)] * (2 + POST_ROLL_FRAMES), 0.1)
+    out = _feed(m, [(LOUD, None)] * (1 + POST_ROLL_FRAMES), 0.1)
     assert out[-1][1] == "emergency"
     assert len(events) == 1
 
