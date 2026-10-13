@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>비카 마이크 점검</title>
+<style>
+/* 휴대폰 한 줄 화면. 계측기 느낌: 눈금·기준선·최근 최고값. 외부 글꼴·라이브러리 없음(시연장 인터넷 없이도) */
+:root {
+  --bg: #E9EDF0; --panel: #FFFFFF; --ink: #16212B; --muted: #5B6975; --line: #D3DAE0; --track: #E3E8EC;
+  --rms: #12807F; --wake: #2C63C9; --stop: #B23A78; --pass: #1D8650; --warn: #B98100; --fail: #C23C2A;
+  --idle: #9AA5AE; --btn: #16212B; --on-btn: #FFFFFF;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0D1318; --panel: #151E25; --ink: #E3E9ED; --muted: #93A1AC; --line: #26313A; --track: #222C34;
+    --rms: #47C4C2; --wake: #7DA6F2; --stop: #E57BB3; --pass: #4CC98A; --warn: #F0BE4A; --fail: #F0745F;
+    --idle: #5E6B75; --btn: #E3E9ED; --on-btn: #10171D;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+main { max-width: 440px; margin: 0 auto; padding: 12px 12px calc(56px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 12px; }
+section, header.top { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: grid; gap: 10px; min-width: 0; }
+h2 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+button { font: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--wake); outline-offset: 2px; }
+.name { font-weight: 700; font-size: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; font-weight: 600; border-radius: 99px; padding: 1px 9px; border: 1px solid currentColor; white-space: nowrap; color: var(--muted); }
+.chip.ok { color: var(--pass); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--fail); }
+.chip.robot { color: var(--warn); } .chip.vad.on { color: var(--pass); }
+.prep { font-size: 13px; color: var(--warn); }
+.row1 { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.row1 b { color: var(--ink); }
+.say { font-size: 22px; font-weight: 700; line-height: 1.35; }
+.rep { font-family: var(--mono); }
+.bigbtn { font-weight: 600; font-size: 16px; background: var(--btn); color: var(--on-btn); border: 0; border-radius: 12px; padding: 13px; width: 100%; cursor: pointer; }
+.ghost { flex: 1; font-weight: 600; font-size: 14px; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.mini { font-size: 12px; padding: 2px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.bigbtn:disabled, .ghost:disabled { opacity: .45; cursor: not-allowed; }
+.recbar { height: 10px; border-radius: 99px; background: var(--track); overflow: hidden; }
+.recbar i { display: block; height: 100%; background: var(--fail); }
+.recbar i.robot { background: var(--warn); }
+.rectext { font-size: 13px; display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+.rectext .dot { color: var(--fail); font-weight: 700; }
+.mhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meter { display: grid; gap: 4px; }
+.mlabel { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.val { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.state { font-size: 12px; font-weight: 600; }
+.bar { position: relative; height: 22px; background: var(--track); border-radius: 6px; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 6px; background: var(--idle); }
+.bar .band { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: repeating-linear-gradient(135deg, var(--ink) 0 1.5px, transparent 1.5px 5px); opacity: .28; border-radius: 6px 0 0 6px; }
+.bar .peak { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); left: 0; }
+.bar .th { position: absolute; top: -5px; bottom: -5px; width: 0; border-left: 2px solid var(--ink); }
+.bar .th.dash { border-left-style: dashed; opacity: .8; }
+.ticks { position: relative; height: 16px; font: 11px/16px var(--mono); color: var(--muted); }
+.ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.ticks .edge-l { transform: none; } .ticks .edge-r { transform: translateX(-100%); }
+.ticks .th-l { color: var(--ink); font-weight: 600; }
+.noise { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; }
+.noise .why { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+canvas { display: block; width: 100%; height: 190px; }
+.events { display: grid; gap: 6px; }
+.ev { display: grid; grid-template-columns: 6px 1fr auto; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.ev .stripe { border-radius: 3px; background: var(--idle); }
+.ev.pass .stripe { background: var(--pass); } .ev.fail .stripe { background: var(--fail); }
+.ev .t { font-weight: 700; font-size: 14px; } .ev .s { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.ev time { font: 12px var(--mono); color: var(--muted); }
+.empty { font-size: 13px; color: var(--muted); }
+.prow { display: grid; grid-template-columns: 7em 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.dots i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--idle); }
+.dots i.pass { background: var(--pass); border-color: var(--pass); } .dots i.fail { background: var(--fail); border-color: var(--fail); }
+.pnote { font: 12px var(--mono); color: var(--muted); }
+.rrow { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 2px; }
+.rrow .top { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 14px; }
+.rrow .txt { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.rrow .todo { font-size: 12px; color: var(--ink); }
+.rrow .was { font-size: 11px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 3px; }
+#rows { display: grid; gap: 6px; }
+.g { font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 8px; border: 1px solid currentColor; white-space: nowrap; }
+.g-pass { color: var(--pass); } .g-warn { color: var(--warn); } .g-fail { color: var(--fail); } .g-redo, .g-wait { color: var(--idle); }
+.hint { font-size: 12px; color: var(--warn); }
+.ctl { display: grid; gap: 4px; padding-block: 8px; border-bottom: 1px solid var(--line); }
+.ctl:last-child { border-bottom: 0; }
+.ctl .row { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; font-weight: 600; }
+.ctl .v { font-family: var(--mono); }
+.ctl .chg { font-size: 11px; color: var(--warn); }
+.ctl input[type="range"] { width: 100%; accent-color: var(--wake); }
+.ctl .h { font-size: 12px; color: var(--muted); }
+.ctl .env { font: 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.ctl .w, .err { font-size: 12px; color: var(--fail); font-weight: 600; }
+.seg { display: flex; gap: 4px; }
+.seg button { flex: 1; font-weight: 600; font-size: 13px; padding: 7px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--btn); color: var(--on-btn); border-color: var(--btn); }
+.btns { display: grid; gap: 8px; } .btnrow { display: flex; gap: 8px; }
+.sheet { border: 2px solid var(--ink); border-radius: 14px; padding: 12px; display: grid; gap: 8px; }
+.sheet .t { font-weight: 700; } .sheet .s { font-size: 12px; color: var(--muted); }
+.sheet pre { margin: 0; font: 11.5px/1.6 var(--mono); background: var(--track); border-radius: 8px; padding: 8px; overflow-x: auto; }
+ol.wrap { margin: 0; padding-left: 1.3em; font-size: 14px; display: grid; gap: 4px; }
+.toast { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); max-width: 416px; margin: 0 auto; background: var(--ink); color: var(--panel); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.busy { position: fixed; top: calc(8px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); background: var(--warn); color: #10171D; border-radius: 99px; padding: 4px 14px; font-weight: 700; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="name">마이크 점검 · <span id="place">…</span></div>
+    <div class="chips"><span class="chip ok">⑫·⑬ 꺼짐</span><span class="chip" id="chipEnv">칩 확인 중</span><span class="chip bad" id="chipConn">연결 중</span></div>
+    <div class="prep" id="prep" hidden></div>
+    <div class="err" id="chipWarn" hidden></div>
+  </header>
+
+  <section aria-live="polite">
+    <div class="row1"><span><b id="stepNo">단계 – / 7</b> · <span id="stepName">준비</span></span><span class="rep" id="stepRep"></span></div>
+    <div class="say" id="stepSay">젯슨이 준비하는 중입니다</div>
+    <div id="stepAction"></div>
+  </section>
+
+  <section>
+    <div class="mhead"><h2>실시간 · 지금 값으로 통과하는지</h2>
+      <span class="chips"><span class="chip robot" id="robotChip" hidden>로봇 말하는 중 · 멈춰 0.35</span><span class="chip" id="mutedChip" hidden>마이크 닫힘</span><span class="chip vad" id="vadChip">칩 사람 말</span></span></div>
+    <div class="meter">
+      <div class="mlabel"><span>소리 크기</span><span><span class="state" id="rmsState">–</span> · <span class="val" id="rmsVal">–</span></span></div>
+      <div class="bar" id="rmsBar"><div class="fill"></div><div class="band"></div><div class="th" id="rmsL1"></div><div class="th" id="rmsL2"></div><div class="peak"></div></div>
+      <div class="ticks"><span class="edge-l" style="left:0">0.001</span><span class="th-l" id="rmsT1"></span><span class="th-l" id="rmsT2"></span><span style="left:66.7%">0.1</span><span class="edge-r" style="left:100%">1</span></div>
+    </div>
+    <div class="noise"><span>잡음 바닥</span><span class="val" id="noiseVal">재는 중</span><span class="chip" id="noiseChip">10초 모으는 중</span><span class="why">사람·로봇이 말하지 않을 때 최근 10초 소리의 상위 10 %</span></div>
+    <div class="meter">
+      <div class="mlabel"><span>“비카야”</span><span><span class="state" id="wakeState">–</span> · <span class="val" id="wakeVal">–</span></span></div>
+      <div class="bar" id="wakeBar"><div class="fill"></div><div class="th" id="wakeL"></div><div class="peak"></div></div>
+      <div class="ticks"><span class="edge-l" style="left:0">0</span><span class="th-l" id="wakeT"></span><span class="edge-r" style="left:100%">1</span></div>
+    </div>
+    <div class="meter">
+      <div class="mlabel"><span>“멈춰”</span><span><span class="state" id="stopState">–</span> · <span class="val" id="stopVal">–</span></span></div>
+      <div class="bar" id="stopBar"><div class="fill"></div><div class="th" id="stopL"></div><div class="th dash" id="stopSpkL" hidden></div><div class="peak"></div></div>
+      <div class="ticks"><span class="edge-l" style="left:0">0</span><span id="stopSpkT" hidden></span><span class="th-l" id="stopT"></span><span class="edge-r" style="left:100%">1</span></div>
+    </div>
+  </section>
+
+  <section><h2>최근 10초</h2><canvas id="graph" aria-label="최근 10초 흐름 그래프"></canvas></section>
+  <section><h2>판정 (실시간, ⑫와 같은 귀)</h2><div class="events" id="events"></div></section>
+  <section><h2>진행</h2><div id="progress"></div></section>
+  <section>
+    <div class="mhead"><h2>결과표 (녹음 재채점)</h2><span class="chip" id="verdict">점검 중</span></div>
+    <div id="rows"></div>
+    <div class="hint" id="staleHint" hidden>값이 바뀌었습니다. <b>다시 채점</b>을 누르면 남긴 녹음으로 다시 봅니다.</div>
+  </section>
+  <section>
+    <h2>값 고치기</h2>
+    <div id="controls"></div>
+    <div class="err" id="ctlErr" hidden></div>
+    <div class="btns">
+      <button class="bigbtn" type="button" id="rejudgeBtn">다시 채점</button>
+      <div class="btnrow"><button type="button" class="ghost" id="saveBtn">저장…</button><button type="button" class="ghost" id="restoreBtn">원래대로</button></div>
+    </div>
+    <div class="sheet" id="sheet" hidden>
+      <div class="t">.env에 이렇게 씁니다</div><div id="sheetBody"></div><div class="s" id="sheetNote"></div>
+      <div class="btnrow"><button type="button" class="ghost" id="cancelSave">취소</button><button type="button" class="bigbtn" id="confirmSave">확인하고 저장</button></div>
+    </div>
+    <div class="sheet" id="restoreSheet" hidden>
+      <div class="t">.env 를 가장 최근 백업으로 되돌릴까요?</div><div class="s">마이크 값 7개만 가장 최근 백업(마지막 저장 직전)으로 되돌립니다. 지도·목적지 같은 다른 줄은 그대로입니다. 지금 .env 는 .before-restore 로 남깁니다. ⑫를 다시 켜야 적용됩니다.</div>
+      <div class="btnrow"><button type="button" class="ghost" id="cancelRestore">취소</button><button type="button" class="bigbtn" id="confirmRestore">되돌리기</button></div>
+    </div>
+  </section>
+  <section id="wrapup">
+    <h2>마무리</h2>
+    <ol class="wrap">
+      <li><b>점검 끝내기</b>를 누르면 칩을 .env 값으로 되돌리고 도구가 끝납니다.</li>
+      <li>⑫를 켜고 시작 로그의 수음 최소·짧은 답 최소·AGC·에코 값을 확인합니다.</li>
+      <li>시연 대화를 한 번 해 봅니다: “비카야” → 목적지 → 확인 질문에 “네”.</li>
+      <li>값을 저장했다면 시연이 끝난 뒤 <b>원래대로</b>(또는 --restore)를 잊지 마세요.</li>
+    </ol>
+    <button type="button" class="ghost" id="finishBtn">점검 끝내기</button>
+    <div class="sheet" id="finishSheet" hidden>
+      <div class="t">점검을 끝낼까요?</div><div class="s">기록은 젯슨의 ~/vica_data/mic_checks 에 남습니다.</div>
+      <div class="btnrow"><button type="button" class="ghost" id="cancelFinish">취소</button><button type="button" class="bigbtn" id="confirmFinish">끝내기</button></div>
+    </div>
+  </section>
+</main>
+<div class="busy" id="busy" hidden></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const logPos = (v) => Math.max(0, Math.min(1, (Math.log10(Math.max(v, 1e-4)) + 3) / 3));
+  const linPos = (v) => Math.max(0, Math.min(1, v));
+  const GN = { pass: "합격", warn: "주의", fail: "불합격", redo: "다시 녹음", wait: "점검 중" };
+  const SPEAKING_STOP = 0.35, HIST = 125;
+  const CTL = ["listen_min_rms", "short_answer_min_rms", "wake_threshold", "emergency_single"];
+  const HINT = {
+    listen_min_rms: "올리면 잡음을 덜 받고, 작은 목소리를 놓칩니다.",
+    short_answer_min_rms: "낮추면 작은 “네”도 받고, 잡음도 받습니다.",
+    wake_threshold: "낮추면 잘 걸리고, 엉뚱한 말에도 걸립니다.",
+    emergency_single: "낮추면 잘 걸리고, 오발동이 늘어납니다.",
+    agc: "칩이 소리를 바꾸므로, 바꾸면 2~6단계를 다시 녹음합니다.",
+    echo: "약하게 하면 로봇이 자기 말에 반응할 수 있습니다. 바꾸면 6단계를 다시 합니다.",
+  };
+  let S = null, R = null, local = null, dragging = null, ws = null, last = null, built = false, toastTimer = null;
+  const hist = [], events = [];
+  const peaks = { rms: { v: 0, t: 0 }, wake: { v: 0, t: 0 }, stop: { v: 0, t: 0 } };
+
+  const cur = () => Object.assign({}, S ? S.values : {}, local || {});
+  const fmtTh = (v) => (v < 0.1 ? v.toFixed(4).replace(/0$/, "") : v.toFixed(2));
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const diff = (a, b) => (typeof a === "number" ? Math.abs(a - b) > 1e-9 : a !== b);
+
+  // ---- 연결
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => setConn(true);
+    ws.onclose = () => { setConn(false); setTimeout(connect, 1000); };
+    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onMessage(m); };
+  }
+  function send(o) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; } return false; }
+  function sendOr(o, msg) { if (!send(o)) toast(msg); }
+  const DISC = "연결이 끊겨 보내지 못했습니다. 다시 붙은 뒤 누르세요.";
+  const DISC_SET = "연결이 끊겨 값을 보내지 못했습니다. 다시 붙은 뒤 바꾸세요.";
+  function setConn(ok) {
+    const c = $("chipConn");
+    c.textContent = ok ? "연결됨" : "연결 끊김 — 다시 붙는 중";
+    c.className = "chip " + (ok ? "ok" : "bad");
+  }
+  function onMessage(m) {
+    if (m.type === "prep") { $("prep").hidden = false; $("prep").textContent = m.text; }
+    else if (m.type === "status") { S = m; $("prep").hidden = true; if (!dragging) local = null; renderStatus(); }
+    else if (m.type === "frame") onFrame(m);
+    else if (m.type === "event") {
+      events.unshift(m); if (events.length > 6) events.length = 6;
+      if (hist.length) hist[hist.length - 1].mark = m.grade;
+      renderEvents();
+    }
+    else if (m.type === "results") { R = m; renderResults(); }
+    else if (m.type === "toast") {
+      toast(m.text);
+      // 거절된 set 은 status 를 안 보냄 → 드래그 값 되돌림 (받아들여졌으면 status 가 이미 local 을 비움)
+      if (!dragging && local) { local = null; syncControls(); placeLines(); }
+    }
+    else if (m.type === "save_preview") showSave(m);
+    else if (m.type === "busy") { $("busy").hidden = !m.text; $("busy").textContent = m.text || ""; }
+  }
+
+  // ---- 상태
+  function renderStatus() {
+    $("place").textContent = S.place;
+    const env = $("chipEnv");
+    env.textContent = S.chip_ok ? "칩 = .env" : "칩 쓰기 문제";
+    env.className = "chip " + (S.chip_ok ? "ok" : "bad");
+    env.title = (S.chip_problems || []).join("\n");
+    const warn = $("chipWarn");
+    warn.hidden = S.chip_ok;
+    warn.textContent = S.chip_ok ? "" : "칩에 .env 값을 쓰지 못해 점검을 시작할 수 없습니다: " + (S.chip_problems || []).join("; ") + " — 도구를 다시 실행하세요.";
+    const st = S.step;
+    $("stepNo").textContent = `단계 ${st.no} / ${st.of}`;
+    $("stepName").textContent = st.name;
+    $("stepRep").textContent = st.reps ? `${st.rep} / ${st.reps}회` : "";
+    $("stepSay").textContent = st.say;
+    renderAction(null);
+    placeLines();
+    renderProgress();
+    syncControls();
+  }
+  function renderAction(f) {
+    if (!S) return;
+    const st = S.step, box = $("stepAction");
+    let html;
+    if (!S.chip_ok) {
+      html = `<div class="err">칩 쓰기 문제 — 위 빨간 글을 보고 도구를 다시 실행하세요.</div>`;
+    } else if (f && f.rec_left != null) {
+      const frac = Math.max(0, Math.min(1, 1 - f.rec_left / st.seconds));
+      html = `<div class="rectext"><span class="dot">● 녹음 중 · 지금 말하세요</span><span>${f.rec_left.toFixed(1)}초 남음</span></div><div class="recbar"><i style="width:${(frac * 100).toFixed(0)}%"></i></div>`;
+    } else if (st.robot) {
+      html = `<div class="rectext"><span>로봇이 멘트를 말하는 중입니다. 조용히 계세요.</span></div><div class="recbar"><i class="robot" style="width:100%"></i></div>`;
+    } else if (st.key === "robot") {
+      html = `<button class="bigbtn" type="button" data-cmd="robot">로봇 말하기 시작 (30초)</button>`;
+    } else if (st.key === "result") {
+      html = `<div class="rectext"><span>결과표와 값 고치기는 아래에 있습니다.</span></div>`;
+    } else {
+      html = `<button class="bigbtn" type="button" data-cmd="record">녹음 시작 (${st.seconds}초)</button>`;
+    }
+    if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+  }
+
+  // ---- 조각
+  function paint(id, v, peak, pos, color) {
+    const bar = $(id);
+    bar.querySelector(".fill").style.width = (pos(v) * 100) + "%";
+    bar.querySelector(".fill").style.background = color;
+    bar.querySelector(".peak").style.left = `calc(${pos(peak) * 100}% - 1px)`;
+  }
+  function setState(id, over) {
+    const e = $(id);
+    e.textContent = over ? "넘음" : "아래";
+    e.style.color = over ? "var(--pass)" : "var(--muted)";
+  }
+  function onFrame(f) {
+    if (!S) return;
+    const now = performance.now() / 1000;
+    hist.push(f); if (hist.length > HIST) hist.shift();
+    for (const [k, v] of [["rms", f.rms], ["wake", f.wake], ["stop", f.stop]]) {
+      const p = peaks[k];
+      if (v >= p.v || now - p.t > 1.5) { p.v = v; p.t = now; }
+    }
+    last = f;
+    const v = cur();
+    let rc = "var(--idle)", rs = "잡음으로 버림";
+    if (f.rms >= v.short_answer_min_rms) { rc = "var(--pass)"; rs = "짧은 답도 받음"; }
+    else if (f.rms >= v.listen_min_rms) { rc = "var(--warn)"; rs = "긴 말만 받음"; }
+    paint("rmsBar", f.rms, peaks.rms.v, logPos, rc);
+    $("rmsVal").textContent = f.rms.toFixed(4);
+    $("rmsState").textContent = rs; $("rmsState").style.color = rc;
+    $("rmsBar").querySelector(".band").style.width = f.noise == null ? "0" : (logPos(f.noise) * 100) + "%";
+    if (f.noise == null) {
+      $("noiseVal").textContent = "재는 중"; $("noiseChip").textContent = "10초 모으는 중"; $("noiseChip").className = "chip";
+    } else {
+      const r = v.listen_min_rms / f.noise;
+      $("noiseVal").textContent = f.noise.toFixed(4);
+      $("noiseChip").textContent = `수음 최소까지 ${r.toFixed(1)}배`;
+      $("noiseChip").className = "chip " + (r >= 2 ? "ok" : r >= 1.3 ? "warn" : "bad");
+    }
+    paint("wakeBar", f.wake, peaks.wake.v, linPos, f.wake >= v.wake_threshold ? "var(--pass)" : "var(--wake)");
+    $("wakeVal").textContent = f.wake.toFixed(2);
+    setState("wakeState", peaks.wake.v >= v.wake_threshold);
+    const over = (x) => x >= v.emergency_single || (f.robot && x >= SPEAKING_STOP);
+    paint("stopBar", f.stop, peaks.stop.v, linPos, over(f.stop) ? "var(--pass)" : "var(--stop)");
+    $("stopVal").textContent = f.stop.toFixed(2);
+    setState("stopState", over(peaks.stop.v));
+    $("stopSpkL").hidden = !f.robot; $("stopSpkT").hidden = !f.robot;
+    $("robotChip").hidden = !f.robot;
+    $("mutedChip").hidden = !f.muted;
+    $("vadChip").classList.toggle("on", !!f.vad);
+    $("busy").hidden = !f.busy; $("busy").textContent = f.busy || "";
+    renderAction(f);
+    drawGraph();
+  }
+  function placeLines() {
+    const v = cur();
+    if (v.listen_min_rms == null) return;
+    const set = (id, p) => { $(id).style.left = (p * 100) + "%"; };
+    const lab = (id, p, t) => { const e = $(id); e.style.left = (p * 100) + "%"; e.textContent = t; };
+    set("rmsL1", logPos(v.listen_min_rms)); set("rmsL2", logPos(v.short_answer_min_rms));
+    lab("rmsT1", logPos(v.listen_min_rms), fmtTh(v.listen_min_rms));
+    lab("rmsT2", logPos(v.short_answer_min_rms), fmtTh(v.short_answer_min_rms));
+    set("wakeL", linPos(v.wake_threshold)); lab("wakeT", linPos(v.wake_threshold), v.wake_threshold.toFixed(2));
+    set("stopL", linPos(v.emergency_single)); lab("stopT", linPos(v.emergency_single), v.emergency_single.toFixed(2));
+    set("stopSpkL", linPos(SPEAKING_STOP)); lab("stopSpkT", linPos(SPEAKING_STOP), "0.35");
+  }
+
+  // ---- 그래프: 세 줄(소리·비카야·멈춰), 기준선 점선, 잡음 빗금, 로봇 말한 구간, 판정 표시
+  const cv = $("graph"), ctx = cv.getContext("2d");
+  function drawGraph() {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const v = cur();
+    if (v.listen_min_rms == null) return;
+    const padL = 48, padB = 14, gap = 6, laneH = (h - padB - gap * 2) / 3, plotW = w - padL - 2;
+    const lanes = [
+      { name: "소리", color: css("--rms"), key: "rms", pos: logPos, ths: [v.listen_min_rms, v.short_answer_min_rms] },
+      { name: "비카야", color: css("--wake"), key: "wake", pos: linPos, ths: [v.wake_threshold] },
+      { name: "멈춰", color: css("--stop"), key: "stop", pos: linPos, ths: [v.emergency_single] },
+    ];
+    const ink = css("--ink"), muted = css("--muted"), track = css("--track"), warn = css("--warn");
+    const off = HIST - hist.length, step = plotW / (HIST - 1);
+    const xAt = (i) => padL + step * i;
+    ctx.font = "11px " + css("--mono");
+    lanes.forEach((ln, li) => {
+      const top = li * (laneH + gap), bot = top + laneH;
+      ctx.fillStyle = track; ctx.fillRect(padL, top, plotW, laneH);
+      ctx.fillStyle = ink; ctx.textBaseline = "middle"; ctx.textAlign = "left"; ctx.fillText(ln.name, 0, top + laneH / 2);
+      hist.forEach((f, i) => {
+        if (!f.robot) return;
+        ctx.fillStyle = warn; ctx.globalAlpha = 0.12; ctx.fillRect(xAt(i + off) - step / 2, top, step + 0.5, laneH); ctx.globalAlpha = 1;
+      });
+      if (ln.key === "rms" && last && last.noise != null) {
+        const ny = bot - ln.pos(last.noise) * laneH;
+        ctx.save(); ctx.beginPath(); ctx.rect(padL, ny, plotW, bot - ny); ctx.clip();
+        ctx.strokeStyle = ink; ctx.globalAlpha = 0.22; ctx.lineWidth = 1;
+        for (let x = padL - laneH; x < w; x += 6) { ctx.beginPath(); ctx.moveTo(x, bot); ctx.lineTo(x + laneH, bot - laneH); ctx.stroke(); }
+        ctx.restore();
+      }
+      ln.ths.forEach((th) => {
+        const y = bot - ln.pos(th) * laneH;
+        ctx.strokeStyle = ink; ctx.globalAlpha = 0.55; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w, y); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+      });
+      if (hist.length > 1) {
+        const path = () => { ctx.beginPath(); hist.forEach((f, i) => { const x = xAt(i + off), y = bot - ln.pos(f[ln.key]) * laneH; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); };
+        path(); ctx.lineTo(xAt(HIST - 1), bot); ctx.lineTo(xAt(off), bot); ctx.closePath();
+        ctx.fillStyle = ln.color; ctx.globalAlpha = 0.18; ctx.fill(); ctx.globalAlpha = 1;
+        path(); ctx.strokeStyle = ln.color; ctx.lineWidth = 1.6; ctx.stroke();
+      }
+    });
+    hist.forEach((f, i) => {
+      if (!f.mark || f.mark === "info") return;
+      ctx.strokeStyle = css(f.mark === "pass" ? "--pass" : "--fail"); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(xAt(i + off), 0); ctx.lineTo(xAt(i + off), h - padB); ctx.stroke();
+    });
+    ctx.fillStyle = muted; ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left"; ctx.fillText("−10초", padL, h - 2);
+    ctx.textAlign = "right"; ctx.fillText("지금", w - 2, h - 2);
+  }
+
+  // ---- 판정·진행·결과표
+  function renderEvents() {
+    $("events").innerHTML = events.length
+      ? events.map((e) => `<div class="ev ${esc(e.grade)}"><span class="stripe"></span><div><div class="t">${esc(e.title)}</div><div class="s">${esc(e.detail || "")}</div></div><time>${esc(e.time || "")}</time></div>`).join("")
+      : `<div class="empty">아직 판정이 없습니다. 말하면 여기에 쌓입니다.</div>`;
+  }
+  function renderProgress() {
+    const P = S.progress || {};
+    let html = (S.steps || []).map((s) => {
+      const got = P[s.key] || [];
+      let dots = "";
+      for (let i = 0; i < Math.max(s.need, got.length); i++) dots += `<i class="${got[i] || ""}"></i>`;
+      const redo = got.length ? `<button type="button" class="mini" data-cmd="redo" data-step="${s.key}">다시</button>` : "<span></span>";
+      return `<div class="prow"><span>${esc(s.name)}</span><span class="dots">${dots}</span>${redo}</div>`;
+    }).join("");
+    if (S.noise_at_check != null) {
+      html += `<div class="pnote">잡음: 점검 때 ${S.noise_at_check.toFixed(4)}${last && last.noise != null ? " · 지금 " + last.noise.toFixed(4) : ""}</div>`;
+    }
+    $("progress").innerHTML = html;
+  }
+  function renderResults() {
+    if (!R) return;
+    const vd = $("verdict");
+    vd.textContent = R.title; vd.className = "chip g-" + R.overall;
+    const first = {};
+    (R.first || []).forEach((r) => { first[r.key] = r; });
+    $("rows").innerHTML = R.rows.map((r) => {
+      const f = first[r.key];
+      const was = f && (f.grade !== r.grade || f.detail !== r.detail) ? `<div class="was">처음 값: ${GN[f.grade]} · ${esc(f.detail)}</div>` : "";
+      const todo = r.todo ? `<div class="todo">${esc(r.todo)}</div>` : "";
+      return `<div class="rrow"><div class="top"><span>${esc(r.name)}</span><span class="g g-${r.grade}">${GN[r.grade]}</span></div><div class="txt">${esc(r.detail)}</div>${todo}${was}</div>`;
+    }).join("");
+    $("staleHint").hidden = !R.stale;
+  }
+
+  // ---- 값 고치기
+  function seg(k, opts) {
+    return `<div class="ctl"><div class="row"><span id="lbl-${k}">${esc(S.names[k])}</span><span><span class="chg" id="chg-${k}"></span> <span class="v" id="val-${k}"></span></span></div>
+      <div class="seg" role="group" aria-labelledby="lbl-${k}">${opts.map(([val, label]) => `<button type="button" data-k="${k}" data-v="${esc(val)}">${esc(label)}</button>`).join("")}</div>
+      <div class="h">${HINT[k]}</div><div class="env">${esc(S.env_keys[k])}</div></div>`;
+  }
+  function buildControls() {
+    let html = "";
+    CTL.forEach((k) => {
+      const [lo, hi, step] = S.ranges[k];
+      html += `<div class="ctl"><div class="row"><label for="ctl-${k}">${esc(S.names[k])}</label><span><span class="chg" id="chg-${k}"></span> <span class="v" id="val-${k}"></span></span></div>
+        <input type="range" id="ctl-${k}" min="${lo}" max="${hi}" step="${step}">
+        <div class="h">${HINT[k]}</div><div class="w" id="warn-${k}" hidden></div><div class="env">${esc(S.env_keys[k])}</div></div>`;
+    });
+    html += seg("agc", S.agc_choices.map((a) => [String(a), a.toFixed(3)]));
+    html += seg("echo", Object.entries(S.echo_choices));
+    $("controls").innerHTML = html;
+    CTL.forEach((k) => {
+      const inp = $("ctl-" + k);
+      inp.addEventListener("input", () => { dragging = k; local = Object.assign(local || {}, { [k]: parseFloat(inp.value) }); syncControls(); placeLines(); });
+      inp.addEventListener("change", () => {
+        dragging = null;
+        if (!send({ cmd: "set", key: k, value: parseFloat(inp.value) })) { local = null; syncControls(); placeLines(); toast(DISC_SET); }
+      });
+    });
+    $("controls").querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () =>
+      sendOr({ cmd: "set", key: b.dataset.k, value: b.dataset.k === "agc" ? parseFloat(b.dataset.v) : b.dataset.v }, DISC_SET)));
+    built = true;
+  }
+  function syncControls() {
+    if (!S) return;
+    if (!built) buildControls();
+    const v = cur(), env = S.env_values;
+    CTL.forEach((k) => {
+      const inp = $("ctl-" + k), show = k.endsWith("rms") ? fmtTh : (x) => x.toFixed(2);
+      if (dragging !== k && diff(parseFloat(inp.value), v[k])) inp.value = v[k];
+      $("val-" + k).textContent = show(v[k]);
+      $("chg-" + k).textContent = diff(v[k], env[k]) ? "바뀜 · .env " + show(env[k]) : "";
+    });
+    document.querySelectorAll('.seg button[data-k="agc"]').forEach((b) => b.setAttribute("aria-pressed", String(!diff(parseFloat(b.dataset.v), v.agc))));
+    document.querySelectorAll('.seg button[data-k="echo"]').forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === v.echo)));
+    $("val-agc").textContent = v.agc.toFixed(3);
+    $("chg-agc").textContent = diff(v.agc, env.agc) ? "바뀜" : "";
+    $("val-echo").textContent = S.echo_choices[v.echo] || v.echo;
+    $("chg-echo").textContent = v.echo !== env.echo ? "바뀜" : "";
+    const w = $("warn-emergency_single");
+    w.hidden = !(v.emergency_single < 0.5 - 1e-9);
+    w.textContent = "0.50 아래입니다. 다른 말에 멈춰가 잘못 걸릴 수 있으니 결과표의 오발동 줄을 꼭 보세요.";
+    const bad = v.short_answer_min_rms < v.listen_min_rms * 1.5 - 1e-9;
+    $("ctlErr").hidden = !bad;
+    $("ctlErr").textContent = `짧은 답 최소는 수음 최소의 1.5배 이상이어야 합니다(지금 ${(v.short_answer_min_rms / v.listen_min_rms).toFixed(2)}배). 이대로는 저장할 수 없습니다.`;
+    $("saveBtn").disabled = bad;
+  }
+
+  // ---- 확인 창·안내
+  function showSave(m) {
+    const pre = document.createElement("pre");
+    pre.textContent = m.lines.join("\n");
+    $("sheetBody").replaceChildren(pre);
+    $("sheetNote").textContent = `쓰기 전에 지금 .env 를 ${m.backup_dir} 에 백업합니다. ⑫를 다시 켜야 적용됩니다.`;
+    $("sheet").hidden = false;
+  }
+  function toast(t) {
+    const el = $("toast");
+    el.textContent = t; el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
+  }
+  $("saveBtn").onclick = () => sendOr({ cmd: "save_preview" }, DISC);
+  $("cancelSave").onclick = () => { $("sheet").hidden = true; };
+  $("confirmSave").onclick = () => { $("sheet").hidden = true; sendOr({ cmd: "save" }, DISC); };
+  $("restoreBtn").onclick = () => { $("restoreSheet").hidden = false; };
+  $("cancelRestore").onclick = () => { $("restoreSheet").hidden = true; };
+  $("confirmRestore").onclick = () => { $("restoreSheet").hidden = true; sendOr({ cmd: "restore" }, DISC); };
+  $("rejudgeBtn").onclick = () => sendOr({ cmd: "rejudge" }, DISC);
+  $("finishBtn").onclick = () => { $("finishSheet").hidden = false; };
+  $("cancelFinish").onclick = () => { $("finishSheet").hidden = true; };
+  $("confirmFinish").onclick = () => {
+    $("finishSheet").hidden = true;
+    if (send({ cmd: "finish" })) toast("점검을 끝냈습니다. 젯슨 터미널의 안내를 따르세요.");
+    else toast(DISC);
+  };
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cmd]");
+    if (b) sendOr({ cmd: b.dataset.cmd, step: b.dataset.step }, DISC);
+  });
+  renderEvents();
+  connect();
+})();
+</script>
+</body>
+</html>
