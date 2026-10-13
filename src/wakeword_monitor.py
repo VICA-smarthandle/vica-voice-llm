@@ -86,6 +86,24 @@ LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
 # 목적지 같은 긴 말을 기다리는 자리라 기존 문턱 그대로다 (사용자 결정).
 SHORT_ANSWER_MIN_RMS = 0.02
 
+
+def listen_thresholds_from_env() -> tuple[float, float]:
+    """(수음 최소, 짧은 답 최소) — VICA_LISTEN_MIN_RMS·VICA_SHORT_ANSWER_MIN_RMS (2026-10-12 마이크 점검기).
+
+    줄이 없거나 이상한 값(숫자 아님·0 이하·1 이상)이면 위의 코드 기본값이다 — 그래서 `.env` 에 줄이
+    없는 지금은 동작이 그대로다. 점검기가 시연장에서 값을 고쳐 저장하면 이 줄이 생긴다.
+    """
+    def one(name: str, default: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        return value if 0.0 < value < 1.0 else default
+
+    return (one("VICA_LISTEN_MIN_RMS", LISTEN_MIN_RMS),
+            one("VICA_SHORT_ANSWER_MIN_RMS", SHORT_ANSWER_MIN_RMS))
+
 # 창 안 호출 구제 (2026-09-02) — 창이 열린 동안의 "비카야"는 음향 모델이
 # 꺼져 있어 **오직 STT 전사로만** 판별된다. 그런데 whisper 는 사전에 없는
 # 이 이름을 못 적는다: 실기 13회 전수에서 '비카야'로 적힌 것이 **0건**
@@ -397,6 +415,11 @@ class WakewordMonitor:
         cooldown_a: float = 1.5,
         cooldown_b: float = 2.0,
         single_b: object = "env",
+        listen_min_rms: Optional[float] = None,
+        short_answer_min_rms: Optional[float] = None,
+        transcribe_listen: Optional[Callable[[np.ndarray], str]] = None,
+        transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
+        on_frame: Optional[Callable[[dict], None]] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -456,10 +479,10 @@ class WakewordMonitor:
         # 대화 청취용 전사 — 신뢰도 필터(stt_guard)가 걸린 판. 긴급 검증에는
         # 필터를 걸지 않는다: 작은 외침의 조각을 지울 위험이 실측됐고(외침 10회
         # 프로토콜에서 빈 전사 기각 1건), 유령은 정확 매칭이 이미 막는다.
-        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = None
+        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = transcribe_listen
         # 질문 답변(followup) 창 전용 — 정답 후보를 귀띔(initial_prompt)한 판.
         # "그래"→'굿에이' 같은 짧은 답 오전사 대책 (2026-08-28 실측).
-        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None
+        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = transcribe_confirm
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
         self.gate_b = FrameGate(
@@ -470,6 +493,13 @@ class WakewordMonitor:
         # 쿨다운 0: 여기서는 발동이 아니라 사실 기록만 하므로 중복이 무해하다.
         self.gate_a_listen = FrameGate(gate_a, persist=2, cooldown_sec=0.0)
         self._gate_b_base = gate_b   # set_speaking 이 재생 중 완화/복원한다
+        # 청취 판정의 두 소리 문턱(2026-10-12 마이크 점검기) — 인자 > .env > 코드 기본. 점검기가 실행 중
+        # set_thresholds 로 바꾸고, ⑫ 노드는 .env 에서 읽는다(줄이 없으면 0.008·0.02 그대로).
+        env_listen, env_short = listen_thresholds_from_env()
+        self.listen_min_rms = env_listen if listen_min_rms is None else float(listen_min_rms)
+        self.short_answer_min_rms = env_short if short_answer_min_rms is None else float(short_answer_min_rms)
+        # 조각마다 점수 알림(점검기 화면용). 없으면 아무것도 하지 않는다 — ⑫ 노드는 주지 않는다.
+        self._on_frame = on_frame
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
         self._wake_peak = 0.0
         self._wake_episode = False
@@ -534,6 +564,43 @@ class WakewordMonitor:
         self._verdict_inbox: Optional[tuple[str, Optional[int]]] = None
         self._held: list[tuple[str, object]] = []    # 판정 전에 나온 ("audio"|"text", 값)
         self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
+
+    @property
+    def state(self) -> str:
+        """idle / postroll / listen — 점검기·재채점이 칩 사람 말 표시를 넣을지 정할 때 쓴다(run() 과 같은 규칙)."""
+        return self._state
+
+    def set_thresholds(self, *, wake: Optional[float] = None, emergency_single: Optional[float] = None,
+                       listen_min_rms: Optional[float] = None,
+                       short_answer_min_rms: Optional[float] = None) -> None:
+        """실행 중 문턱 바꾸기(2026-10-12 마이크 점검기). None 인 것은 그대로 둔다. ⑫ 노드는 부르지 않는다.
+
+        호출 문턱은 창 밖 관문과 창 안 관찰 관문에 함께 쓴다. 긴급은 한 조각 문턱만 바꾼다 — 두 조각 연속
+        문턱(0.5, 로봇이 말하는 동안 0.35)은 그대로다.
+        """
+        if wake is not None:
+            self.gate_a.threshold = float(wake)
+            self.gate_a_listen.threshold = float(wake)
+        if emergency_single is not None:
+            self.gate_b.single = float(emergency_single)
+        if listen_min_rms is not None:
+            self.listen_min_rms = float(listen_min_rms)
+        if short_answer_min_rms is not None:
+            self.short_answer_min_rms = float(short_answer_min_rms)
+
+    def _notify_frame(self, frame: np.ndarray, now: float, scores: Optional[dict]) -> None:
+        if self._on_frame is None:
+            return
+        try:
+            self._on_frame({
+                "rms": _frame_rms(frame),
+                "a": 0.0 if scores is None else float(scores["a"]),
+                "b": 0.0 if scores is None else float(scores["b"]),
+                "state": self._state, "speaking": self._speaking,
+                "muted": scores is None, "t": now,
+            })
+        except Exception:
+            pass   # 화면 알림이 실패해도 감시는 계속 간다
 
     # ---------------------------------------------------------------- 호출 판정
     @property
@@ -820,9 +887,11 @@ class WakewordMonitor:
         if self._is_muted(now):
             self.gate_a.reset()
             self.gate_b.reset()
+            self._notify_frame(frame, now, None)
             return None
 
         scores = self._predict(frame)
+        self._notify_frame(frame, now, scores)
         fire_b = self._feed_emergency(float(scores["b"]), now)
 
         if self._state == "postroll":
@@ -1198,8 +1267,8 @@ class WakewordMonitor:
         # 질문 창의 짧고 또렷한 소리는 버리지 않고 STT 재판을 받는다 —
         # 단 통과는 정답 어휘로만 (아래 short_rescue 판정).
         short_rescue = (short and self._listen_is_followup
-                        and rms >= SHORT_ANSWER_MIN_RMS)
-        if rms < LISTEN_MIN_RMS or (short and not short_rescue):
+                        and rms >= self.short_answer_min_rms)
+        if rms < self.listen_min_rms or (short and not short_rescue):
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(

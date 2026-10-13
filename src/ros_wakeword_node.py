@@ -205,6 +205,8 @@ class WakewordNode(Node):
         self.get_logger().info(
             f"호출 문턱 {self._monitor.gate_a.threshold:.2f} · "
             f"말 시작 기다림 {LISTEN_START_SEC:.1f}s · "
+            f"수음 최소 {self._monitor.listen_min_rms:.4f} · "
+            f"짧은 답 최소 {self._monitor.short_answer_min_rms:.4f} · "
             f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
