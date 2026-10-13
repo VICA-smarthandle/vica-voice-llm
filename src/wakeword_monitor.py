@@ -525,6 +525,7 @@ class WakewordMonitor:
         self._listen_voiced_sec = 0.0
         self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
         self._listen_heard_wake = False        # 이 창 안에서 호출 소리를 들었는가
+        self._listen_wake_rearmed = False      # 창을 연 호출의 여운이 지나갔는가(재호출을 셀 수 있나)
         self._listen_opened_at = 0.0
         self._muted_until = 0.0
         self._muted = False
@@ -910,7 +911,12 @@ class WakewordMonitor:
             # 통째로 날아간다("비카야 화장실로 가자"). 들었다는 사실만 남기고
             # 판정은 전사가 나온 뒤에 한다 (LISTEN_WAKE_RESCUE_* 참조).
             # 로봇이 '비카야'를 말하는 중이면 관찰도 하지 않는다(자기 목소리 무시).
-            if self._self_guarded(now):
+            # 창을 연 호출의 여운도 세지 않는다 — 세면 뒤에 온 짧은 말('407호'·'화장실 가자')이
+            # 전부 "비카야"로 바뀌었다(실로그 자유 창 689번 중 약 57번, 2026-10-13).
+            if not self._listen_wake_rearmed:
+                self._listen_wake_rearmed = float(scores["a"]) < WAKE_NEAR_MISS_FLOOR
+                self.gate_a_listen.reset()
+            elif self._self_guarded(now):
                 self.gate_a_listen.reset()
             elif self.gate_a_listen.feed(float(scores["a"]), now):
                 self._listen_heard_wake = True
@@ -1037,6 +1043,9 @@ class WakewordMonitor:
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
         self._listen_heard_wake = False
+        # 자유 창은 그 창을 연 "비카야"의 여운(모델이 직전 2초를 기억)이 몇 조각 남는다 — 점수가 한 번
+        # 내려가기 전에는 재호출로 세지 않는다(2026-10-13). 질문 창은 호출로 열지 않아 처음부터 센다.
+        self._listen_wake_rearmed = followup
         self.gate_a_listen.reset()
         self._reset_wake_episode()
         self.last_listen_timing = None
