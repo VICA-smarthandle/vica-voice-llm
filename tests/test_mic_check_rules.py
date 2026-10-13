@@ -14,7 +14,8 @@ def good() -> Measurements:
     return Measurements(
         noise=[0.0030, 0.0032, 0.0035],
         calls=[CallTry(True, True, 0.93, "화장실로 가자")] * 3,
-        answers=[AnswerTry("yes", True, True, 0.045, "네")] * 2 + [AnswerTry("no", True, True, 0.040, "아니요")] * 2,
+        runs=[CallTry(True, True, 0.91, "비카야 화장실로 가자")] * 2,
+        answers=[AnswerTry("yes", True, True, 0.045, "그래")] * 2 + [AnswerTry("no", True, True, 0.040, "아니")] * 2,
         stops=[StopTry(True, True, 0.86, "멈춰")] * 5,
         robot=RobotRun(0, 0.031),
         chips={k: V.chip() for k in KEYS},
@@ -50,17 +51,54 @@ def test_noise_spread_warns():
     assert r.grade == WARN and "세 번 차이" in r.detail
 
 
+GO = "화장실로 가자"
+
+
 def test_call_margin_and_miss():
     m = good()
-    m.calls = [CallTry(True, True, 0.79)] * 3
+    m.calls = [CallTry(True, True, 0.79, GO)] * 3
     assert row(m, "call").grade == WARN      # 0.79 < 0.70 + 0.1
-    m.calls = [CallTry(True, True, 0.80)] * 3
+    m.calls = [CallTry(True, True, 0.80, GO)] * 3
     assert row(m, "call").grade == PASS
-    m.calls = [CallTry(True, True, 0.9)] * 2 + [CallTry(False, False, 0.6)]
+    m.calls = [CallTry(True, True, 0.9, GO)] * 2 + [CallTry(False, False, 0.6)]
     assert row(m, "call").grade == FAIL
-    m.calls = [CallTry(True, True, 0.9)] * 2 + [CallTry(True, False, 0.9)]
+    m.calls = [CallTry(True, True, 0.9, GO)] * 2 + [CallTry(True, False, 0.9)]
     r = row(m, "call")
     assert r.grade == FAIL and "말을 못 받음" in r.detail
+
+
+def test_call_needs_the_place_in_what_was_heard():
+    """호출 뒤 받은 말에 '화장실'이 없으면 목적지가 안 간 것이다 — 이어 말하면 머리가 잘린다(10-13 call_1 '로 가자')."""
+    m = good()
+    m.calls = [CallTry(True, True, 0.9, GO)] * 2 + [CallTry(True, True, 0.95, "로 가자")]
+    r = row(m, "call")
+    assert r.grade == FAIL and "목적지" in r.detail and "로 가자" in r.detail
+    m.calls = [CallTry(True, True, 0.9, "화장 실로 가자.")] * 3     # 띄어 써도 같은 말
+    assert row(m, "call").grade == PASS
+
+
+def test_run_on_call_row_is_reference_only():
+    """이어 부르기는 지금 귀가 못 받는 것을 안다 — 참고 줄이라 '주의'까지만, 할 일은 "네?" 듣고 말하기."""
+    m = good()
+    m.runs = [CallTry(False, False, 0.61), CallTry(True, True, 0.95, "로 가자")]
+    r = row(m, "run")
+    assert r.grade == WARN and "0/2" in r.detail and "네?" in r.todo
+    assert judge(m, V).overall == WARN
+    m.runs = m.runs[:1]
+    assert row(m, "run").grade == WAIT
+    m = good()
+    assert row(m, "run").grade == PASS
+
+
+def test_run_on_call_counts_cross_trigger():
+    m = good()
+    m.runs = [CallTry(True, True, 0.9, "비카야 화장실로 가자", emergency=True)] * 2
+    assert row(m, "cross").grade == FAIL
+
+
+def test_answer_row_names_the_words_people_use():
+    """실사용 대답은 '그래' 400·'아니' 151 vs '네' 107·'아니요' 22(10-13 실로그) — 그 말로 점검한다."""
+    assert "그래" in row(good(), "answer").name and "아니" in row(good(), "answer").name
 
 
 def test_answer_margin_and_wrong_word():
@@ -131,7 +169,7 @@ def test_agc_change_needs_rerecord_echo_change_only_robot():
     agc = MicValues(0.008, 0.02, 0.70, 0.50, 0.010, 1.5, 1)
     v = judge(m, agc)
     assert {r.key: r.grade for r in v.rows} == {
-        "noise": REDO, "call": REDO, "answer": REDO, "stop": REDO, "robot": REDO, "cross": REDO}
+        "noise": REDO, "call": REDO, "run": REDO, "answer": REDO, "stop": REDO, "robot": REDO, "cross": REDO}
     assert v.overall == REDO and v.title == "다시 녹음 필요"
     echo = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.0, 1)
     v = judge(m, echo)

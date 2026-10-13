@@ -21,6 +21,8 @@ SHORT_OVER_LISTEN = 1.5        # 저장 검사: 짧은 답 최소 ≥ 수음 최
 NOISE_PERCENTILE = 0.9         # 잡음 바닥 = 조각 rms 의 상위 10 %
 
 CALL_REPS, ANSWER_REPS, STOP_REPS = 3, 4, 5
+RUN_REPS = 2                   # 3단계 끝의 '이어서 부르기' — 참고 줄(2026-10-13 사용자: 실제로는 쉬지 않고 말하기도 한다)
+PLACE_WORD = "화장실"           # 3단계 문장의 목적지 — 호출 뒤 받은 말에 이것이 있어야 목적지가 간 것이다
 
 # ---------------------------------------------------------------- 값 고치기 허용 범위 (설계 7절)
 RANGES = {   # 필드: (최소, 최대, 눈금)
@@ -96,7 +98,7 @@ def noise_floor(values: Sequence[float]) -> Optional[float]:
 # ---------------------------------------------------------------- 측정
 @dataclass(frozen=True)
 class CallTry:
-    """'비카야, 화장실로 가자' 한 번의 재채점 결과."""
+    """'비카야 … 화장실로 가자' 한 번의 재채점 결과(쉬고 부르기·이어서 부르기 같은 모양)."""
     woke: bool
     captured: bool            # 청취 창이 이어진 말을 받았나(받아쓰기가 나왔나)
     peak: float               # 호출 점수 최고
@@ -133,7 +135,8 @@ class RobotRun:
 @dataclass
 class Measurements:
     noise: list = field(default_factory=list)       # 2단계 세 측정
-    calls: list = field(default_factory=list)       # CallTry
+    calls: list = field(default_factory=list)       # CallTry — 쉬고 부르기
+    runs: list = field(default_factory=list)        # CallTry — 이어서 부르기(참고)
     answers: list = field(default_factory=list)     # AnswerTry
     stops: list = field(default_factory=list)       # StopTry
     robot: Optional[RobotRun] = None
@@ -166,6 +169,7 @@ def judge(m: Measurements, v: MicValues, previous_robot_level: Optional[float] =
     rows = [
         _noise_row(m, v),
         _call_row(m, v),
+        _run_row(m, v),
         _answer_row(m, v),
         _stop_row(m, v),
         _robot_row(m, v, previous_robot_level),
@@ -206,19 +210,32 @@ def _noise_row(m: Measurements, v: MicValues) -> Row:
     return Row("noise", name, PASS, detail)
 
 
+def call_delivered(t: CallTry) -> bool:
+    """호출이 걸리고 목적지까지 건너갔나 — 받은 말에 PLACE_WORD 가 있어야 한다(띄어쓰기·구두점 무시)."""
+    heard = "".join(ch for ch in t.text if ch.isalnum())
+    return t.woke and t.captured and PLACE_WORD in heard
+
+
+def _call_miss_reason(missed: Sequence[CallTry]) -> str:
+    if any(not t.woke for t in missed):
+        return "호출 놓침"
+    if any(not t.captured for t in missed):
+        return "호출 뒤 말을 못 받음"
+    return f"목적지를 못 받음 '{missed[0].text}'"
+
+
 def _call_row(m: Measurements, v: MicValues) -> Row:
-    name = "“비카야, 화장실로 가자” ×3"
+    name = "“비카야” 쉬고 “화장실로 가자” ×3"
     tries = m.calls
     if tries and _agc_stale(m, "call", v):
         return Row("call", name, REDO, _AGC_REDO, "3단계를 다시 하세요")
     if len(tries) < CALL_REPS:
         return Row("call", name, WAIT, f"{len(tries)}/{CALL_REPS}")
-    ok = sum(t.woke and t.captured for t in tries)
+    ok = sum(call_delivered(t) for t in tries)
     low = min(t.peak for t in tries)
     detail = f"{ok}/{CALL_REPS} · 가장 낮은 점수 {low:.2f}"
     if ok < CALL_REPS:
-        missed = [t for t in tries if not (t.woke and t.captured)]
-        why = "호출 놓침" if any(not t.woke for t in missed) else "호출 뒤 말을 못 받음"
+        why = _call_miss_reason([t for t in tries if not call_delivered(t)])
         return Row("call", name, FAIL, f"{detail} · {why}",
                    "손잡이 쪽을 향해 또렷하게 다시 해 보세요. 그래도 놓치면 호출 문턱을 보세요.")
     if low < v.wake_threshold + WAKE_MARGIN - 1e-9:
@@ -226,8 +243,26 @@ def _call_row(m: Measurements, v: MicValues) -> Row:
     return Row("call", name, PASS, detail)
 
 
+def _run_row(m: Measurements, v: MicValues) -> Row:
+    """이어서 부르기 — 지금 귀는 호출을 확인한 뒤에 창을 열어 이어 말한 목적지 머리를 놓친다(10-13 분석).
+    값을 고쳐서 나아지는 문제가 아니라서 '주의'까지만 낸다: 시연 때 말하는 법을 알려 주는 줄이다."""
+    name = "“비카야화장실로가자” 이어서 ×2 (참고)"
+    tries = m.runs
+    if tries and _agc_stale(m, "call", v):
+        return Row("run", name, REDO, _AGC_REDO, "3단계를 다시 하세요")
+    if len(tries) < RUN_REPS:
+        return Row("run", name, WAIT, f"{len(tries)}/{RUN_REPS}")
+    ok = sum(call_delivered(t) for t in tries)
+    detail = f"{ok}/{RUN_REPS} · 가장 낮은 점수 {min(t.peak for t in tries):.2f}"
+    if ok < RUN_REPS:
+        why = _call_miss_reason([t for t in tries if not call_delivered(t)])
+        return Row("run", name, WARN, f"{detail} · {why}",
+                   "쉬지 않고 말하면 지금 귀는 목적지를 놓칩니다. 시연 때는 “비카야” 뒤 “네?”를 듣고 말하세요.")
+    return Row("run", name, PASS, detail)
+
+
 def _answer_row(m: Measurements, v: MicValues) -> Row:
-    name = "“네”·“아니요” ×4"
+    name = "“그래”·“아니” ×4"
     tries = m.answers
     if tries and _agc_stale(m, "answer", v):
         return Row("answer", name, REDO, _AGC_REDO, "4단계를 다시 하세요")
@@ -295,10 +330,11 @@ def _cross_row(m: Measurements, v: MicValues) -> Row:
     name = "오발동"
     if any(_agc_stale(m, k, v) for k in ("call", "answer", "stop")) and (m.calls or m.answers or m.stops):
         return Row("cross", name, REDO, _AGC_REDO, "3~5단계를 다시 하세요")
-    n = (sum(t.emergency for t in m.calls) + sum(t.emergency for t in m.answers)
-         + sum(t.woke for t in m.stops))
+    n = (sum(t.emergency for t in m.calls) + sum(t.emergency for t in m.runs)
+         + sum(t.emergency for t in m.answers) + sum(t.woke for t in m.stops))
     if n:
         return Row("cross", name, FAIL, f"{n}회",
                    "다른 말에 멈춰나 비카야가 잘못 걸렸습니다. 문턱을 내렸다면 되돌리세요.")
-    done = len(m.calls) >= CALL_REPS and len(m.answers) >= ANSWER_REPS and len(m.stops) >= STOP_REPS
+    done = (len(m.calls) >= CALL_REPS and len(m.runs) >= RUN_REPS and len(m.answers) >= ANSWER_REPS
+            and len(m.stops) >= STOP_REPS)
     return Row("cross", name, PASS if done else WAIT, "0회")

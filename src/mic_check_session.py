@@ -24,8 +24,8 @@ from .env_file import (KEYS, change_line, plan_changes, read_env, restore_latest
                        write_changes)
 from .mic_check_replay import DT, Models, Recording, replay_answer, replay_call, replay_stop
 from .mic_check_rules import (AGC_CHOICES, ANSWER_REPS, CALL_REPS, ECHO_CHOICES, ECHO_LABELS, NAMES, RANGES,
-                              STOP_REPS, Measurements, MicValues, RobotRun, check_values, echo_name, judge,
-                              noise_floor)
+                              RUN_REPS, STOP_REPS, Measurements, MicValues, RobotRun, call_delivered, check_values,
+                              echo_name, judge, noise_floor)
 from .wakeword_monitor import SAMPLE_RATE, WakewordMonitor
 
 NOISE_WINDOW = 125         # 실시간 잡음 바닥 = 최근 10 s
@@ -51,13 +51,16 @@ class Step:
 
 STEPS = (
     Step("quiet", "조용히", ("15초 동안 말하지 마세요",), 15.0),
-    Step("call", "호출", ("“비카야, 화장실로 가자”",) * CALL_REPS, 4.0),
-    Step("answer", "짧은 답", ("“네”", "“네”", "“아니요”", "“아니요”"), 4.0),
+    # 2026-10-13 사용자: 실제로는 쉬지 않고 이어 말하기도 하고, 대답은 "그래"·"아니"가 대부분이다.
+    # 쉬고 부르기는 "네?"를 기다리는 한 박자가 들어가 녹음을 6 s 로 늘렸다.
+    Step("call", "호출", ("“비카야” — 한 박자 쉬고 — “화장실로 가자”",) * CALL_REPS
+         + ("“비카야화장실로가자” — 쉬지 않고 이어서",) * RUN_REPS, 6.0),
+    Step("answer", "짧은 답", ("“그래”", "“그래”", "“아니”", "“아니”"), 4.0),
     Step("stop", "멈춰", ("“멈춰”",) * STOP_REPS, 4.0),
     Step("robot", "로봇 혼자 말하기", ("30초 동안 조용히 계세요",), 0.0),
     Step("result", "결과표", ("점검이 끝났습니다",), 0.0),
 )
-NEEDS = {"quiet": 1, "call": CALL_REPS, "answer": ANSWER_REPS, "stop": STOP_REPS, "robot": 1}
+NEEDS = {"quiet": 1, "call": CALL_REPS + RUN_REPS, "answer": ANSWER_REPS, "stop": STOP_REPS, "robot": 1}
 
 
 @dataclass(frozen=True)
@@ -306,7 +309,12 @@ class Session:
         if row in self._chips and self._chips[row][0] != self.values.chip()[0]:
             self._clear(kind)
             self._toast("AGC 가 바뀌어 이 단계를 처음부터 다시 녹음합니다.")
-        expected = ANSWER_EXPECTED[len(self._answers)] if kind == "answer" else None
+        if kind == "answer":
+            expected = ANSWER_EXPECTED[len(self._answers)]
+        elif kind == "call":   # 파일 이름 꼬리 — 쉬고(pause)·이어서(run)
+            expected = "pause" if len(self._calls) < CALL_REPS else "run"
+        else:
+            expected = None
         if kind == "answer":
             # 실시간 화면에서도 질문 창으로 받는지 보이게 — 노드처럼 질문 예약 → 말 끝
             self.live.arm_followup(now=self._t)
@@ -338,8 +346,8 @@ class Session:
             self._quiet = rec
             self.meas.noise = noise
         elif kind == "call":
+            (self.meas.calls if len(self._calls) < CALL_REPS else self.meas.runs).append(tried)
             self._calls.append(rec)
-            self.meas.calls.append(tried)
         elif kind == "answer":
             self._answers.append((rec, rec_obj.expected))
             self.meas.answers.append(tried)
@@ -358,7 +366,7 @@ class Session:
         if kind == "quiet":
             self._quiet, self.meas.noise = None, []
         elif kind == "call":
-            self._calls, self.meas.calls = [], []
+            self._calls, self.meas.calls, self.meas.runs = [], [], []
         elif kind == "answer":
             self._answers, self.meas.answers = [], []
         elif kind == "stop":
@@ -511,7 +519,8 @@ class Session:
     def _measure_all(self, values: MicValues) -> Measurements:
         m = Measurements(noise=list(self.meas.noise), chips=self._chips,
                          robot=self.meas.robot, robot_thresholds=self.meas.robot_thresholds)
-        m.calls = [replay_call(self.models, r, self._quiet, values) for r in self._calls]
+        tries = [replay_call(self.models, r, self._quiet, values) for r in self._calls]
+        m.calls, m.runs = tries[:CALL_REPS], tries[CALL_REPS:]
         m.answers = [replay_answer(self.models, r, self._quiet, values, e) for r, e in self._answers]
         m.stops = [replay_stop(self.models, r, self._quiet, values) for r in self._stops]
         return m
@@ -672,7 +681,8 @@ class Session:
     def _progress(self) -> dict:
         return {
             "quiet": ["pass"] if self._quiet is not None else [],
-            "call": ["pass" if t.woke and t.captured else "fail" for t in self.meas.calls],
+            "call": (["pass" if call_delivered(t) else "fail" for t in self.meas.calls]
+                     + ["pass" if call_delivered(t) else "warn" for t in self.meas.runs]),
             "answer": ["pass" if t.accepted and t.correct else "fail" for t in self.meas.answers],
             "stop": ["pass" if t.confirmed else "fail" for t in self.meas.stops],
             "robot": [] if self.meas.robot is None else

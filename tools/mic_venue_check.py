@@ -266,7 +266,7 @@ class _Demo:
 
     def models(self) -> Models:
         def confirm(audio: np.ndarray) -> str:
-            return "아니요" if np.any(audio == self.NO) else "네"
+            return "아니" if np.any(audio == self.NO) else "그래"
         return Models(self.predict, lambda a: "멈춰", lambda a: "화장실로 가자", confirm)
 
     def frame(self, session: Session) -> np.ndarray:

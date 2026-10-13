@@ -30,7 +30,7 @@ def predict(frame):
 
 
 MODELS = Models(predict=predict, transcribe=lambda a: "멈춰", transcribe_listen=lambda a: "화장실로 가자",
-                transcribe_confirm=lambda a: "아니요" if np.any(a == 3001) else "네")
+                transcribe_confirm=lambda a: "아니" if np.any(a == 3001) else "그래")
 
 
 class FakeHw:
@@ -71,7 +71,9 @@ def feed(s, hw, frame, n, vad=False):
         s.on_frame(frame)
 
 
-def record(s, hw, parts, total=50):
+def record(s, hw, parts, total=None):
+    if total is None:
+        total = int(round(s.step.seconds / 0.08))   # 단계 녹음 길이만큼(호출 6 s, 나머지 4 s)
     s.handle({"cmd": "record"})
     used = 0
     for frame, n, vad in parts:
@@ -86,7 +88,7 @@ def last(msgs, kind):
 
 def run_all(s, hw, stop_frames=(STOP,) * 5):
     record(s, hw, [], total=188)                                              # 2단계 조용히 15 s
-    for _ in range(3):
+    for _ in range(5):                                                        # 쉬고 3 + 이어서 2
         record(s, hw, [(NOISE, 3, False), (WAKE, 2, False), (YES, 10, True)])
     for frame in (YES, YES, NO, NO):
         record(s, hw, [(NOISE, 3, False), (frame, 10, True)])
@@ -106,6 +108,30 @@ def test_full_run_passes_and_records(tmp_path):
     data = json.loads((tmp_path / "rec" / "result.json").read_text(encoding="utf-8"))
     assert data["verdict"]["overall"] == PASS and data["place"] == "연구실"
     assert (tmp_path / "rec" / "quiet.wav").exists() and (tmp_path / "rec" / "stop_5.wav").exists()
+
+
+def test_call_step_is_three_paused_then_two_run_on(tmp_path):
+    """3단계 = 쉬고 부르기 3 + 이어서 부르기 2(2026-10-13). 이어서 부르기는 참고 줄로 따로 판정한다."""
+    s, hw, msgs = make(tmp_path)
+    record(s, hw, [], total=188)
+    says = []
+    for _ in range(5):
+        says.append(last(msgs, "status")["step"]["say"])
+        record(s, hw, [(NOISE, 3, False), (WAKE, 2, False), (YES, 10, True)])
+    assert len(s.meas.calls) == 3 and len(s.meas.runs) == 2 and s.step.key == "answer"
+    assert "쉬고" in says[0] and "이어서" in says[3]
+    assert last(msgs, "status")["progress"]["call"] == ["pass"] * 5
+    rows = {r["key"]: r["grade"] for r in last(msgs, "results")["rows"]}
+    assert rows["call"] == PASS and rows["run"] == PASS
+    assert (tmp_path / "rec" / "call_1_pause.wav").exists() and (tmp_path / "rec" / "call_4_run.wav").exists()
+    s.handle({"cmd": "set", "key": "wake_threshold", "value": 0.75})
+    s.handle({"cmd": "rejudge"})
+    assert len(s.meas.calls) == 3 and len(s.meas.runs) == 2
+
+
+def test_answer_step_asks_the_words_people_use(tmp_path):
+    s, hw, msgs = make(tmp_path)
+    assert [p for st in STEPS if st.key == "answer" for p in st.prompts] == ["“그래”", "“그래”", "“아니”", "“아니”"]
 
 
 def test_double_record_is_ignored(tmp_path):
