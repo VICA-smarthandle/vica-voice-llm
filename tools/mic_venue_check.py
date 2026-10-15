@@ -117,12 +117,16 @@ def lan_ip() -> str:
 def write_chip(values: MicValues) -> list:
     """칩에 AGC·에코를 쓰고 읽어서 확인한다. 문제 목록(빈 목록 = 성공). 마이크 스트림이 닫혀 있을 때만 부를 것."""
     from src import audio_out
-    from src.dsp_state import apply_agc_desired_level, apply_echo_tuning
+    from src.dsp_state import agc_max_gain_from_env, apply_agc_desired_level, apply_agc_max_gain, apply_echo_tuning
 
     audio_out.reset_device_cache()   # 재생 스트림이 열려 있으면 칩이 쓰기를 거부한다 — 먼저 닫는다
     problems = []
     if not apply_agc_desired_level(values.agc):
         problems.append(f"AGC {values.agc:.3f} 쓰기 실패")
+    # AGC 최대 증폭 한도(2026-10-15) — ⑫ 처럼 .env 줄이 있을 때만 쓴다. 점검기 화면에서 고치는 값은 아니다.
+    max_gain = agc_max_gain_from_env(os.environ.get("VICA_MIC_AGC_MAX_GAIN", ""))
+    if max_gain is not None and not apply_agc_max_gain(max_gain):
+        problems.append(f"AGC 최대 증폭 ×{max_gain:g} 쓰기 실패")
     wrote = apply_echo_tuning(values.echo_etail, values.echo_nlatten)
     etail = wrote.get("GAMMA_ETAIL")
     if etail is None or abs(float(etail) - values.echo_etail) > 1e-3:

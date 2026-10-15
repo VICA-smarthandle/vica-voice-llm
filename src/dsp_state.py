@@ -15,7 +15,15 @@ D7 동결의 승인된 예외 1건(2026-08-28 사용자 결정): AGCDESIREDLEVEL
 칩 기본 목표(0.005)가 낮아 1m 밖 발화가 rms 0.03 대로 들어와 짧은 답
 오전사('그래'→'굿에이')의 바닥 원인이 됐다 — 목표 2배(0.010) 실측으로
 개선 확인. 칩은 전원 재투입마다 초기화되므로 노드 기동 시마다
-apply_agc_desired_level 로 다시 쓴다. 다른 파라미터 쓰기는 여전히 금지.
+apply_agc_desired_level 로 다시 쓴다.
+
+세 번째 예외(2026-10-15 사용자 결정 — "D7 에 걸려도 최선의 결과를"): AGCMAXGAIN.
+공장값 ×31.6 은 조용할 때 소리를 ×15~25 까지 키워 2~3 m 옆사람 잡담을 손잡이
+사용자만큼 크게 만들었다(질문 창에 섞임). ×2 로 낮추자 손잡이 사용자 −24~−32 dB ·
+옆사람 −40~−49 dB 로 갈려 수음 최소(0.012)가 옆사람 말을 버렸다(시험 1/10 통과,
+지금 설정 5/6). '비카야'·'멈춰' 감지는 그대로였다(~/vica_data/mic_bystander).
+VICA_MIC_AGC_MAX_GAIN 줄이 있을 때만 apply_agc_max_gain 으로 쓴다. 그 밖의
+파라미터 쓰기는 여전히 금지(에코 두 개는 아래 09-04 예외).
 """
 from __future__ import annotations
 
@@ -32,8 +40,10 @@ _LIVE_INT = {
     "DOAANGLE": (21, 0),         # 도래 방향 0~359도
 }
 
-# AGC 목표 레벨 (id19, offset2, float) — D7 예외로 승인된 유일한 쓰기 대상
+# AGC 목표 레벨 (id19, offset2, float) — D7 예외(2026-08-28)
 _AGC_DESIRED = (19, 2)
+# AGC 최대 증폭 한도 (id19, offset1, float, ×1~×1000 = 0~60 dB) — D7 예외(2026-10-15)
+_AGC_MAX_GAIN = (19, 1)
 
 # 에코 억제 나사 (2026-09-04 사용자 승인 — D7 동결의 두 번째 예외).
 # 촬영 장소가 복도라 울림이 AEC 한계를 넘었다. 칩이 지우는 세기를 올린다.
@@ -167,6 +177,41 @@ def apply_agc_desired_level(value: float) -> bool:
         readback = lo * (2.0 ** hi)
         usb.util.dispose_resources(dev)
         return abs(readback - value) < 1e-4
+    except Exception:
+        return False
+
+
+def agc_max_gain_from_env(raw: str) -> Optional[float]:
+    """VICA_MIC_AGC_MAX_GAIN 해석. None = 쓰지 않음(칩 공장값 ×31.6 유지 — 지금까지와 같음).
+
+    범위는 칩 표 그대로 ×1~×1000. 1 보다 작으면 소리를 줄이는 값이라 받지 않는다.
+    """
+    raw = (raw or "").strip().lower()
+    if raw in ("", "0", "off", "none"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 1.0 <= value <= 1000.0 else None
+
+
+def apply_agc_max_gain(value: float) -> bool:
+    """AGC 최대 증폭 한도를 칩에 쓰고 읽어서 확인한다. 성공 여부를 돌려준다.
+
+    AGC 목표 레벨과 같은 제약: 마이크 스트림을 열기 전에 부를 것. 실패해도 예외를 내지 않는다 —
+    옆사람 말이 더 들어올 뿐 감시는 계속돼야 한다.
+    """
+    try:
+        import usb.core
+        import usb.util
+
+        dev = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        if dev is None:
+            return False
+        readback = _write_param(dev, _AGC_MAX_GAIN, value, False)
+        usb.util.dispose_resources(dev)
+        return readback is not None and abs(readback - value) < 1e-3 * max(1.0, value)
     except Exception:
         return False
 

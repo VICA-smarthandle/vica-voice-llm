@@ -337,6 +337,28 @@ def test_near_silence_never_reaches_stt():
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다
 
 
+class TestAgcMaxGainFromEnv:
+    """AGC 최대 증폭 한도(2026-10-15 사용자 결정 ×2) 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
+
+    def test_number_parses(self):
+        from src.dsp_state import agc_max_gain_from_env
+        assert agc_max_gain_from_env("2") == 2.0
+        assert agc_max_gain_from_env(" 4.0 ") == 4.0
+
+    def test_off_values_skip_write(self):
+        """줄이 없거나 꺼 두면 칩 공장값(×31.6) 그대로 — 지금까지와 같은 동작."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("", "0", "off", "none"):
+            assert agc_max_gain_from_env(raw) is None
+
+    def test_out_of_range_or_garbage_skip_write(self):
+        """칩 범위는 ×1~×1000(0~60 dB). 1 보다 작으면 소리를 줄이는 값이라 받지 않는다."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("0.5", "-2", "1001", "abc"):
+            assert agc_max_gain_from_env(raw) is None
+        assert agc_max_gain_from_env("1") == 1.0 and agc_max_gain_from_env("1000") == 1000.0
+
+
 class TestAgcDesiredFromEnv:
     """AGC 목표 레벨 환경변수 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
 
