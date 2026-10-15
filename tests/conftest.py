@@ -31,6 +31,7 @@ _DEFAULTS = {
     "VICA_LISTEN_MIN_OPEN_SEC": "2.5",
     "VICA_LISTEN_BLIP_VOID_SEC": "0.32",
     "VICA_CONFIRM_WINDOW_SEC": "30.0",
+    "VICA_APPROACH_MIN_RMS": "",     # 접근 대답 수음 최소(2026-10-15) — 기본은 줄 없음
 }
 
 for _key, _value in _DEFAULTS.items():
