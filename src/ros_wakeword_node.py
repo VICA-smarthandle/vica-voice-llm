@@ -45,8 +45,8 @@ from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
 from .destination_loader import build_place_hint, load_destinations
-from .dsp_state import (agc_desired_from_env, apply_agc_desired_level,
-                        apply_echo_tuning, echo_tuning_from_env)
+from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
+                        apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
 from .realtime_intent import float32_to_pcm16
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
@@ -225,6 +225,16 @@ class WakewordNode(Node):
             else:
                 self.get_logger().warning(
                     f"AGC 목표 레벨 설정 실패({desired}) — 공장 기본으로 감시 계속")
+
+        # AGC 최대 증폭 한도 (2026-10-15 사용자 결정 ×2 — D7 동결의 세 번째 예외, 근거는 dsp_state 주석).
+        # 공장값 ×31.6 은 2~3 m 옆사람 잡담을 사용자만큼 키웠다. 줄이 없으면 쓰지 않는다(공장값 그대로).
+        max_gain = agc_max_gain_from_env(os.environ.get("VICA_MIC_AGC_MAX_GAIN", ""))
+        if max_gain is not None:
+            if apply_agc_max_gain(max_gain):
+                self.get_logger().info(f"AGC 최대 증폭 한도 설정: ×{max_gain:g}")
+            else:
+                self.get_logger().warning(
+                    f"AGC 최대 증폭 한도 설정 실패(×{max_gain:g}) — 공장값(×31.6)으로 감시 계속")
 
         # 에코 억제 나사 (2026-09-04 촬영 현장 결정). AGC 와 같은 자리에서,
         # 같은 이유로 매 기동 쓴다 — 칩은 전원 재투입마다 공장값으로 돌아간다.
