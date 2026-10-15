@@ -34,6 +34,7 @@ _DEFAULTS = {
     # 귀 받아쓰기 엔진(2026-10-15) — 운영 .env 가 qwen 이어도 시험은 기본 whisper 로 돈다.
     "VICA_STT_ENGINE": "whisper",
     "VICA_VERIFY_STT_ENGINE": "whisper",
+    "VICA_APPROACH_MIN_RMS": "",     # 접근 대답 수음 최소(2026-10-15) — 기본은 줄 없음
 }
 
 for _key, _value in _DEFAULTS.items():

@@ -105,6 +105,21 @@ def listen_thresholds_from_env() -> tuple[float, float]:
     return (one("VICA_LISTEN_MIN_RMS", LISTEN_MIN_RMS),
             one("VICA_SHORT_ANSWER_MIN_RMS", SHORT_ANSWER_MIN_RMS))
 
+
+def approach_min_rms_from_env() -> Optional[float]:
+    """접근 질문('안내를 받으시겠어요?')의 대답을 기다리는 동안의 수음 최소 — VICA_APPROACH_MIN_RMS.
+
+    2026-10-15 사용자 결정 ②: 접근 단계 사용자는 로봇 앞 1 m 넘게 떨어져 대답해, 칩 증폭 ×4·수음 최소 0.012
+    에서 '아니' 3번이 rms 0.0070·0.0093·0.0104 로 버려졌다. 칩 증폭을 그때만 올리는 것과 같은 효과를 칩을
+    건드리지 않고 낸다. 줄이 없거나 이상한 값이면 None — 평소 수음 최소를 그대로 쓴다(지금까지와 같다).
+    """
+    raw = os.environ.get("VICA_APPROACH_MIN_RMS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
+
 # 창 안 호출 구제 (2026-09-02) — 창이 열린 동안의 "비카야"는 음향 모델이
 # 꺼져 있어 **오직 STT 전사로만** 판별된다. 그런데 whisper 는 사전에 없는
 # 이 이름을 못 적는다: 실기 13회 전수에서 '비카야'로 적힌 것이 **0건**
@@ -418,6 +433,7 @@ class WakewordMonitor:
         single_b: object = "env",
         listen_min_rms: Optional[float] = None,
         short_answer_min_rms: Optional[float] = None,
+        approach_min_rms: Optional[float] = None,
         transcribe_listen: Optional[Callable[[np.ndarray], str]] = None,
         transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
         on_frame: Optional[Callable[[dict], None]] = None,
@@ -501,6 +517,9 @@ class WakewordMonitor:
         env_listen, env_short = listen_thresholds_from_env()
         self.listen_min_rms = env_listen if listen_min_rms is None else float(listen_min_rms)
         self.short_answer_min_rms = env_short if short_answer_min_rms is None else float(short_answer_min_rms)
+        # 접근 질문 대답만의 수음 최소(2026-10-15) — 인자 > .env. None 이면 위 수음 최소를 그대로 쓴다.
+        self.approach_min_rms = (approach_min_rms_from_env() if approach_min_rms is None
+                                 else float(approach_min_rms))
         # 조각마다 점수 알림(점검기 화면용). 없으면 아무것도 하지 않는다 — ⑫ 노드는 주지 않는다.
         self._on_frame = on_frame
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
@@ -1280,7 +1299,11 @@ class WakewordMonitor:
         # 단 통과는 정답 어휘로만 (아래 short_rescue 판정).
         short_rescue = (short and self._listen_is_followup
                         and rms >= self.short_answer_min_rms)
-        if rms < self.listen_min_rms or (short and not short_rescue):
+        # 접근 질문의 대답을 기다리는 동안(미션 dialog_state=awaiting_user)은 따로 둔 낮은 문턱 — 사용자가
+        # 로봇 앞 1 m 넘게 떨어져 대답한다(2026-10-15 사용자 결정 ②).
+        min_rms = (self.approach_min_rms if self._wake_suppressed and self.approach_min_rms is not None
+                   else self.listen_min_rms)
+        if rms < min_rms or (short and not short_rescue):
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(
