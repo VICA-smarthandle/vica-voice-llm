@@ -171,6 +171,12 @@ class TestStripRobotEcho:
         from src.stt_guard import strip_robot_echo
         assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."
 
+    def test_spelled_numbers_still_match_robot_text(self):
+        """로봇은 '407로' 를 말했는데 Qwen 은 '사백칠로' 로 적는다(2026-10-15) — 숫자 정리 뒤 대조한다."""
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("사백칠로 안내해 드릴까요?", ["407로 안내해 드릴까요?"]) == ""
+        assert strip_robot_echo("사백칠로 안내해 드릴까요? 응.", ["407로 안내해 드릴까요?"]) == "응."
+
 
 def test_short_answer_ghosts_2026_09_02():
     """짧은답 30회 실기: 사용자가 "네"·"대기해줘"라고 말한 자리에서 나온

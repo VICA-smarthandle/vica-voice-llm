@@ -8,12 +8,14 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from .ko_numbers import korean_numbers_to_digits
 from .schema import DestinationData
 
 
 def _normalize(text: str) -> str:
-    """비교를 위해 공백을 제거하고 소문자로 바꾼다."""
-    return re.sub(r"\s+", "", text).strip().lower()
+    """비교를 위해 공백을 제거하고 소문자로 바꾼다. 한글 숫자 읽기('사백칠호')는 숫자('407호')로 —
+    Qwen3-ASR 이 호실을 글자로 적는다(2026-10-15)."""
+    return korean_numbers_to_digits(re.sub(r"\s+", "", text)).strip().lower()
 
 
 def _score(query_norm: str, target_norm: str) -> int:

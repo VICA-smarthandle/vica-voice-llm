@@ -50,6 +50,7 @@ from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_d
 from .realtime_intent import float32_to_pcm16
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
+from .stt_qwen import QwenUnavailable, ear_stt_engines
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
@@ -210,10 +211,23 @@ class WakewordNode(Node):
             f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
+        try:
+            listen_engine, verify_engine = ear_stt_engines()
+        except QwenUnavailable as exc:
+            # 잘못 적은 값 — 감시 스레드가 같은 오류로 멈추고 아래 감시 타이머가 노드를 끝낸다.
+            listen_engine = verify_engine = f"설정 오류({exc})"
+        qwen_name = Path(os.environ.get("VICA_QWEN_MODEL") or "").stem or "모델 경로 없음"
+
+        def _stt_label(engine: str, whisper_name: str) -> str:
+            if engine == "qwen":
+                return f"qwen({qwen_name})"
+            return whisper_name if engine == "whisper" else engine
+
         self.get_logger().info(
             f"긴급 관문 {self._monitor.gate_b.threshold:.2f} 2연속"
             + (f" 또는 한 조각 {single:.2f}" if single is not None else " (한 조각 규칙 꺼짐)")
-            + f" · 긴급 확인 STT {verify_stt} · 대화 STT {listen_stt}")
+            + f" · 긴급 확인 STT {_stt_label(verify_engine, verify_stt)}"
+            + f" · 대화 STT {_stt_label(listen_engine, listen_stt)}")
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
         # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
         # 전송 거부). D7 동결의 승인된 유일한 예외 (dsp_state 모듈 주석).
@@ -253,8 +267,12 @@ class WakewordNode(Node):
                     "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
-        self._thread = threading.Thread(target=self._monitor.run, daemon=True)
+        self._monitor_error: "BaseException | None" = None
+        self._thread = threading.Thread(target=self._run_monitor, daemon=True)
         self._thread.start()
+        # 귀 감시 스레드가 죽으면(모델 적재 실패·Qwen 오류 잇따름 등) 노드를 끝낸다 — 노드만 살아 '비카야'·'멈춰'를
+        # 못 듣는 조용한 고장을 막는다(2026-10-15). 주행은 막지 않는다 — 개발 중 음성 없이도 주행한다(사용자 결정).
+        self.create_timer(1.0, self._check_monitor)
         mode = "뮤트" if self._mute_during_tts else "감시 유지(AEC)"
         barge = "켜짐" if self._voice_barge_in else "꺼짐"
         gate = (f"켜짐 center={self._user_doa_center}±{self._user_doa_width}"
@@ -476,6 +494,19 @@ class WakewordNode(Node):
             self._monitor.set_muted(bool(msg.data))
         else:
             self._monitor.set_speaking(bool(msg.data))
+
+    def _run_monitor(self) -> None:
+        try:
+            self._monitor.run()
+        except BaseException as exc:  # noqa: BLE001 — 원인을 남긴다. 감시 타이머가 노드를 끝낸다
+            self._monitor_error = exc
+            raise
+
+    def _check_monitor(self) -> None:
+        if self._thread.is_alive():
+            return
+        self.get_logger().fatal(f"귀 감시가 멈췄습니다 — 노드를 끝냅니다: {self._monitor_error!r}")
+        raise SystemExit(1)
 
 
 def main(args=None) -> None:

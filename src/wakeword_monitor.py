@@ -41,6 +41,7 @@ from .handle_mode import (
 from .mission_phrases import OBSTACLE_STOP
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
+from .stt_qwen import ear_stt_engines, qwen_from_env
 from .wakeword_gate import FrameGate, match_emergency_transcript
 
 SAMPLE_RATE = 16000
@@ -483,6 +484,8 @@ class WakewordMonitor:
         # 질문 답변(followup) 창 전용 — 정답 후보를 귀띔(initial_prompt)한 판.
         # "그래"→'굿에이' 같은 짧은 답 오전사 대책 (2026-08-28 실측).
         self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = transcribe_confirm
+        # Qwen3-ASR 감싸개(2026-10-15) — 어느 역할이든 qwen 이면 _load_real 이 채운다(노드 로그가 이름을 본다).
+        self.qwen = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
         self.gate_b = FrameGate(
@@ -1362,55 +1365,78 @@ class WakewordMonitor:
             self._predict = _predict
         if self._transcribe is None:
             # stt 모듈을 먼저 거친다 — import 부수효과 두 가지가 필요하다:
-            # .env 로드(VICA_STT_* 반영)와 Jetson CUDA libctranslate2 선적재.
-            # 이것 없이 faster_whisper 를 직접 import 하면 Jetson 에서
-            # so 미발견·int8 거부로 감시 스레드가 죽는다 (2026-08-16 실기).
+            # .env 로드(VICA_STT_* 반영 — 아래 엔진 선택도 .env 를 따른다. 점검기·재생 도구는 .env 를
+            # 따로 읽지 않는다)와 Jetson CUDA libctranslate2 선적재. 이것 없이 faster_whisper 를
+            # 직접 import 하면 Jetson 에서 so 미발견·int8 거부로 감시 스레드가 죽는다 (2026-08-16 실기).
             from . import stt  # noqa: F401
-            from faster_whisper import WhisperModel
 
-            listen_name, verify_name = ear_stt_model_names()
-            device = os.environ.get("VICA_STT_DEVICE", "cpu")
-            compute = os.environ.get("VICA_STT_COMPUTE",
-                                     "float16" if device == "cuda" else "int8")
-            wm = WhisperModel(listen_name, device=device, compute_type=compute)
-            # 긴급 확인 전용(2026-10-12) — 실측 small 0.49 s vs turbo 1.50 s, 저장된 "멈춰" 18/18 같음,
-            # 현장 대화 182개 헛 긴급 0. 대화 받아쓰기는 turbo 그대로(small 은 대화 글자가 40 %만 같았다).
-            wm_verify = (wm if verify_name == listen_name
+            # 역할별 엔진(2026-10-15) — 대화 창·긴급 확인을 각각 whisper/qwen 으로 고른다(기본 whisper).
+            # qwen 을 골랐는데 못 올리면 QwenUnavailable 로 멈춘다 — whisper 로 몰래 되돌아가지 않는다.
+            listen_engine, verify_engine = ear_stt_engines()
+            if "qwen" in (listen_engine, verify_engine):
+                self.qwen = qwen_from_env()
+            if "whisper" in (listen_engine, verify_engine):
+                self._load_whisper(listen=listen_engine == "whisper", verify=verify_engine == "whisper")
+            if listen_engine == "qwen":
+                # 귀띔(장소·CONFIRM_HINT)은 주지 않는다 — Qwen 은 침묵에 귀띔 목록을 그대로 적는다(10-15 실측).
+                self._transcribe_listen = self.qwen.listen
+                self._transcribe_confirm = self.qwen.listen
+            if verify_engine == "qwen":
+                qwen = self.qwen
+                self._transcribe = lambda audio: qwen.verify(
+                    audio, lambda text: match_emergency_transcript(text) is not None)
+
+    def _load_whisper(self, *, listen: bool, verify: bool) -> None:
+        """whisper 를 맡은 역할만 올린다. _load_real 이 stt 모듈(CUDA libctranslate2 선적재)을 먼저 거친 뒤에 부른다."""
+        from faster_whisper import WhisperModel
+
+        listen_name, verify_name = ear_stt_model_names()
+        device = os.environ.get("VICA_STT_DEVICE", "cpu")
+        compute = os.environ.get("VICA_STT_COMPUTE",
+                                 "float16" if device == "cuda" else "int8")
+        wm = WhisperModel(listen_name, device=device, compute_type=compute) if listen else None
+        # 긴급 확인 전용(2026-10-12) — 실측 small 0.49 s vs turbo 1.50 s, 저장된 "멈춰" 18/18 같음,
+        # 현장 대화 182개 헛 긴급 0. 대화 받아쓰기는 turbo 그대로(small 은 대화 글자가 40 %만 같았다).
+        wm_verify = None
+        if verify:
+            wm_verify = (wm if wm is not None and verify_name == listen_name
                          else WhisperModel(verify_name, device=device, compute_type=compute))
 
-            def _transcribe(audio: np.ndarray) -> str:
-                # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
-                # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
-                segs, _ = wm_verify.transcribe(audio.astype(np.float32) / 32768.0,
-                                               language="ko", beam_size=5)
-                return "".join(s.text for s in segs).strip()
+        def _transcribe(audio: np.ndarray) -> str:
+            # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
+            # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
+            segs, _ = wm_verify.transcribe(audio.astype(np.float32) / 32768.0,
+                                           language="ko", beam_size=5)
+            return "".join(s.text for s in segs).strip()
 
-            # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를
-            # 올려 아무 말이나 시도"하는 기본 사다리를 끈다. condition_...=False
-            # 는 앞 조각의 오류가 뒤 조각으로 번지는 것을 끊는다. 긴급 검증
-            # 전사(_transcribe)에는 걸지 않는다 — 그쪽은 실기 검증된 안전 축.
-            def _transcribe_listen(audio: np.ndarray) -> str:
-                # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
-                # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=self._listen_hint,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를
+        # 올려 아무 말이나 시도"하는 기본 사다리를 끈다. condition_...=False
+        # 는 앞 조각의 오류가 뒤 조각으로 번지는 것을 끊는다. 긴급 검증
+        # 전사(_transcribe)에는 걸지 않는다 — 그쪽은 실기 검증된 안전 축.
+        def _transcribe_listen(audio: np.ndarray) -> str:
+            # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
+            # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=self._listen_hint,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
 
-            def _transcribe_confirm(audio: np.ndarray) -> str:
-                # 질문 답변 창 전용 — 나올 답의 후보를 귀띔해 짧은 답 인식을
-                # 살린다. 귀띔은 기울이기일 뿐 강제(화이트리스트)가 아니므로
-                # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=CONFIRM_HINT,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        def _transcribe_confirm(audio: np.ndarray) -> str:
+            # 질문 답변 창 전용 — 나올 답의 후보를 귀띔해 짧은 답 인식을
+            # 살린다. 귀띔은 기울이기일 뿐 강제(화이트리스트)가 아니므로
+            # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=CONFIRM_HINT,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
 
+        if verify:
             self._transcribe = _transcribe
+        if listen:
             self._transcribe_listen = _transcribe_listen
             self._transcribe_confirm = _transcribe_confirm
 

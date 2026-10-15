@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import re
 
+from .ko_numbers import korean_numbers_to_digits
+
 # openai-whisper 의 기본값과 동일 (no_speech_threshold / logprob_threshold).
 # 두 조건이 동시에 참일 때만 버린다 — 하나만으로 버리면 작게 말한 진짜
 # 발화(낮은 확신)까지 지운다.
@@ -137,7 +139,8 @@ _ECHO_MIN_CHARS = 4  # 이보다 짧은 조각('어'·'네'·'그래')은 우연
 
 
 def _norm_echo(text: str) -> str:
-    return re.sub(r"[\s.,!?~…\"'·\-]+", "", text)
+    # 숫자 읽기도 맞춘다 — 로봇은 '407로' 를 말했는데 Qwen 은 '사백칠로' 로 적는다(2026-10-15).
+    return korean_numbers_to_digits(re.sub(r"[\s.,!?~…\"'·\-]+", "", text))
 
 
 def strip_robot_echo(text: str, robot_texts) -> str:
