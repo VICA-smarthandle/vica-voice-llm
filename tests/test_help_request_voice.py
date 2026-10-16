@@ -58,6 +58,17 @@ def test_voice_never_speaks_the_help_reply(state):
     assert out.intent == "help" and should_forward_intent(out)   # 미션에는 그대로 간다
 
 
+@pytest.mark.parametrize("state, question", [
+    ("navigating", "직원의 도움이 필요하신가요?"),
+    ("paused", "도움 요청을 취소할까요?"),
+])
+def test_unknown_answer_to_a_help_question_is_left_to_the_mission(state, question):
+    """미션이 못 알아들은 답에 같은 질문을 한 번 다시 묻는다 — LLM 대꾸까지 나가면 두 목소리다. 두
+    질문은 주행 중·일시정지에 나와 dialog_state 만으로는 질문 중인지 모른다(10-16 검토 3)."""
+    unknown = VicaIntent(intent="unknown", reply="다시 한 번 말씀해 주시겠어요?", safety_flag="normal")
+    assert quiet_for_mission(unknown, state, question, 3.0).reply == ""
+
+
 @pytest.mark.parametrize("convert", ["sound", "text"])
 def test_model_reply_is_dropped_by_contract(convert):
     draft = _IntentDraft(intent="help", reply="관리자를 불러 드릴게요.")

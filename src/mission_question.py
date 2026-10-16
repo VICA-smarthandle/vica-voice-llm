@@ -13,12 +13,14 @@ from typing import Sequence
 from langchain_core.messages import AIMessage, BaseMessage
 
 from .local_rules import ANSWER_WAIT_STATES
-from .mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
+from .mission_phrases import HELP_CANCEL_CONFIRM, HELP_CONFIRM, WAIT_FINISH_ASK, WAIT_NEED_ASK
 from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING, expects_answer
 from .schema import VicaIntent
 
-# 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다.
-MISSION_QUESTIONS = frozenset({WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM})
+# 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다. 도움 요청의 확인
+# 질문(주행 중)·취소 질문(일시정지)도 그렇다(관리자 호출 2026-10-16 검토).
+MISSION_QUESTIONS = frozenset({WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM,
+                               HELP_CONFIRM, HELP_CANCEL_CONFIRM})
 # 그 질문의 답을 기다리는 시간 — 음성 질문 뒤 문맥 창(ros_node.FOLLOWUP_CONTEXT_SEC)과 같다.
 ASK_FRESH_SEC = 40.0
 # 미션이 수락 뒤 직접 목적지를 묻는 단계 — LLM 의 확인 질문은 겹친다.
