@@ -171,6 +171,24 @@ class TestStripRobotEcho:
         from src.stt_guard import strip_robot_echo
         assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."
 
+    def test_answer_repeating_words_of_the_question_survives(self):
+        """질문 속 장소 이름을 따라 한 대답은 메아리가 아니다 — 10-16 실기에서 "남자 화장실"이 두 번 버려졌다.
+
+        귀는 로봇이 말을 마친 뒤 열리므로 새어 드는 것은 로봇 말의 끝자락뿐이다
+        (같은 날 메아리 시험: 질문 뒤 창 0/30, 끝난 직후 1초 −60 dB).
+        """
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("남자 화장실.", ["남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"]) == "남자 화장실."
+        assert strip_robot_echo("사회 복지창구.", ["사회 복지창구로 안내해드릴까요?"]) == "사회 복지창구."
+        assert strip_robot_echo("407호.", ["407호로 안내해드릴까요?"]) == "407호."
+
+    def test_tail_of_any_robot_sentence_is_still_echo(self):
+        """여러 문장짜리 로봇 말은 문장마다 끝부분을 본다 — 가운데 문장이 통째로 새어 들어도 버린다."""
+        from src.stt_guard import strip_robot_echo
+        robot = ["남자 화장실에 도착했습니다. 남자 화장실은 왼쪽에 있습니다. 다녀오시는 동안 여기서 기다릴까요?"]
+        assert strip_robot_echo("남자 화장실은 왼쪽에 있습니다.", robot) == ""
+        assert strip_robot_echo("여기서 기다릴까요?", robot) == ""
+
     def test_spelled_numbers_still_match_robot_text(self):
         """로봇은 '407로' 를 말했는데 Qwen 은 '사백칠로' 로 적는다(2026-10-15) — 숫자 정리 뒤 대조한다."""
         from src.stt_guard import strip_robot_echo
