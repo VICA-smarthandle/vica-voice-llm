@@ -78,7 +78,7 @@ class _IntentDraft(BaseModel):
     """
 
     intent: VicaIntentType = Field(
-        description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny 중 하나"
+        description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help 중 하나"
     )
     destination_candidate: Optional[str] = Field(
         default=None,
@@ -188,6 +188,8 @@ def _build_system_prompt(
   홈으로 돌아가다 "비카야"로 세운 뒤에도 wait 다(로봇 본체가 직전에 간 곳의 대기 장소로 간다).
 - finish: 오늘 안내를 다 끝내려 함 ("이제 됐어 고마워", "그만 갈게"). 도착 후
   전체 종료다. cancel(주행 중간에 이 목적지만 그만)과 구분하라.
+- help: 직원이나 관리자의 도움을 원함 ("도움이 필요해", "관리자 불러줘", "사람 좀 불러 주세요",
+  "직원 불러줘"). reply 는 비운다 — 확인 질문과 안내는 로봇 본체가 한다.
 
 {HANDLE_FACTS}
 
@@ -950,6 +952,8 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   — 로봇 본체가 직전에 간 곳의 대기 장소로 간다(2026-10-10 실기: pause 로 내서 "지금은 안내 중이
   아닙니다"로 거절됐다).
 - finish: 도착 뒤 오늘 안내를 다 끝낸다("이제 됐어 고마워", "그만 갈게"). reply="".
+- help: 직원이나 관리자의 도움을 원한다("도움이 필요해", "관리자 불러줘", "사람 좀 불러 주세요",
+  "직원 불러줘"). reply="" — 확인 질문("직원의 도움이 필요하신가요?")과 안내는 로봇 본체가 한다.
 - cancel: 진행 중인 안내를 그만두려 한다. 처음 말했으면 need_confirm=true, reply="{CANCEL_CONFIRM}".
   로봇이 방금 그렇게 물었고 사용자가 긍정하면 need_confirm=false, reply="".
 - pause: 잠시 서 달라("잠깐만", "잠시 서 줘"). need_confirm=false, reply="{PAUSE_ACK}".
@@ -1095,7 +1099,7 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
         result.reply = ""
         minutes = draft.wait_minutes
         result.wait_minutes = minutes if minutes and minutes > 0 else -1
-    elif draft.intent in ("affirm", "deny", "finish"):
+    elif draft.intent in ("affirm", "deny", "finish", "help"):
         result.need_confirm = False
         result.reply = ""
         result.matched_destination_id = ""
@@ -1183,8 +1187,8 @@ def _finalize(
         safety_flag="normal",
     )
 
-    if draft.intent in ("affirm", "deny", "finish"):
-        # LLM 이 reply 를 채워도 비운다 — 응답 발화는 Mission 몫 (계약).
+    if draft.intent in ("affirm", "deny", "finish", "help"):
+        # LLM 이 reply 를 채워도 비운다 — 응답 발화는 Mission 몫 (계약). help 도 미션이 묻고 답한다.
         result.reply = ""
         result.matched_destination_id = ""
         result.need_confirm = False

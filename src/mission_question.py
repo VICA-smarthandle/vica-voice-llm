@@ -79,6 +79,9 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
         # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
         # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).
         return intent.model_copy(update={"reply": ""})
+    if intent.intent == "help":
+        # 도움 요청은 미션이 묻고 답한다(관리자 호출 설계 2026-10-15) — 음성까지 말하면 두 목소리다.
+        return intent.model_copy(update={"reply": ""})
     if intent.intent == "cancel":
         # 취소도 미션이 모든 상태에서 답한다(주행·일시정지 "안내를 취소할까요?", 대기 "안내가 필요 없으신가요?",
         # 안내 없음 "지금은 안내 중이 아닙니다." 등 — 2026-10-11 20상태 확인). 음성까지 말하면 두 목소리다
