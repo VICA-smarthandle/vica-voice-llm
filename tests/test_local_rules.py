@@ -161,3 +161,45 @@ def test_misheard_gate_once_then_silent_and_resets():
     assert g.decide(RETRY_PROMPT) is None
     g.reset()
     assert g.decide(RETRY_PROMPT) == RETRY_PROMPT
+
+
+# ---------------------------------------------------------------- 말한 목적지 이름 우선
+MEN = DestinationData(id="men", name="남자 화장실", aliases=["화장실"], confirm_prompt="남자 화장실로 안내해드릴까요?")
+WOMEN = DestinationData(id="women", name="여자 화장실", aliases=["화장실"], confirm_prompt="여자 화장실로 안내해드릴까요?")
+R407 = DestinationData(id="r407", name="407호", confirm_prompt="407호로 안내해드릴까요?")
+R408 = DestinationData(id="r408", name="408호", authorization="private", is_approachable=False,
+                       unavailable_reason="408호는 안내할 수 없는 곳입니다.")
+SITE = [MEN, WOMEN, R407, R408]
+
+
+def test_named_destination_wins_over_model_pick_when_local():
+    """10-16 2단계 실기 재생: "남자 화장실."에 로봇 안 모델이 407호를 골랐다 — 사용자가 말한 곳을 따른다."""
+    draft = _IntentDraft(intent="navigate", destination_candidate="407호")
+    r = _finalize(draft, SITE, user_text="남자 화장실.", local=True)
+    assert r.matched_destination_id == "men" and r.reply == MEN.confirm_prompt and r.need_confirm
+    # 스위치를 끄면 예전 그대로(모델 판단) — OpenAI·Realtime 쪽 무변경
+    assert _finalize(draft, SITE, user_text="남자 화장실.", local=False).matched_destination_id == "r407"
+
+
+def test_named_destination_ignores_spacing_and_settles_a_tie():
+    """띄어쓰기는 보지 않는다. 모델이 '화장실'로 두 곳에 걸려도 사용자가 한 곳을 말했으면 되묻지 않는다."""
+    draft = _IntentDraft(intent="navigate", destination_candidate="화장실")
+    r = _finalize(draft, SITE, user_text="남자화장실로 가자", local=True)
+    assert r.intent == "navigate" and r.matched_destination_id == "men"
+
+
+def test_named_private_destination_keeps_its_refusal():
+    """비공개 곳을 말했는데 모델이 옆 방을 골랐으면, 옆 방으로 가지 않고 그곳의 안내 불가 문구를 낸다."""
+    draft = _IntentDraft(intent="navigate", destination_candidate="407호")
+    r = _finalize(draft, SITE, user_text="408호 가자", local=True)
+    assert r.matched_destination_id == "r408" and r.reply == R408.unavailable_reason and not r.need_confirm
+
+
+def test_two_or_no_names_leave_the_model_pick():
+    """이름이 둘이거나("407호 말고 남자 화장실") 없으면("화장실 가고 싶어") 모델 판단 그대로."""
+    draft = _IntentDraft(intent="navigate", destination_candidate="남자 화장실")
+    assert _finalize(draft, SITE, user_text="407호 말고 남자 화장실", local=True).matched_destination_id == "men"
+    draft = _IntentDraft(intent="navigate", destination_candidate="407호")
+    assert _finalize(draft, SITE, user_text="407호 말고 남자 화장실", local=True).matched_destination_id == "r407"
+    tie = _IntentDraft(intent="navigate", destination_candidate="화장실")
+    assert _finalize(tie, SITE, user_text="화장실 가고 싶어", local=True).intent == "clarify"
