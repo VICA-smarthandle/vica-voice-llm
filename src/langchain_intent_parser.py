@@ -1136,6 +1136,22 @@ def _choice_in_reply(reply: str, destinations: Sequence[DestinationData], active
     return [d for d in outer if d.name != active]
 
 
+def _named_destination(user_text: str, destinations: Sequence[DestinationData]) -> Optional[DestinationData]:
+    """사용자 말에 이름이 딱 하나 든 목적지 — 띄어쓰기는 보지 않고, 다른 이름 속에 든 짧은 이름은 뺀다.
+
+    별칭은 보지 않는다 — '화장실'·'사무실'처럼 여러 곳에 걸린다. 둘 이상이거나 없으면 None.
+    """
+    def squash(s: str) -> str:
+        return "".join((s or "").split())
+
+    said = squash(user_text)
+    if not said:
+        return None
+    named = [d for d in destinations if d.name and squash(d.name) in said]
+    outer = [d for d in named if not any(o.name != d.name and squash(d.name) in squash(o.name) for o in named)]
+    return outer[0] if len(outer) == 1 else None
+
+
 def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state: str = "") -> VicaIntent:
     """두 곳 이상에 똑같이 걸린 navigate 를 되묻기로 바꾼다 — 한쪽을 고르지 않는다(2026-10-11 사용자 결정).
 
@@ -1214,11 +1230,18 @@ def _finalize(
         result.wait_minutes = minutes if minutes else -1
         return result
 
-    tied = tied_destinations(draft.destination_candidate, list(destinations)) if draft.intent == "navigate" else []
+    # 로컬 규칙(2026-10-16): 사용자가 목적지 이름을 하나만 말했으면 그곳을 따른다 — 10-16 2단계 실기 재생에서
+    # 로봇 안 모델이 "남자 화장실."에 407호를 골랐다(모델 원답). 이름이 둘 이상이거나 없으면 모델 판단 그대로.
+    named = _named_destination(user_text, destinations) if local and draft.intent == "navigate" else None
+    tied = (tied_destinations(draft.destination_candidate, list(destinations))
+            if draft.intent == "navigate" and named is None else [])
     if len(tied) > 1:
         _ask_which(result, tied, robot_state.dialog_state if robot_state else "")
     elif draft.intent == "navigate":
         matched = match_destination(draft.destination_candidate, list(destinations))
+        if named is not None and (matched is None or matched.id != named.id):
+            matched = named
+            result.destination_candidate = named.name
         if matched is None:
             # LLM 이 목록에 없는 목적지를 골랐다 -> 되묻기로 안전하게 강등.
             result.intent = "clarify"
