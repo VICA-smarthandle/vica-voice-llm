@@ -13,8 +13,9 @@ from vica_interfaces.msg import VicaIntent as VicaIntentMsg
 
 from .destination_loader import load_destinations
 from .robot_sim import SimRobot
+from .replies import WAKE_GREETING
 from .ros_convert import msg_to_intent
-from .tts_queue import NARRATION, build_request
+from .tts_queue import NARRATION, RESPONSE, build_request
 
 
 class RobotSimNode(Node):
@@ -27,6 +28,8 @@ class RobotSimNode(Node):
         self._pub_state = self.create_publisher(RobotStateMsg, "/vica/robot_state", 10)
         self._pub_event = self.create_publisher(String, "/vica/sim/event", 10)
         self._pub_tts = self.create_publisher(String, "/vica/tts_request", 10)
+        self._pub_wake_reply = self.create_publisher(String, "/vica/wake_reply", 10)
+        self.create_subscription(String, "/vica/wake", self._on_wake, 10)
         self.create_timer(0.5, self._tick)
         self.create_timer(1.0, self._publish_state)
         self.get_logger().info("[SIM] 가상 로봇 시작 (idle, 별빛관 1층)")
@@ -53,6 +56,14 @@ class RobotSimNode(Node):
         self.get_logger().warn(
             f"[SIM] 🚨 '{msg.keyword}' → 즉시 정지 + 래치 (자동 재개 없음)")
         self._publish_state()
+
+    def _on_wake(self, msg: String) -> None:
+        kind, _, seq = (msg.data or "").strip().partition(":")
+        if kind != "wake":
+            return
+        self._pub_tts.publish(String(data="control:stop"))
+        self._pub_tts.publish(String(data=build_request(RESPONSE, WAKE_GREETING)))
+        self._pub_wake_reply.publish(String(data=f"listen:{seq}" if seq else "listen"))
 
     def _on_reset(self, _msg: Empty) -> None:
         self._sim.reset(time.time())

@@ -156,6 +156,26 @@ class TestStripRobotEcho:
         from src.stt_guard import strip_robot_echo
         assert strip_robot_echo("응 대기해 줘.", []) == "응 대기해 줘."
 
+    def test_answer_repeating_words_of_the_question_survives(self):
+        """질문 속 장소 이름을 따라 한 대답은 메아리가 아니다 — 10-16 실기에서 "남자 화장실"이 두 번 버려졌다."""
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("남자 화장실.", ["남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"]) == "남자 화장실."
+        assert strip_robot_echo("사회 복지창구.", ["사회 복지창구로 안내해드릴까요?"]) == "사회 복지창구."
+        assert strip_robot_echo("407호.", ["407호로 안내해드릴까요?"]) == "407호."
+
+    def test_tail_of_any_robot_sentence_is_still_echo(self):
+        """여러 문장짜리 로봇 말은 문장마다 끝부분을 본다 — 가운데 문장이 통째로 새어 들어도 버린다."""
+        from src.stt_guard import strip_robot_echo
+        robot = ["남자 화장실에 도착했습니다. 남자 화장실은 왼쪽에 있습니다. 다녀오시는 동안 여기서 기다릴까요?"]
+        assert strip_robot_echo("남자 화장실은 왼쪽에 있습니다.", robot) == ""
+        assert strip_robot_echo("여기서 기다릴까요?", robot) == ""
+
+    def test_spelled_numbers_still_match_robot_text(self):
+        """로봇은 '407로' 를 말했는데 Qwen 은 '사백칠로' 로 적는다(2026-10-15) — 숫자 정리 뒤 대조한다."""
+        from src.stt_guard import strip_robot_echo
+        assert strip_robot_echo("사백칠로 안내해 드릴까요?", ["407로 안내해 드릴까요?"]) == ""
+        assert strip_robot_echo("사백칠로 안내해 드릴까요? 응.", ["407로 안내해 드릴까요?"]) == "응."
+
 
 def test_short_answer_ghosts_2026_09_02():
     """짧은답 30회 실기: 사용자가 "네"·"대기해줘"라고 말한 자리에서 나온"""
@@ -173,3 +193,22 @@ def test_gomawo_alone_is_hallucination_but_mixed_survives():
     assert is_hallucination("고마워.") is True
     assert is_hallucination("고마워") is True
     assert is_hallucination("고마워. 대기해.") is False
+
+
+def test_number_loop_is_hallucination_2026_09_28():
+    """2026-09-28 마이크 실기: 사용자 말 대신 숫자 몇 개가 끝없이 반복되는"""
+    loop_a = ", ".join(["2", "3"] * 40 + ["4", "3"] * 20)
+    loop_b = "1, 2, 1, 2, 1, 2, " + ", ".join(["1", "3", "2"] * 30)
+    assert is_hallucination(loop_a) is True
+    assert is_hallucination(loop_b) is True
+    assert is_hallucination("입구, " + ", ".join(["화장실"] * 20)) is True
+    assert is_hallucination(", ".join(["입구", "4층", "실험실 입구"] * 6)) is True
+
+
+def test_real_repetition_survives():
+    """사람도 되풀이한다 — 짧은 반복·섞인 말은 살아야 한다. '네. 아니. 아니."""
+    assert is_hallucination("네. 아니. 아니. 아니.") is False
+    assert is_hallucination("네 네 네 네") is False
+    assert is_hallucination("아니 아니 아니 아니 아니 아니") is False
+    assert is_hallucination("2층 3층 말고 4층으로 가 주세요") is False
+    assert is_hallucination("방2로 가 줘") is False

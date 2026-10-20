@@ -1,6 +1,8 @@
 """로봇이 말하는 고정 문구 모음 (LLM 이 만들지 않는 말)."""
 from __future__ import annotations
 
+from .mission_phrases import josa_eun_neun
+
 EMERGENCY_REPLY = "안전을 위해 멈추겠습니다."
 
 ACK_LISTENING_POOL = (
@@ -22,13 +24,9 @@ CONFIRM_DECLINED = "알겠습니다. 어디로 안내해드릴까요?"
 CANCEL_CONFIRM = "안내를 취소할까요?"
 RESUME_CONFIRM = "다시 출발할까요?"
 
-APPROACH_QUESTION = (
-    "안녕하세요? 저는 시각장애인 안내로봇 비카입니다! "
-    "저와 함께 목적지까지 동행해보시는건 어떠세요? 안내를 받으시겠어요?"
-)
+APPROACH_QUESTION = "안녕하세요? 시각장애인 안내로봇 비카입니다. 안내를 받으시겠어요?"
 APPROACH_ONBOARDING = (
-    "안녕하세요? 반갑습니다! 저에게 말을 거실 때는 '비카야'라고 불러주세요. "
-    "자, 이제 어디로 가고 싶으신가요?"
+    "저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?"
 )
 
 APPROACH_TURN_NOTICE = "네, 잠시만 기다려주세요. 로봇이 회전하니 주의하세요."
@@ -40,6 +38,10 @@ PAUSE_ACK = "네, 잠시 설게요."
 USAGE_GUIDE = "안내 중에 잠깐 쉬려면 '잠깐만', 다시 가려면 '다시 가자', 그만두려면 '취소'라고 말씀해 주세요."
 
 COMMAND_DECLINED = "알겠습니다. 계속 진행할게요."
+
+CHANGE_DESTINATION_QUESTION = "지금 {cur}{cur_josa} 가는 중이에요. {new}{new_josa} 바꿀까요?"
+CHANGE_DESTINATION_TAIL = "{new}{new_josa} 바꿀까요?"
+ALREADY_GOING = "지금 {cur}{cur_josa} 가는 중이에요."
 
 MODE_ASK = "손잡이를 잡고 스마트핸들 모드를 시작하시겠어요?"
 
@@ -56,10 +58,26 @@ HANDLE_LOST = "손잡이를 잡아 주세요."
 WAKE_GREETING = "네?"
 
 
+INVITE_ENDINGS = ("말씀하세요", "말씀해주세요", "말씀을해주세요", "말씀해주시겠어요", "알려주세요",
+                  "다시해주세요", "말해주세요")
+
+
 def expects_answer(reply: str) -> bool:
     """이 발화가 사용자 답을 기대하는가 — 재청취 창을 열지 판정."""
     reply = reply.strip()
-    return reply.endswith("?") or reply.endswith("말씀해 주세요.")
+    if reply.endswith("?"):
+        return True
+    tail = "".join(ch for ch in reply if not ch.isspace()).rstrip(".!~…")
+    return tail.endswith(INVITE_ENDINGS)
+
+
+def choose_between(names) -> str:
+    """두 곳 이상에 똑같이 걸리는 말에 되묻는 말 — "남자 화장실과 여자 화장실 중 어디로 갈까요?"(2026-10-11)."""
+    names = [n for n in names if n]
+    if len(names) == 2:
+        a, b = names
+        return f"{a}{'과' if josa_eun_neun(a) == '은' else '와'} {b} 중 어디로 갈까요?"
+    return f"{', '.join(names)} 중 어디로 갈까요?"
 
 
 def all_phrases() -> dict[str, str]:

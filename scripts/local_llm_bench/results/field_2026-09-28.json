@@ -1,0 +1,482 @@
+{
+ "when": "2026-09-28 16:40~18:10 (새 터미널로 모든 노드를 켠 뒤)",
+ "map": "vica_map_0630",
+ "note": "LLM 이 직접 판단한 문장만. llm_s = 받아쓰기 발행 → 판단 로그",
+ "models": {
+  "exaone3.5_2.4b": [
+   {
+    "text": "대기.",
+    "intent": "unknown",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 3.67,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "화장실 가주세요. 아니. 지금 움직이면 안 되는데.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 2.36,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "안내소로 가죠",
+    "intent": "navigate",
+    "dest": "fd65ad77-0995-44f5-ad4d-7b79b7547510",
+    "dropped": false,
+    "llm_s": 1.23,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "안내소 가고 싶어요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 2.88,
+    "category": "목적지",
+    "ok": false
+   },
+   {
+    "text": "안내소요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 2.71,
+    "category": "목적지",
+    "ok": false
+   },
+   {
+    "text": "배고파요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.25,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "출연을 못하네",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 1.83,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "배고프다구요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.93,
+    "category": "잡음·기타",
+    "ok": null
+   }
+  ],
+  "exaone4-1.2b": [
+   {
+    "text": "대.",
+    "intent": "unknown",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.37,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "네. 좋아요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 0.92,
+    "category": "대답",
+    "ok": false
+   },
+   {
+    "text": "화장실 가주세요.",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 0.89,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "안내소 가주세요",
+    "intent": "navigate",
+    "dest": "fd65ad77-0995-44f5-ad4d-7b79b7547510",
+    "dropped": false,
+    "llm_s": 0.92,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "배. 고. 파.요. 네. 그렇게 할 거 같고.",
+    "intent": "affirm",
+    "dest": null,
+    "dropped": false,
+    "llm_s": 0.92,
+    "category": "잡음·기타",
+    "ok": null
+   }
+  ],
+  "gemma4-e2b-text": [
+   {
+    "text": "너 왜 안내멘트 안해?",
+    "intent": "question",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 3.31,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "화장실 가고 싶어요.",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 2.35,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "배고파요.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 2.51,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "입구로 가주세요.",
+    "intent": "navigate",
+    "dest": "e5cc4231-334c-48e5-935b-44e5b448e25f",
+    "dropped": false,
+    "llm_s": 2.47,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "으으으으으으으으으으으으으으으으으으.",
+    "intent": "unknown",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 2.24,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "배가 너무 아파요",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 2.72,
+    "category": "증상",
+    "ok": null
+   },
+   {
+    "text": "나 다리가 너무 아파, 쉬고 싶어",
+    "intent": "pause",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 2.02,
+    "category": "돌려 말하기",
+    "ok": false
+   },
+   {
+    "text": "내가 다리가 너무 아픈데 쉴만한 곳이 있을까?",
+    "intent": "navigate",
+    "dest": "8355bc1c-c04e-4301-a70d-f79547eb00c3",
+    "dropped": false,
+    "llm_s": 2.7,
+    "category": "돌려 말하기",
+    "ok": true
+   }
+  ],
+  "midm2-mini": [
+   {
+    "text": "화장실.",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 2.08,
+    "category": "목적지",
+    "ok": true,
+    "session": "1차(6곳)"
+   },
+   {
+    "text": "나 다리가 너무 아픈데 실만한 곳 있을까?",
+    "intent": "navigate",
+    "dest": "8355bc1c-c04e-4301-a70d-f79547eb00c3",
+    "dropped": false,
+    "llm_s": 1.7,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "1차(6곳)"
+   },
+   {
+    "text": "나 배가 너무 아파",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 1.71,
+    "category": "증상",
+    "ok": null,
+    "session": "1차(6곳)"
+   },
+   {
+    "text": "나 배가 너무 고파.",
+    "intent": "navigate",
+    "dest": "bb59373c-9d72-465b-a269-35cd1c3dc36c",
+    "dropped": false,
+    "llm_s": 2.05,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "어. 다.",
+    "intent": "navigate",
+    "dest": "bb59373c-9d72-465b-a269-35cd1c3dc36c",
+    "dropped": false,
+    "llm_s": 1.34,
+    "category": "잡음",
+    "ok": false,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 배 아파요. 어디 가야 돼요?",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 1.51,
+    "category": "잡음·기타",
+    "ok": null,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 서류 제출하러 가야되는데 어디로 가야돼?",
+    "intent": "navigate",
+    "dest": "88516c8a-518a-462c-9647-a919ec3f8482",
+    "dropped": false,
+    "llm_s": 2.05,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "그럴까요? 그래.",
+    "intent": "navigate",
+    "dest": "88516c8a-518a-462c-9647-a919ec3f8482",
+    "dropped": false,
+    "llm_s": 1.73,
+    "category": "대답",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나머지 직진값은 버리고 육값으로 한 번을 맞추도록 하고 나서 육값이 안 맞으면 육값만 이제 수정해라.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.73,
+    "category": "잡음",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 서류 제출하러 가고 싶어",
+    "intent": "navigate",
+    "dest": "88516c8a-518a-462c-9647-a919ec3f8482",
+    "dropped": false,
+    "llm_s": 1.19,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "고마워. 잘 몰라.",
+    "intent": "unknown",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.53,
+    "category": "잡음·기타",
+    "ok": null,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 작업실 가줘",
+    "intent": "navigate",
+    "dest": "76490c63-536f-4b39-84c3-6c86d7b86f29",
+    "dropped": false,
+    "llm_s": 1.15,
+    "category": "목적지",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 1.44,
+    "category": "잡음·기타",
+    "ok": null,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "입구로 가죠.",
+    "intent": "navigate",
+    "dest": "e5cc4231-334c-48e5-935b-44e5b448e25f",
+    "dropped": false,
+    "llm_s": 1.82,
+    "category": "목적지",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 서류 제출하러 가야돼",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 1.56,
+    "category": "돌려 말하기",
+    "ok": false,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 서류 제출하러 가고 싶어.",
+    "intent": "navigate",
+    "dest": "88516c8a-518a-462c-9647-a919ec3f8482",
+    "dropped": false,
+    "llm_s": 2.06,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 배고프다고.",
+    "intent": "navigate",
+    "dest": "bb59373c-9d72-465b-a269-35cd1c3dc36c",
+    "dropped": false,
+    "llm_s": 2.09,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "한 5분?",
+    "intent": "navigate",
+    "dest": "bb59373c-9d72-465b-a269-35cd1c3dc36c",
+    "dropped": false,
+    "llm_s": 1.81,
+    "category": "대답",
+    "ok": false,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나. 나 쉬고 싶은데 어디로 가야 돼?",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 1.57,
+    "category": "돌려 말하기",
+    "ok": false,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 좀 쉬고 싶은데 어디로 가야 돼?",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 1.42,
+    "category": "돌려 말하기",
+    "ok": false,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "나 다리가 너무 아파서 좀 안고 싶어.",
+    "intent": "navigate",
+    "dest": "8355bc1c-c04e-4301-a70d-f79547eb00c3",
+    "dropped": false,
+    "llm_s": 1.58,
+    "category": "돌려 말하기",
+    "ok": true,
+    "session": "2차(8곳)"
+   },
+   {
+    "text": "십 분.",
+    "intent": "wait",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 1.47,
+    "category": "대답",
+    "ok": true,
+    "session": "2차(8곳)"
+   }
+  ],
+  "qwen3.5-2b-text": [
+   {
+    "text": "이건 맞습니다. 화장실.",
+    "intent": "navigate",
+    "dest": "df052c8d-6690-4500-b60e-d4b6bf087b14",
+    "dropped": false,
+    "llm_s": 3.67,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "배고파.",
+    "intent": "navigate",
+    "dest": "bb59373c-9d72-465b-a269-35cd1c3dc36c",
+    "dropped": false,
+    "llm_s": 3.32,
+    "category": "목적지",
+    "ok": true
+   },
+   {
+    "text": "나 다리가 너무 아픈데 실 곳 있을까",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 3.39,
+    "category": "돌려 말하기",
+    "ok": false
+   },
+   {
+    "text": "실험실 화장실은 없어.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 4.31,
+    "category": "잡음·기타",
+    "ok": null
+   },
+   {
+    "text": "나 서류 전달해야 되는데 어디로 가면 돼?",
+    "intent": "clarify",
+    "dest": "None",
+    "dropped": false,
+    "llm_s": 2.89,
+    "category": "돌려 말하기",
+    "ok": false
+   },
+   {
+    "text": "아니. 그건 알 건 없고.",
+    "intent": "clarify",
+    "dest": null,
+    "dropped": true,
+    "llm_s": 3.3,
+    "category": "잡음·기타",
+    "ok": null
+   }
+  ]
+ },
+ "qwen_note": "Qwen 은 18:07~18:10, 목적지 8곳(17:35 민원실·식당 추가) 조건",
+ "midm_note": "Mi:dm 2차 = 18:48~19:00, 목적지 8곳, 실제 주행 4회 완주(입구·민원실·식당·휴게실)"
+}

@@ -25,7 +25,11 @@ __all__ = [
     "EMERGENCY_KEYWORDS",
     "SOFT_KEYWORDS",
     "EMERGENCY_REPLY",
+    "PAUSE_PHRASES",
+    "PAUSABLE_DIALOG_STATES",
     "detect_emergency",
+    "detect_stop_request",
+    "stop_pause_intent_for",
 ]
 
 _TOKEN_SPLIT = re.compile(r"[\s,.!?~…·\"'()\[\]{}<>:;]+")
@@ -53,3 +57,29 @@ def detect_emergency(text: str) -> Optional[str]:
         if _starts_at_token_boundary(text, keyword):
             return keyword
     return None
+
+
+PAUSE_PHRASES = ("일시정지",)
+
+PAUSABLE_DIALOG_STATES = ("navigating", "paused_handle")
+
+
+def detect_stop_request(text: str) -> Optional[str]:
+    """멈춤 말이면 그 말을, 아니면 None. 하드 긴급어 + 붙여 쓴 '일시정지'."""
+    keyword = detect_emergency(text)
+    if keyword:
+        return keyword
+    joined = re.sub(r"\s+", "", text or "")
+    for phrase in PAUSE_PHRASES:
+        if phrase in joined:
+            return phrase
+    return None
+
+
+def stop_pause_intent_for(text: str, dialog_state: str):
+    """청취 창 안 말이 멈춤 요청이고 지금 안내 주행 중이면 일시정지 제안을, 아니면 None."""
+    if dialog_state not in PAUSABLE_DIALOG_STATES or not detect_stop_request(text):
+        return None
+    from .schema import VicaIntent
+
+    return VicaIntent(intent="pause", reply="", need_confirm=False, safety_flag="emergency")

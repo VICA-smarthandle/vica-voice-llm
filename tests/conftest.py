@@ -1,5 +1,10 @@
 """시험은 운영 `.env` 를 따르지 않는다."""
 import os
+import sys
+from unittest.mock import MagicMock
+
+sys.modules['vica_interfaces'] = MagicMock()
+sys.modules['vica_interfaces.msg'] = MagicMock()
 
 _DEFAULTS = {
     "VICA_BARGE_REQUIRE_BOTH": "0",
@@ -12,6 +17,9 @@ _DEFAULTS = {
     "VICA_LISTEN_MIN_OPEN_SEC": "2.5",
     "VICA_LISTEN_BLIP_VOID_SEC": "0.32",
     "VICA_CONFIRM_WINDOW_SEC": "30.0",
+    "VICA_STT_ENGINE": "whisper",
+    "VICA_VERIFY_STT_ENGINE": "whisper",
+    "VICA_APPROACH_MIN_RMS": "",
 }
 
 for _key, _value in _DEFAULTS.items():

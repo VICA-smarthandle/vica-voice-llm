@@ -1,0 +1,17 @@
+# Gemma 4 E2B 텍스트 전용 변형 (2026-09-19 실측 근거: 8/8 정답·3.0초·RAM 0.46 GB)
+#
+# - FROM 은 HF unsloth/gemma-4-E2B-it-GGUF:Q4_K_M 의 가중치 blob 경로다. projector
+#   (이미지·음성 인코더 0.9 GB)는 넣지 않는다 — 글자만 쓴다.
+# - 모델 턴 앞의 빈 생각 블록이 자발적 추론을 막는다. HF 임포트는 thinking
+#   capability 가 없어 think=false 가 무시되고, JSON 을 요구하면 한국어 추론
+#   ~100토큰을 숨어서 써 3배 느려졌다. 공식 태그의 think=false 와 같은 효과다.
+# - 경로는 scripts/setup_local_llm.sh 가 채운다. 손으로 만들 땐 아래 줄을 바꾼다.
+FROM ./gemma-4-E2B-it-Q4_K_M.gguf
+TEMPLATE """{{- range .Messages }}<|turn>{{ if eq .Role "assistant" }}model{{ else }}{{ .Role }}{{ end }}
+{{ .Content }}<turn|>
+{{ end }}<|turn>model
+<|channel>thought
+<channel|>"""
+PARAMETER stop "<turn|>"
+PARAMETER stop "<|turn>"
+PARAMETER temperature 0

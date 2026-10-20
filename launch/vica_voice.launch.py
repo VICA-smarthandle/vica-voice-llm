@@ -52,7 +52,15 @@ def generate_launch_description() -> LaunchDescription:
                     ["destinations_yaml:=", destinations_yaml],
                 ],
             ),
-            _python_node("src.ros_tts_node", "vica_tts"),
+            _python_node(
+                "src.ros_tts_node",
+                "vica_tts",
+                [
+                    "--ros-args",
+                    "-p",
+                    ["destinations_yaml:=", destinations_yaml],
+                ],
+            ),
             _python_node(
                 "src.ros_wakeword_node",
                 "vica_wakeword",
@@ -61,6 +69,17 @@ def generate_launch_description() -> LaunchDescription:
                     "-p",
                     ["destinations_yaml:=", destinations_yaml],
                 ],
+            ),
+            ExecuteProcess(
+                cmd=["ollama", "serve"],
+                name="ollama_serve",
+                output="screen",
+                additional_env={
+                    "OLLAMA_KEEP_ALIVE": "-1",
+                    "OLLAMA_NUM_PARALLEL": "1",
+                    "OLLAMA_MAX_LOADED_MODELS": "1",
+                    "OLLAMA_GO_TEMPLATE": "1",
+                },
             ),
         ]
     )

@@ -190,7 +190,7 @@ def test_emergency_beats_barge_in_during_question():
     m = make(fake, events, texts, stops)
 
     armed_speaking(m)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=0.2,
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=0.2,
                          vad=True, doa=MIXED_DOA)
     assert results[-1] == "emergency"
     assert len(events) == 1

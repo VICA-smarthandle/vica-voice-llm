@@ -48,7 +48,7 @@ def test_emergency_confirmed():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춰!")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)
     assert results[-1] == "emergency"
     assert len(events) == 1
     assert events[0].keyword == "멈춰"
@@ -60,13 +60,21 @@ def test_emergency_rejected_by_stt():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춤")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)
     assert results[-1] == "reject"
     assert events == []
 
 
-def test_single_spike_no_stt_call():
+def test_single_spike_goes_to_verify():
     fake = Fake(scores=[(0, 0.9)] + [(0, 0)] * 10, text="멈춰")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)
+    assert fake.stt_calls == 1 and len(events) == 1
+
+
+def test_single_spike_below_half_no_stt_call():
+    fake = Fake(scores=[(0, 0.45)] + [(0, 0)] * 10, text="멈춰")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 8, LOUD)
@@ -106,7 +114,7 @@ def test_emergency_preempts_listen():
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.0)
     assert results[-1] == "emergency"
     assert events[0].keyword == "정지"
     assert texts == []
@@ -119,7 +127,7 @@ def test_muted_suppresses_and_failsafe_unmutes():
     m.set_muted(True, now=0.0, failsafe_sec=10.0)
     run_frames(m, 10, LOUD, t0=0.0)
     assert events == []
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=11.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=11.0)
     assert results[-1] == "emergency"
 
 
@@ -284,6 +292,28 @@ def test_near_silence_never_reaches_stt():
     assert "wake_silent" in results
     assert texts == []
     assert fake.stt_calls == 0
+
+
+class TestAgcMaxGainFromEnv:
+    """AGC 최대 증폭 한도(2026-10-15 사용자 결정 ×2) 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
+
+    def test_number_parses(self):
+        from src.dsp_state import agc_max_gain_from_env
+        assert agc_max_gain_from_env("2") == 2.0
+        assert agc_max_gain_from_env(" 4.0 ") == 4.0
+
+    def test_off_values_skip_write(self):
+        """줄이 없거나 꺼 두면 칩 공장값(×31.6) 그대로 — 지금까지와 같은 동작."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("", "0", "off", "none"):
+            assert agc_max_gain_from_env(raw) is None
+
+    def test_out_of_range_or_garbage_skip_write(self):
+        """칩 범위는 ×1~×1000(0~60 dB). 1 보다 작으면 소리를 줄이는 값이라 받지 않는다."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("0.5", "-2", "1001", "abc"):
+            assert agc_max_gain_from_env(raw) is None
+        assert agc_max_gain_from_env("1") == 1.0 and agc_max_gain_from_env("1000") == 1000.0
 
 
 class TestAgcDesiredFromEnv:

@@ -14,6 +14,7 @@ _LIVE_INT = {
 }
 
 _AGC_DESIRED = (19, 2)
+_AGC_MAX_GAIN = (19, 1)
 
 _GAMMA_ETAIL = (19, 16)
 _NLATTEN = (19, 18)
@@ -114,6 +115,34 @@ def apply_agc_desired_level(value: float) -> bool:
         readback = lo * (2.0 ** hi)
         usb.util.dispose_resources(dev)
         return abs(readback - value) < 1e-4
+    except Exception:
+        return False
+
+
+def agc_max_gain_from_env(raw: str) -> Optional[float]:
+    """VICA_MIC_AGC_MAX_GAIN 해석. None = 쓰지 않음(칩 공장값 ×31.6 유지 — 지금까지와 같음)."""
+    raw = (raw or "").strip().lower()
+    if raw in ("", "0", "off", "none"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 1.0 <= value <= 1000.0 else None
+
+
+def apply_agc_max_gain(value: float) -> bool:
+    """AGC 최대 증폭 한도를 칩에 쓰고 읽어서 확인한다. 성공 여부를 돌려준다."""
+    try:
+        import usb.core
+        import usb.util
+
+        dev = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        if dev is None:
+            return False
+        readback = _write_param(dev, _AGC_MAX_GAIN, value, False)
+        usb.util.dispose_resources(dev)
+        return readback is not None and abs(readback - value) < 1e-3 * max(1.0, value)
     except Exception:
         return False
 

@@ -6,6 +6,7 @@ from src.langchain_intent_parser import (
     _IntentDraft,
     _normalize_short_reply,
     _pending_confirm_destination,
+    is_scripted_reply,
     parse_intent,
 )
 from src.schema import DestinationData
@@ -107,11 +108,17 @@ class TestFirstWordShortcut:
         result = parse_intent("아니 거기 말고 다른 데", [DEST], history=HISTORY)
         assert result.intent == "deny"
 
-    def test_hesitation_alone_confirms_but_prefix_does_not(self):
-        """'음'·'어어'는 whisper 가 적은 "응"이라 단독이면 승낙이다. 그러나"""
+    def test_hesitation_alone_reasks_but_prefix_does_not_confirm(self):
+        """'음'·'어어' 단독은 whisper 가 적은 "응"일 수도, 망설임일 수도 있다 —"""
         alone = parse_intent("음.", [DEST], history=HISTORY)
-        assert alone.intent == "navigate"
+        assert alone.intent == "clarify"
+        assert not alone.matched_destination_id
         assert alone.need_confirm is False
+        assert alone.reply == DEST.confirm_prompt
+        assert is_scripted_reply(alone.reply, [DEST]) is True
+        assert parse_intent("어어", [DEST], history=HISTORY).intent == "clarify"
+        yes = parse_intent("응", [DEST], history=HISTORY)
+        assert yes.intent == "navigate" and yes.need_confirm is False
 
         prefixed = parse_intent("음 아니야 다른 데 갈래", [DEST], history=HISTORY,
                                 model="__no_llm__")
@@ -148,3 +155,11 @@ class TestCorrectionBeatsFirstWord:
         result = parse_intent("네 화장실 아니고 안내소로", [DEST],
                               history=HISTORY, model="__no_llm__")
         assert result.intent != "deny"
+
+
+def test_scripted_reply_detection():
+    """재청취 기각 예외 판별 — 코드가 정한 문구(호출 응답·확인 질문)만 참이다."""
+    assert is_scripted_reply("네?", [DEST]) is True
+    assert is_scripted_reply(DEST.confirm_prompt, [DEST]) is True
+    assert is_scripted_reply("식당으로 가시겠어요?", [DEST]) is False
+    assert is_scripted_reply("", [DEST]) is False

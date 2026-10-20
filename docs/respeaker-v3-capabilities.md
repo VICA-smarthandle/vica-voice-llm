@@ -9,9 +9,9 @@
 **reSpeaker 는 항상 있다.** 없으면 다른 장치로 조용히 폴백하지 않고 시끄럽게
 실패한다 — 폴백은 AEC·VAD·방향이 전부 조용히 깨진 채 도는 것이므로 더
 위험하다. DSP 설정 쓰기는 동결(D7, respeaker-dsp-config.md), 상태 읽기는 자유.
-동결의 승인된 예외 1건: AGCDESIREDLEVEL 을 노드 기동 시 0.010 으로 쓴다
-(2026-08-28 사용자 결정, `dsp_state.apply_agc_desired_level` — 근거·범위는
-그 모듈 주석). 다른 파라미터 쓰기는 여전히 금지.
+동결의 승인된 예외 3건 — 모두 노드 기동 시 `.env` 값으로 쓴다(근거·범위는 `dsp_state` 모듈 주석):
+AGCDESIREDLEVEL(2026-08-28), 에코 꼬리·비선형 억제 GAMMA_ETAIL·NLATTENONOFF(2026-09-04),
+AGCMAXGAIN(2026-10-15, 옆사람 잡담 수음 대책 ×2 — `VICA_MIC_AGC_MAX_GAIN`). 다른 파라미터 쓰기는 여전히 금지.
 
 ## 기능 → 시나리오 대체 표
 

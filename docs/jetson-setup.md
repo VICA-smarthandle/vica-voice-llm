@@ -47,30 +47,44 @@ pip install -r requirements.txt
 
 우리 코드는 `torch` 를 직접 쓰지 않는다(faster-whisper=ctranslate2, supertonic=onnxruntime).
 
-## 4. (선택) 오프라인/폴백용 로컬 LLM (Ollama + gemma4 e2b)
+## 4. (선택) 로컬 폴백 LLM (Ollama + gemma4-e2b-text)
 
-기본 LLM 은 Ollama Cloud 다. 아래는 오프라인이 필요할 때만 설정하는 선택 단계다.
+클라우드가 닿지 않을 때 자동으로 넘어가는 로컬 모델이다. 설계·규칙은
+`docs/superpowers/specs/2026-09-19-llm-local-fallback-design.md`.
+
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh   # ARM64 지원, CUDA 자동 감지
-ollama pull gemma4:e2b        # 정확한 태그는 https://ollama.com/library 에서 확인
-ollama serve &                # 백그라운드 서버 (보통 자동 실행됨)
+curl -fsSL https://ollama.com/install.sh | sh   # ARM64 지원, CUDA(jetpack6) 자동 감지
+ollama serve &                                  # 평소엔 음성 launch 가 띄운다
+scripts/setup_local_llm.sh                      # HF 가중치 받기 → 텍스트 전용 모델 조립
 ```
-빠른 확인: `ollama run gemma4:e2b "안녕"`
+
+빠른 확인: `ollama run gemma4-e2b-text "안녕"` → 한두 문장이 3초 안에 나오면 정상.
+공식 `gemma4:e2b` 태그(6.7 GB)를 쓰지 않는 이유: 같은 속도인데 RAM 을 6배 쓴다
+(3.05 GB vs 0.46 GB, 2026-09-19 실측). 켜는 법은 5절의 `VICA_LLM_FALLBACK_MODEL`.
+로컬 호출이 멈춰도 노드가 영원히 기다리지 않도록 `VICA_LLM_LOCAL_TIMEOUT`(기본
+45초)이 상한을 둔다 — 보통은 건드릴 일이 없다.
 
 ## 5. `.env` 설정
-`.env.example` 을 참고해 `.env` 를 만든다. 기본은 클라우드 LLM:
+`.env.example` 을 참고해 `.env` 를 만든다. 기본(운영)은 openai 클라우드:
+```bash
+VICA_LLM_PROVIDER=openai
+VICA_OPENAI_MODEL=gpt-5.4-mini
+OPENAI_API_KEY=<키>
+```
+대안으로 ollama 클라우드를 쓸 수도 있다(`VICA_LLM_PROVIDER` 를 지정하지 않으면 이쪽이 기본):
 ```bash
 OLLAMA_HOST=https://ollama.com
 VICA_LLM_MODEL=gemma4:cloud
 OLLAMA_API_KEY=<ollama cloud 키>
 ```
-오프라인/폴백으로 로컬 Ollama 를 쓰려면 (4번 설치 후) 위 3줄 대신:
+6초 상한(`VICA_LLM_CLOUD_TIMEOUT`, 폴백이 켜졌을 때만 적용)은 openai·ollama 두
+경로 모두에 걸린다 — 어느 쪽을 골라도 클라우드가 멈추면 6초 안에 로컬로 대피한다.
+
+로컬 폴백을 켜려면(4번 설치 후) 위 설정은 그대로 두고 한 줄을 더한다:
 ```bash
-OLLAMA_HOST=http://localhost:11434
-VICA_LLM_MODEL=gemma4:e2b
-# OLLAMA_API_KEY 는 로컬에선 필요 없음 (비워두거나 삭제)
+VICA_LLM_FALLBACK_MODEL=gemma4-e2b-text
 ```
-→ 코드 수정 없이 `.env` 만으로 전환된다.
+→ 코드 수정 없이 `.env` 만으로 켜고 끈다.
 
 ## 6. (CLI 부터) 먼저 검증
 ```bash
