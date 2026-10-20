@@ -25,7 +25,7 @@ SAMPLE_RATE_RT = 24000   # Realtime 입력 형식
 DEFAULT_MODEL = "gpt-realtime-2.1-mini"
 TOOL_NAME = "set_intent"
 _INTENTS = ["navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
-            "affirm", "deny", "wait", "finish"]
+            "affirm", "deny", "wait", "finish", "help"]
 
 
 def float32_to_pcm16(audio) -> bytes:

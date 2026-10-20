@@ -60,6 +60,9 @@ VicaIntentType = Literal[
     # 목적지 도착 후 대화 (2026-08-30, arrival-dialog-flow). wait 는 시간을
     # wait_minutes 에 담고, finish 는 홈 복귀 신호다. 둘 다 reply="".
     "wait", "finish",
+    # 관리자 호출(도움 요청, 2026-10-15 설계). 직원·관리자의 도움을 원함 — 판단은 LLM 만 한다
+    # (키워드 규칙 없음). 확인 질문·안내는 미션이 하므로 reply="". VicaIntent.msg 는 문자열이라 그대로.
+    "help",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 

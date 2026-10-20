@@ -58,6 +58,18 @@ CONFIRM_SWITCH = "네, {prompt}"
 # 대기 장소가 없는 목적지로 돌아가 기다릴 때(홈 가는 중 "기다려", 결정 1)의 장소 말 — 미션
 # WAIT_PLACE_AT_DESTINATION. 대기 장소가 막혔을 때(M6 뒤) 상황판의 말과 같다.
 WAIT_PLACE_AT_DESTINATION = "입구 앞"
+# 관리자 호출(도움 요청, 2026-10-15 설계·10-16 사용자 확정 문장) — 미션 MSG_HELP_* 사본. 띄어쓰기·
+# 마침표 유무까지 사용자가 정한 그대로다. 확인 질문·보냈음·오는 중·취소 질문·취소함·받을 수 없음.
+HELP_CONFIRM = "직원의 도움이 필요하신가요?"
+HELP_CANCEL_CONFIRM = "도움 요청을 취소할까요?"
+HELP_SENTENCES = (
+    HELP_CONFIRM,
+    "지금 도움 요청을 보냈습니다",
+    "관리자가 오고있습니다. 잠시만 기다려주세요",
+    HELP_CANCEL_CONFIRM,
+    "도움 요청을 취소했습니다.",
+    "지금은 도움 요청을 보낼 수 없습니다",
+)
 
 # 숫자로 끝나는 이름을 읽을 때 마지막 숫자의 받침(영·일·삼·육·칠·팔 있음, 이·사·오·구 없음).
 _DIGIT_HAS_BATCHIM = {
@@ -147,10 +159,11 @@ def _unique(phrases: Iterable[str]) -> list[str]:
 
 def standalone_prewarm(destinations: Iterable) -> list[str]:
     """혼자 말해지는 문장 — 목적지 확인 질문과, 확인 질문 중 다른 목적지로 다시 묻는 "네, …"
-    (2026-10-08 결정 4). 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
+    (2026-10-08 결정 4), 관리자 호출 문장(2026-10-16). 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
     dests = list(destinations)
     phrases = [d.confirm_prompt for d in dests]
     phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
+    phrases += list(HELP_SENTENCES)
     return _unique(phrases)
 
 

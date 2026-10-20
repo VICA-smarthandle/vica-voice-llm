@@ -122,5 +122,6 @@
  "mission_msg_obstacle_slow.wav": "앞에 장애물이 있어 감속할게요.",
  "mission_msg_approach_reask.wav": "안내를 받으시겠어요?",
  "mission_msg_approach_unanswered.wav": "필요하시면 '비카야'라고 불러 주세요.",
- "mission_msg_obstacle_stop.wav": "앞에 장애물이 있어 정지합니다."
+ "mission_msg_obstacle_stop.wav": "앞에 장애물이 있어 정지합니다.",
+ "mission_msg_tipped.wav": "비카가 넘어져 관리자를 호출했습니다. 지나가실 때 주의하세요."
 }
