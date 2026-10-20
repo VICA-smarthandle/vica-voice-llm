@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import threading
 from math import gcd
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -60,12 +60,13 @@ def to_stereo(wave: np.ndarray) -> np.ndarray:
 
 
 def prepare(wave: np.ndarray, rate: int,
-            device_rate: Optional[int], device_channels: int) -> np.ndarray:
+            device_rate: Optional[int], device_channels: int,
+            peak_dbfs: Optional[float] = None) -> np.ndarray:
     """재생 직전 변환 파이프라인. 정규화는 리샘플 뒤에 한다 —"""
     out = np.asarray(wave, dtype=np.float32)
     if device_rate is not None:
         out = resample(out, rate, device_rate)
-    out = normalize_peak(out)
+    out = normalize_peak(out, peak_dbfs)
     if device_channels >= 2:
         out = to_stereo(out)
     return out
@@ -194,7 +195,9 @@ def _persistent_stream(index: Optional[int], rate: int, channels: int):
     return _out_stream
 
 
-def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
+def play(wave: np.ndarray, rate: int, blocking: bool = False,
+         should_stop: Optional[Callable[[], bool]] = None,
+         peak_dbfs: Optional[float] = None) -> None:
     """정규화·리샘플 후 재생한다. 실패 처리는 호출자 몫(예외 그대로 전파) —"""
     import sounddevice as sd
 
@@ -207,7 +210,7 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
         raise RuntimeError(
             "reSpeaker 재생 장치를 찾을 수 없다 (연결 또는 VICA_TTS_DEVICE 확인)")
     index, out_rate, channels = device
-    out = prepare(wave, rate, out_rate, channels)
+    out = prepare(wave, rate, out_rate, channels, peak_dbfs)
 
     if not blocking:
         sd.play(out, out_rate, device=index)
@@ -218,7 +221,7 @@ def play(wave: np.ndarray, rate: int, blocking: bool = False) -> None:
     _stop_flag.clear()
     stream = _persistent_stream(index, out_rate, out.shape[1])
     for i in range(0, len(out), CHUNK):
-        if _stop_flag.is_set():
+        if _stop_flag.is_set() or (should_stop is not None and should_stop()):
             break
         stream.write(np.ascontiguousarray(out[i:i + CHUNK]))
 

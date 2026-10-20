@@ -33,12 +33,14 @@ class DestinationData(BaseModel):
     pose: DestinationPose = Field(default_factory=DestinationPose)
     confirm_prompt: str = ""
     arrival_message: str = ""
+    door_yaw: Optional[float] = None
 
 
 VicaIntentType = Literal[
     "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
     "affirm", "deny",
     "wait", "finish",
+    "help",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
@@ -70,6 +72,19 @@ class RobotState(BaseModel):
     current_floor: Optional[int] = None
     current_building: str = ""
     is_moving: bool = False
+    is_paused: bool = False
+    dialog_state: str = ""
+    place_here: str = ""
+    place_here_dist_m: float = -1.0
+    active_destination: str = ""
+    last_destination: str = ""
+    last_arrived_age_sec: int = -1
+    aborted_destination: str = ""
+    wait_minutes: int = -1
+    wait_left_sec: int = -1
+    battery_pct: int = -1
+    door_side: str = ""
+    wait_place: str = ""
 
 
 def should_forward_intent(intent) -> bool:

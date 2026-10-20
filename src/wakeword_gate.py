@@ -29,20 +29,26 @@ def match_emergency_transcript(text: str) -> Optional[str]:
 class FrameGate:
     """프레임 점수의 관문 판정 — 지속(연속 프레임)과 쿨다운을 관리한다."""
 
-    def __init__(self, threshold: float, persist: int = 2, cooldown_sec: float = 2.0):
+    def __init__(self, threshold: float, persist: int = 2, cooldown_sec: float = 2.0,
+                 single: Optional[float] = None):
         self.threshold = threshold
         self.persist = persist
         self.cooldown_sec = cooldown_sec
+        self.single = single
         self._streak = 0
         self._last_fire = float("-inf")
+        self.cooldown_blocked = False
 
     def feed(self, score: float, now: float) -> bool:
         """프레임 점수 하나를 넣고, 이번 프레임에 발동해야 하면 True."""
         self._streak = self._streak + 1 if score >= self.threshold else 0
-        if self._streak >= self.persist and now - self._last_fire >= self.cooldown_sec:
-            self._last_fire = now
-            self._streak = 0
-            return True
+        self.cooldown_blocked = False
+        if self._streak >= self.persist or (self.single is not None and score >= self.single):
+            if now - self._last_fire >= self.cooldown_sec:
+                self._last_fire = now
+                self._streak = 0
+                return True
+            self.cooldown_blocked = True
         return False
 
     def reset(self) -> None:

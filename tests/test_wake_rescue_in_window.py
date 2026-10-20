@@ -101,7 +101,7 @@ class TestFollowupAnswerBeatsRescue:
 
     def test_free_window_short_answer_word_is_still_rescued(self):
         """자유 창은 정답 어휘 예외가 없다 — heard_wake 면 그대로 구제한다."""
-        out, texts, _, states = _run("그래.", wake_frames={2, 3})
+        out, texts, _, states = _run("그래.", wake_frames={4, 5})
         assert out == "user_text"
         assert texts == [WAKE_WORD_TEXT]
         assert any(s.startswith("wake-rescue") for s in states)
@@ -110,19 +110,19 @@ class TestFollowupAnswerBeatsRescue:
 class TestRescue:
     def test_misheard_call_is_rescued_by_sound(self):
         """'비켜야'로 적혀도 호출 소리를 들었으면 호출이다."""
-        out, texts, wakes, states = _run("비켜야.", wake_frames={2, 3})
+        out, texts, wakes, states = _run("비켜야.", wake_frames={4, 5})
         assert out == "user_text"
         assert texts == [WAKE_WORD_TEXT]
         assert any(s.startswith("wake-rescue") for s in states)
 
     def test_rescue_does_not_open_a_new_window(self):
         """창 안 호출은 창을 새로 열지 않는다 — on_wake 는 첫 호출 1회뿐."""
-        _, _, wakes, _ = _run("미카야", wake_frames={2, 3})
+        _, _, wakes, _ = _run("미카야", wake_frames={4, 5})
         assert wakes == [1]
 
     def test_command_is_not_rescued(self):
         """전사가 길면 명령이다 — 소리를 들었어도 그대로 흘려보낸다."""
-        out, texts, _, states = _run("화장실로 가자", wake_frames={2, 3})
+        out, texts, _, states = _run("화장실로 가자", wake_frames={4, 5})
         assert out == "user_text"
         assert texts == ["화장실로 가자"]
         assert not any(s.startswith("wake-rescue") for s in states)
@@ -136,21 +136,43 @@ class TestRescue:
 
     def test_hallucinated_call_still_rescued(self):
         """호출을 '감사합니다'로 적어도 살린다 — 구제가 환각 검사보다 앞이다."""
-        out, texts, _, _ = _run("감사합니다", wake_frames={2, 3})
+        out, texts, _, _ = _run("감사합니다", wake_frames={4, 5})
         assert out == "user_text"
         assert texts == [WAKE_WORD_TEXT]
+
+
+class TestOpeningCallTail:
+    """창을 연 그 "비카야"의 여운은 창 안 재호출이 아니다 (2026-10-13)."""
+
+    def test_tail_of_opening_call_does_not_swallow_short_command(self):
+        out, texts, _, states = _run("407호", wake_frames={2, 3})
+        assert out == "user_text"
+        assert texts == ["407호"]
+        assert not any(s.startswith("wake-rescue") for s in states)
+
+    def test_tail_during_run_on_command_is_not_a_call(self):
+        """이어 말한 "비카야화장실로가자" — 창에 남은 '로 가자'를 '비카야'로 바꾸지 않는다."""
+        out, texts, _, states = _run("로 가자", wake_frames={2, 3, 4})
+        assert texts == ["로 가자"]
+        assert not any(s.startswith("wake-rescue") for s in states)
+
+    def test_call_after_tail_drops_is_rescued(self):
+        """여운(2) 뒤 점수가 내려갔다가(3) 다시 오른 호출(4·5)은 재호출이다."""
+        out, texts, _, states = _run("미카야", wake_frames={2, 4, 5})
+        assert texts == [WAKE_WORD_TEXT]
+        assert any(s.startswith("wake-rescue") for s in states)
 
 
 class TestLengthBoundary:
     def test_one_char_is_too_short(self):
         """'네' 한 글자는 구제 대상이 아니다 — 짧은 답을 호출로 만들면 안 된다."""
-        out, texts, _, _ = _run("네", wake_frames={2, 3})
+        out, texts, _, _ = _run("네", wake_frames={4, 5})
         assert texts == ["네"]
         assert out == "user_text"
 
     def test_spaced_variant_is_rescued(self):
         """'비 카야' 처럼 띄어 적어도 2토큰 3자라 구제한다."""
-        _, texts, _, _ = _run("비 카야", wake_frames={2, 3})
+        _, texts, _, _ = _run("비 카야", wake_frames={4, 5})
         assert texts == [WAKE_WORD_TEXT]
 
 
@@ -167,7 +189,7 @@ def test_listen_gate_does_not_consume_outer_cooldown():
 
 def test_rescue_state_prefix_is_the_node_contract():
     """구제 보고 문자열의 접두는 노드와의 계약이다."""
-    _, _, _, states = _run("비켜야.", wake_frames={2, 3})
+    _, _, _, states = _run("비켜야.", wake_frames={4, 5})
     rescued = [s for s in states if s.startswith("wake-rescue")]
     assert rescued, "구제 사실이 listen_state 로 보고돼야 한다"
     assert rescued[0].startswith("wake-rescue ")

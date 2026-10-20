@@ -47,6 +47,7 @@ ros_emergency_node  whisper 상시 감시. 웨이크워드 롤백용으로 남�
 | `/vica_goal_event` | `std_msgs/msg/String` (JSON) | Mission Manager | 웨이크워드 노드 | goal 생명주기 이벤트. **payload 는 JSON** — `event` 키(`goal_succeeded` 등)를 꺼내 쓴다. 평문 이벤트 이름은 계약이 아니다(핸들 노드가 2026-07-29 실기에서 겪은 함정) |
 | `/vica/wake` | `std_msgs/msg/String` | 웨이크워드 노드 | Mission Manager | "비카야" 호출 감지 신호. 2026-09-10 호출 접근 설계부터 Mission 이 실제로 구독한다(WAITING 각성·복귀 브레이크) — 팀 계약으로 승격, 임의 변경 금지 |
 | `/vica/wake_doa` | `std_msgs/msg/Float32` | 웨이크워드 노드 | Mission Manager | 호출이 온 방향(도, 0~359). 정면이 0, 핸들 쪽이 180. 칩이 방향을 못 읽으면 무발행(무음 실패) — Mission 은 대기(IDLE) 중에만 받아 그쪽으로 고개를 돌린다(호출 접근 설계 §3~4) |
+| `/vica/thinking` | `std_msgs/msg/Bool` | LLM node | TTS, Mission Manager | LLM 이 사용자 말을 판단하는 중이면 `true`, 끝나면(성공·실패 모두) `false`. Realtime·글자 경로 호출 전후로 켜고 끈다. TTS 는 생각 중 운율을 틀고(2026-09-01), Mission 은 켜진 동안 대답 대기 시계를 잡는다 — 꺼진 뒤 1초 꼬리, 처음 켠 때부터 20초 상한(2026-10-10 팀 계약으로 승격, vica_ros2_ws 645acd7) |
 
 기본 QoS는 depth 10 reliable이다.
 

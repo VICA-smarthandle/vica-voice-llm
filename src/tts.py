@@ -48,12 +48,13 @@ class VicaTTS:
             print(f"[TTS] 재생 실패: {exc}", file=sys.stderr)
             return False
 
-    def play_audio(self, wav, sample_rate: int) -> bool:
+    def play_audio(self, wav, sample_rate: int, should_stop=None, peak_dbfs=None) -> bool:
         """이미 만들어 둔 파형을 재생한다 (고정 멘트 캐시용 — 합성 생략)."""
         try:
             from . import audio_out
 
-            audio_out.play(wav, sample_rate, blocking=True)
+            audio_out.play(wav, sample_rate, blocking=True, should_stop=should_stop,
+                           peak_dbfs=peak_dbfs)
             return True
         except Exception as exc:
             import sys

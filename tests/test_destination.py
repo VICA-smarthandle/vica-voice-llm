@@ -18,7 +18,7 @@ class FillDefaultsTest(unittest.TestCase):
         d = DestinationData(id="x", name="안내센터")
         _fill_defaults(d)
         self.assertEqual(d.confirm_prompt, "안내센터로 안내해드릴까요?")
-        self.assertEqual(d.arrival_message, "안내센터 앞에 도착했습니다.")
+        self.assertEqual(d.arrival_message, "안내센터에 도착했습니다.")
 
     def test_keep_existing(self):
         d = DestinationData(id="x", name="식당", confirm_prompt="이미 있음")
@@ -92,3 +92,26 @@ class TestPlaceHint:
     def test_empty_list_gives_empty_hint(self):
         from src.destination_loader import build_place_hint
         assert build_place_hint([]) == ""
+
+
+class TestKoreanNumberWords:
+    """Qwen3-ASR 은 '407호' 를 '사백칠호' 로 적는다(2026-10-15) — 대조할 때만 숫자로 바꿔 맞춘다."""
+
+    DESTS = None
+
+    def _dests(self):
+        from src.schema import DestinationData
+        return [DestinationData(id="r407", name="407", aliases=["407호"]),
+                DestinationData(id="r408", name="408", aliases=["408호"]),
+                DestinationData(id="wc", name="화장실")]
+
+    def test_spelled_room_number_matches(self):
+        ds = self._dests()
+        assert match_destination("사백칠호로 가자", ds).id == "r407"
+        assert match_destination("사백 칠 호", ds).id == "r407"
+        assert match_destination("사백팔호", ds).id == "r408"
+
+    def test_digits_and_plain_names_still_match(self):
+        ds = self._dests()
+        assert match_destination("407호로 가자", ds).id == "r407"
+        assert match_destination("화장실 가고 싶어", ds).id == "wc"

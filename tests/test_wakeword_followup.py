@@ -135,7 +135,7 @@ def test_emergency_still_wins_inside_followup_listen():
     m.set_muted(True, now=0.1)
     m.set_muted(False, now=1.0)
 
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.0)
     assert results[-1] == "emergency"
     assert len(events) == 1 and events[0].keyword == "멈춰"
     assert texts == []
@@ -318,3 +318,51 @@ class TestFreeWindowMinOpen:
         run_frames(m, 220, QUIET, t0=5.24, vad=False)
         assert texts == []
         assert any(s.startswith("empty") for s in states)
+
+
+class TestApproachMinRms:
+    """접근 질문의 대답만 낮은 수음 최소로 받는다(2026-10-15 사용자 결정 ②)."""
+
+    FAINT = np.full(1280, 500, dtype=np.int16)
+
+    def _answer(self, texts, states, *, approach, approach_min_rms):
+        fake = Fake(text="아니.")
+        m = WakewordMonitor(
+            on_emergency=lambda e: None, on_user_text=texts.append, on_wake=lambda: None,
+            on_listen_state=states.append, predict=fake.predict, transcribe=fake.transcribe,
+            listen_min_rms=0.012, approach_min_rms=approach_min_rms,
+        )
+        m.set_wake_suppressed(approach)
+        m.arm_followup(now=0.0)
+        m.set_muted(False, now=0.0)
+        run_frames(m, 6, self.FAINT, t0=0.1, vad=True)
+        run_frames(m, 14, QUIET, t0=0.1 + 6 * 0.08)
+        return m
+
+    def test_faint_answer_is_kept_while_waiting_for_the_approach_answer(self):
+        texts, states = [], []
+        self._answer(texts, states, approach=True, approach_min_rms=0.006)
+        assert texts == ["아니."]
+
+    def test_same_faint_answer_is_dropped_outside_the_approach(self):
+        texts, states = [], []
+        self._answer(texts, states, approach=False, approach_min_rms=0.006)
+        assert texts == []
+        assert any(s.startswith("empty:ghost") for s in states)
+
+    def test_without_the_setting_the_approach_uses_the_usual_threshold(self):
+        """`.env` 줄이 없으면 지금까지와 같다."""
+        texts, states = [], []
+        self._answer(texts, states, approach=True, approach_min_rms=None)
+        assert texts == []
+
+
+def test_approach_min_rms_from_env(monkeypatch):
+    from src.wakeword_monitor import approach_min_rms_from_env
+    monkeypatch.setenv("VICA_APPROACH_MIN_RMS", "0.006")
+    assert approach_min_rms_from_env() == 0.006
+    for raw in ("", "off", "0", "1.5", "abc"):
+        monkeypatch.setenv("VICA_APPROACH_MIN_RMS", raw)
+        assert approach_min_rms_from_env() is None
+    monkeypatch.delenv("VICA_APPROACH_MIN_RMS")
+    assert approach_min_rms_from_env() is None

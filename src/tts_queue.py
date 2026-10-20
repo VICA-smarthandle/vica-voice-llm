@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 NARRATION_TTL_SEC = 6.0
+AMBIENT_TTL_SEC = 1.0
 
 EMERGENCY = "emergency"
 RESPONSE = "response"
 NARRATION = "narration"
+AMBIENT = "ambient"
 
-PRIORITIES = (EMERGENCY, RESPONSE, NARRATION)
+PRIORITIES = (EMERGENCY, RESPONSE, NARRATION, AMBIENT)
 _ORDER = {name: index for index, name in enumerate(PRIORITIES)}
 
 DEFAULT_PRIORITY = NARRATION
@@ -84,7 +86,8 @@ class TtsQueue:
         with self._lock:
             return len(self._items)
 
-    def push(self, priority: str, text: str, now: float) -> PushResult:
+    def push(self, priority: str, text: str, now: float, busy: bool = False) -> PushResult:
+        """busy: 지금 무엇이 재생 중인가(노드가 알려 준다) — 배경 알림만 본다."""
         text = (text or "").strip()
         if not text:
             return PushResult(accepted=False, reason="빈 문자열")
@@ -92,6 +95,8 @@ class TtsQueue:
             priority = DEFAULT_PRIORITY
 
         with self._lock:
+            if priority == AMBIENT and (busy or self._items):
+                return PushResult(accepted=False, reason="배경 알림 — 다른 말 중")
             self._forget_old(now)
             if text in self._recent:
                 return PushResult(accepted=False, reason="직전과 같은 문장")
@@ -107,9 +112,13 @@ class TtsQueue:
                 self._sort()
                 return PushResult(accepted=True, preempt=True, dropped=dropped)
 
+            yielded: tuple[str, ...] = ()
+            if priority != AMBIENT:
+                yielded = tuple(i.text for i in self._items if i.priority == AMBIENT)
+                self._items = [i for i in self._items if i.priority != AMBIENT]
             self._items.append(item)
             self._sort()
-            return PushResult(accepted=True, dropped=self._trim())
+            return PushResult(accepted=True, dropped=yielded + self._trim())
 
     def pop(self, now: Optional[float] = None) -> Optional[Utterance]:
         import time as _time
@@ -132,6 +141,8 @@ class TtsQueue:
             age = now - item.queued_at
             if item.priority == NARRATION:
                 return age <= NARRATION_TTL_SEC
+            if item.priority == AMBIENT:
+                return age <= AMBIENT_TTL_SEC
             return True
 
         kept, dropped = [], []

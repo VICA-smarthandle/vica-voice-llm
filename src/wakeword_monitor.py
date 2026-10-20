@@ -1,17 +1,23 @@
 """웨이크워드 상시 감시 엔진 (P1-b) — 호출(모델 A) + 긴급(모델 B → STT 검증)."""
 from __future__ import annotations
 
+import json
 import os
 import time
+import wave
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
+from .mission_phrases import OBSTACLE_STOP
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
+from .stt_qwen import ear_stt_engines, qwen_from_env
 from .wakeword_gate import FrameGate, match_emergency_transcript
 
 SAMPLE_RATE = 16000
@@ -29,6 +35,30 @@ LISTEN_MIN_SPEECH_SEC = 0.16
 LISTEN_MIN_RMS = 0.008
 SHORT_ANSWER_MIN_RMS = 0.02
 
+
+def listen_thresholds_from_env() -> tuple[float, float]:
+    """(수음 최소, 짧은 답 최소) — VICA_LISTEN_MIN_RMS·VICA_SHORT_ANSWER_MIN_RMS (2026-10-12 마이크 점검기)."""
+    def one(name: str, default: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        return value if 0.0 < value < 1.0 else default
+
+    return (one("VICA_LISTEN_MIN_RMS", LISTEN_MIN_RMS),
+            one("VICA_SHORT_ANSWER_MIN_RMS", SHORT_ANSWER_MIN_RMS))
+
+
+def approach_min_rms_from_env() -> Optional[float]:
+    """접근 질문('안내를 받으시겠어요?')의 대답을 기다리는 동안의 수음 최소 — VICA_APPROACH_MIN_RMS."""
+    raw = os.environ.get("VICA_APPROACH_MIN_RMS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
+
 LISTEN_WAKE_RESCUE_TOKENS = 2
 LISTEN_WAKE_RESCUE_MIN_CHARS = 2
 LISTEN_WAKE_RESCUE_MAX_CHARS = 5
@@ -37,11 +67,123 @@ _SHORT_ANSWER_WORDS = AFFIRMATIVES | SOFT_AFFIRMATIVES | NEGATIVES
 LISTEN_MAX_SEC = float(os.environ.get("VICA_LISTEN_MAX_SEC", "15.0"))
 LISTEN_SILENCE_END_SEC = float(os.environ.get("VICA_LISTEN_END_SEC", "0.8"))
 LISTEN_MIN_OPEN_SEC = float(os.environ.get("VICA_LISTEN_MIN_OPEN_SEC", "2.5"))
+LISTEN_START_SEC = float(os.environ.get("VICA_LISTEN_START_SEC", "6.0"))
 LISTEN_BLIP_VOID_SEC = float(os.environ.get("VICA_LISTEN_BLIP_VOID_SEC", "0.32"))
 CONFIRM_WINDOW_SEC = float(os.environ.get("VICA_CONFIRM_WINDOW_SEC", "30.0"))
 PREROLL_FRAMES = 6
 SPEECH_RMS = 0.01
 HEAD_PRE_ROLL_FRAMES = 8
+WAKE_REPLY_TIMEOUT_SEC = float(os.environ.get("VICA_WAKE_REPLY_TIMEOUT_SEC", "6.0"))
+
+
+WAKE_THRESHOLD_DEFAULT = 0.7
+
+
+def wake_threshold_from_env() -> float:
+    raw = os.environ.get("VICA_WAKE_THRESHOLD", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return WAKE_THRESHOLD_DEFAULT
+    return value if 0.0 < value < 1.0 else WAKE_THRESHOLD_DEFAULT
+
+
+WAKE_THRESHOLD = wake_threshold_from_env()
+WAKE_NEAR_MISS_FLOOR = 0.4
+EMERGENCY_NEAR_MISS_FLOOR = 0.3
+EMERGENCY_SINGLE_FRAME_DEFAULT = 0.5
+
+
+def emergency_single_frame_from_env() -> Optional[float]:
+    """VICA_EMERGENCY_SINGLE_FRAME — 없으면 0.5, off 면 None(2연속 규칙만), 이상한 값이면 0.5."""
+    raw = os.environ.get("VICA_EMERGENCY_SINGLE_FRAME", "").strip().lower()
+    if raw in ("off", "none", "false", "no"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return EMERGENCY_SINGLE_FRAME_DEFAULT
+    return value if 0.0 < value < 1.0 else EMERGENCY_SINGLE_FRAME_DEFAULT
+
+
+def ear_stt_model_names() -> tuple[str, str]:
+    """귀가 띄우는 whisper 두 개의 이름 — (대화 받아쓰기, 긴급 확인)."""
+    return (os.environ.get("VICA_STT_MODEL", "medium"),
+            os.environ.get("VICA_VERIFY_STT_MODEL", "medium"))
+SELF_WAKE_TAIL_SEC = 0.5
+SELF_WAKE_MAX_SEC = 20.0
+WAKE_WORD_IN_SPEECH = "비카야"
+
+
+def has_wake_word(text: str) -> bool:
+    """로봇이 말할 문장에 호출어가 들어 있는가."""
+    return WAKE_WORD_IN_SPEECH in (text or "")
+
+
+MIC_OFF_PHRASES = frozenset({OBSTACLE_STOP})
+
+
+def mic_off_while_saying(text: str) -> bool:
+    """이 로봇 말을 하는 동안 마이크를 닫는가."""
+    return (text or "").strip() in MIC_OFF_PHRASES
+
+
+_CHECK_RESULT_KO = {
+    "listen_resumed": "청취 창 안 — 긴급 아님, 듣기 이어감",
+    "followup_answer": "긴급 아님 — 질문 답으로 넘김",
+}
+
+
+def describe_emergency_check(check: Optional[dict]) -> str:
+    """긴급 관문 한 번의 기록 꼬리 — " · 관문 0.87 · 관문→판정 1.93 s (STT 1.61 s)"."""
+    if not check:
+        return ""
+    parts = []
+    if check.get("score") is not None:
+        parts.append(f"관문 {check['score']:.2f}")
+    stt = check.get("stt")
+    if stt is not None:
+        post = check.get("postroll")
+        if post is not None:
+            parts.append(f"관문→판정 {post + stt:.2f} s (STT {stt:.2f} s)")
+        else:
+            parts.append(f"STT {stt:.2f} s")
+    note = _CHECK_RESULT_KO.get(check.get("result", ""))
+    if note:
+        parts.append(note)
+    return "".join(f" · {x}" for x in parts)
+
+
+def describe_emergency_near(info: dict, threshold: float) -> str:
+    """긴급 모델이 문턱 근처까지 반응했지만 발동하지 않은 소리 한 덩어리의 기록 한 줄."""
+    line = f"🎯 긴급 점수 놓침: {info['peak']:.2f} (문턱 {threshold:.2f})"
+    if info.get("cooldown"):
+        after = info.get("after_fire")
+        line += " · 쉬는 시간 중 무시" + (f"(앞 반응 {after:.2f} s 뒤)" if after is not None else "")
+    elif info.get("frames_over"):
+        line += f" · 문턱 넘은 조각 {info['frames_over']}개(2개 연속 필요)"
+    return line
+
+
+def save_emergency_clip(directory, audio: np.ndarray, info: dict, wall_time: Optional[float] = None) -> Path:
+    """긴급 관문에서 들은 소리를 wav 로, 그 판정을 directory/clips.jsonl 한 줄로 남긴다(2026-10-12 사용자 결정)."""
+    directory = Path(directory).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.fromtimestamp(time.time() if wall_time is None else wall_time)
+    score = info.get("score", info.get("peak"))
+    name = (f"{stamp:%Y%m%d_%H%M%S}_{stamp.microsecond // 1000:03d}_{info.get('result', 'clip')}"
+            + (f"_{score:.2f}" if score is not None else "") + ".wav")
+    path = directory / name
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(np.asarray(audio, dtype=np.int16).tobytes())
+    row = {"time": stamp.isoformat(timespec="milliseconds"), "file": name}
+    row.update({k: v for k, v in info.items() if k != "audio"})
+    with open(directory / "clips.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
 
 
 def _frame_rms(frame) -> float:
@@ -97,17 +239,28 @@ class WakewordMonitor:
         on_listen_empty: Optional[Callable[[], None]] = None,
         on_listen_state: Optional[Callable[[str], None]] = None,
         on_wake_doa: Optional[Callable[[float], None]] = None,
+        on_user_audio: Optional[Callable[[np.ndarray], None]] = None,
+        on_wake_score: Optional[Callable[[str, float], None]] = None,
+        on_emergency_score: Optional[Callable[[dict], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
         user_doa_width: float = 45.0,
+        wake_gate: bool = False,
         predict: Optional[Callable[[np.ndarray], dict]] = None,
         transcribe: Optional[Callable[[np.ndarray], str]] = None,
         listen_hint: Optional[str] = None,
-        gate_a: float = 0.6,
+        gate_a: float = WAKE_THRESHOLD,
         gate_b: float = 0.5,
         cooldown_a: float = 1.5,
         cooldown_b: float = 2.0,
+        single_b: object = "env",
+        listen_min_rms: Optional[float] = None,
+        short_answer_min_rms: Optional[float] = None,
+        approach_min_rms: Optional[float] = None,
+        transcribe_listen: Optional[Callable[[np.ndarray], str]] = None,
+        transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
+        on_frame: Optional[Callable[[dict], None]] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -117,6 +270,15 @@ class WakewordMonitor:
         self._on_listen_empty = on_listen_empty or (lambda: None)
         self._on_listen_state = on_listen_state or (lambda s: None)
         self._on_wake_doa = on_wake_doa or (lambda doa: None)
+        self._on_user_audio = on_user_audio
+        self._on_wake_score = on_wake_score or (lambda kind, peak: None)
+        self._on_emergency_score = on_emergency_score or (lambda info: None)
+        self._em_episode = False
+        self._em_peak = 0.0
+        self._em_over = 0
+        self._em_blocked = False
+        self._em_fired = False
+        self._em_started_at = 0.0
         self._voice_barge_in = voice_barge_in
         self._doa_gate = doa_gate
         self._user_doa_center = user_doa_center
@@ -128,13 +290,32 @@ class WakewordMonitor:
         self._predict = predict
         self._transcribe = transcribe
         self._listen_hint = (listen_hint or "").strip() or None
-        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = None
-        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None
+        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = transcribe_listen
+        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = transcribe_confirm
+        self.qwen = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
-        self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
+        self.gate_b = FrameGate(
+            gate_b, persist=2, cooldown_sec=cooldown_b,
+            single=emergency_single_frame_from_env() if single_b == "env" else single_b)
         self.gate_a_listen = FrameGate(gate_a, persist=2, cooldown_sec=0.0)
         self._gate_b_base = gate_b
+        env_listen, env_short = listen_thresholds_from_env()
+        self.listen_min_rms = env_listen if listen_min_rms is None else float(listen_min_rms)
+        self.short_answer_min_rms = env_short if short_answer_min_rms is None else float(short_answer_min_rms)
+        self.approach_min_rms = (approach_min_rms_from_env() if approach_min_rms is None
+                                 else float(approach_min_rms))
+        self._on_frame = on_frame
+        self._wake_peak = 0.0
+        self._wake_episode = False
+        self._wake_episode_reported = False
+        self._wake_episode_self = False
+        self._self_guard_active = False
+        self._self_guard_since = 0.0
+        self._self_guard_until = 0.0
+        self._mic_off_speech = False
+        self._wake_suppressed = False
+        self._speech_ended_at = 0.0
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
@@ -145,6 +326,7 @@ class WakewordMonitor:
         self._listen_voiced_sec = 0.0
         self._listen_is_followup = False
         self._listen_heard_wake = False
+        self._listen_wake_rearmed = False
         self._listen_opened_at = 0.0
         self._muted_until = 0.0
         self._muted = False
@@ -154,6 +336,107 @@ class WakewordMonitor:
         self.last_listen_stats: Optional[dict] = None
         self.last_listen_timing: Optional[dict] = None
         self._listen_speech_started_at = 0.0
+        self.last_emergency_check: Optional[dict] = None
+        self.last_emergency_audio: Optional[np.ndarray] = None
+        self._gate_fired_at: Optional[float] = None
+        self._gate_score: Optional[float] = None
+        self._wake_gate = wake_gate
+        self._wake_verdict: Optional[str] = None
+        self._wake_pending_since = 0.0
+        self._verdict_inbox: Optional[tuple[str, Optional[int]]] = None
+        self._held: list[tuple[str, object]] = []
+        self._wake_seq = 0
+
+    @property
+    def state(self) -> str:
+        """idle / postroll / listen — 점검기·재채점이 칩 사람 말 표시를 넣을지 정할 때 쓴다(run() 과 같은 규칙)."""
+        return self._state
+
+    def set_thresholds(self, *, wake: Optional[float] = None, emergency_single: Optional[float] = None,
+                       listen_min_rms: Optional[float] = None,
+                       short_answer_min_rms: Optional[float] = None) -> None:
+        """실행 중 문턱 바꾸기(2026-10-12 마이크 점검기). None 인 것은 그대로 둔다. ⑫ 노드는 부르지 않는다."""
+        if wake is not None:
+            self.gate_a.threshold = float(wake)
+            self.gate_a_listen.threshold = float(wake)
+        if emergency_single is not None:
+            self.gate_b.single = float(emergency_single)
+        if listen_min_rms is not None:
+            self.listen_min_rms = float(listen_min_rms)
+        if short_answer_min_rms is not None:
+            self.short_answer_min_rms = float(short_answer_min_rms)
+
+    def _notify_frame(self, frame: np.ndarray, now: float, scores: Optional[dict]) -> None:
+        if self._on_frame is None:
+            return
+        try:
+            self._on_frame({
+                "rms": _frame_rms(frame),
+                "a": 0.0 if scores is None else float(scores["a"]),
+                "b": 0.0 if scores is None else float(scores["b"]),
+                "state": self._state, "speaking": self._speaking,
+                "muted": scores is None, "t": now,
+            })
+        except Exception:
+            pass
+
+    @property
+    def wake_seq(self) -> int:
+        """마지막 호출의 번호. 노드가 /vica/wake 에 실어 보내고 판정이 되돌려 준다."""
+        return self._wake_seq
+
+    def set_wake_verdict(self, verdict: str, seq: Optional[int] = None) -> None:
+        """미션의 "비카야" 판정("listen"/"ignore", 호출 번호). ROS 스레드에서 불러도 된다."""
+        if verdict in ("listen", "ignore"):
+            self._verdict_inbox = (verdict, seq)
+
+    def _apply_wake_verdict(self, now: float) -> None:
+        inbox, self._verdict_inbox = self._verdict_inbox, None
+        verdict = None
+        if inbox is not None:
+            verdict, seq = inbox
+            if seq is not None and seq != self._wake_seq:
+                verdict = None
+        if self._wake_verdict != "pending":
+            return
+        if verdict == "listen":
+            self._wake_verdict = "listen"
+            held, self._held = self._held, []
+            for kind, value in held:
+                self._dispatch_free(kind, value)
+        elif verdict == "ignore":
+            self._drop_free_window("ignored")
+        elif now - self._wake_pending_since > WAKE_REPLY_TIMEOUT_SEC:
+            self._drop_free_window("no-reply")
+
+    def _drop_free_window(self, reason: str) -> None:
+        """판정이 ignore 거나 끝내 안 왔다 — 쥔 말을 버리고 열린 자유 창을 닫는다."""
+        self._wake_verdict = "ignore"
+        self._held = []
+        if self._state == "listen" and not self._listen_is_followup:
+            self._state = "idle"
+            self._collect = []
+        self._on_listen_state(f"empty:wake-{reason}")
+
+    def _emit_free(self, kind: str, value) -> None:
+        """자유 창의 결과를 판정에 따라 내보내거나 쥐거나 버린다."""
+        if not self._wake_gate or self._wake_verdict in (None, "listen"):
+            self._dispatch_free(kind, value)
+        elif self._wake_verdict == "pending":
+            self._held.append((kind, value))
+        elif kind == "text":
+            self._on_listen_state("empty:wake-ignored")
+
+    def _dispatch_free(self, kind: str, value) -> None:
+        if kind == "audio":
+            if self._on_user_audio is not None:
+                try:
+                    self._on_user_audio(value)
+                except Exception:
+                    pass
+        else:
+            self._on_listen_state("closed")
+            self._on_user_text(value)
 
     def lock_user_direction(self, doa: Optional[float],
                             now: Optional[float] = None) -> None:
@@ -178,6 +461,70 @@ class WakewordMonitor:
     def disarm_followup(self) -> None:
         self._followup_armed = False
 
+    def note_robot_speech(self, text: str, now: Optional[float] = None) -> None:
+        """TTS 가 지금 재생을 시작한 문장(/vica/tts_now). '비카야'가 들어 있으면 그 재생이"""
+        now = time.time() if now is None else now
+        if mic_off_while_saying(text):
+            self.set_muted(True, now)
+            self._mic_off_speech = True
+        if has_wake_word(text):
+            self._self_guard_since = now
+            self._self_guard_active = True
+        else:
+            self._end_self_guard(now)
+
+    def _end_self_guard(self, now: float) -> None:
+        if self._self_guard_active:
+            self._self_guard_until = now + SELF_WAKE_TAIL_SEC
+            self._self_guard_active = False
+
+    def set_wake_suppressed(self, suppressed: bool) -> None:
+        """미션이 접근 질문의 답을 기다리는 동안 '비카야'를 호출로 확정하지 않는다(2026-10-09 사용자 결정 —"""
+        self._wake_suppressed = bool(suppressed)
+
+    def _self_guarded(self, now: float) -> bool:
+        if self._wake_suppressed:
+            return True
+        if self._self_guard_active and now - self._self_guard_since > SELF_WAKE_MAX_SEC:
+            self._self_guard_active = False
+        return self._self_guard_active or now < self._self_guard_until
+
+    def _feed_wake(self, score: float, now: float) -> bool:
+        """호출 관문에 점수를 넣고 확정이면 True. 자기 목소리 무시 중이면 관문을 비우고"""
+        guarded = self._self_guarded(now)
+        if guarded:
+            self.gate_a.reset()
+            fired = False
+        else:
+            fired = self.gate_a.feed(score, now)
+        if score >= WAKE_NEAR_MISS_FLOOR or fired:
+            self._wake_episode = True
+            self._wake_peak = max(self._wake_peak, score)
+            self._wake_episode_self = self._wake_episode_self or guarded
+            if fired and not self._wake_episode_reported:
+                self._wake_episode_reported = True
+                self._report_wake_score("fire", self._wake_peak)
+        elif self._wake_episode:
+            if not self._wake_episode_reported:
+                if not self._wake_episode_self:
+                    self._report_wake_score("near", self._wake_peak)
+                elif self._wake_peak >= self.gate_a.threshold:
+                    self._report_wake_score("self", self._wake_peak)
+            self._reset_wake_episode()
+        return fired
+
+    def _report_wake_score(self, kind: str, peak: float) -> None:
+        try:
+            self._on_wake_score(kind, peak)
+        except Exception:
+            pass
+
+    def _reset_wake_episode(self) -> None:
+        self._wake_peak = 0.0
+        self._wake_episode = False
+        self._wake_episode_reported = False
+        self._wake_episode_self = False
+
     def set_muted(self, muted: bool, now: Optional[float] = None,
                   failsafe_sec: float = 10.0) -> None:
         """TTS 재생 중 자기 목소리 억제. fail-safe: 해제 신호를 놓쳐도"""
@@ -192,6 +539,9 @@ class WakewordMonitor:
             return
 
         self._muted = False
+        self._mic_off_speech = False
+        self._speech_ended_at = now
+        self._end_self_guard(now)
         self._ring.clear()
         self.gate_a.reset()
         self.gate_b.reset()
@@ -219,6 +569,14 @@ class WakewordMonitor:
                 self._collect = []
                 self._followup_armed = True
             return
+        if self._mic_off_speech:
+            self._mic_off_speech = False
+            self._muted = False
+            self._ring.clear()
+            self.gate_a.reset()
+            self.gate_b.reset()
+        self._speech_ended_at = now
+        self._end_self_guard(now)
         if self._followup_armed:
             self._followup_armed = False
             self._report_barge_miss()
@@ -232,14 +590,18 @@ class WakewordMonitor:
         """int16 80ms 프레임 하나를 처리한다. 일어난 일을 문자열로 돌려준다"""
         now = time.time() if now is None else now
         self._ring.append(frame)
+        if self._wake_gate:
+            self._apply_wake_verdict(now)
 
         if self._is_muted(now):
             self.gate_a.reset()
             self.gate_b.reset()
+            self._notify_frame(frame, now, None)
             return None
 
         scores = self._predict(frame)
-        fire_b = self.gate_b.feed(float(scores["b"]), now)
+        self._notify_frame(frame, now, scores)
+        fire_b = self._feed_emergency(float(scores["b"]), now)
 
         if self._state == "postroll":
             self._collect.append(frame)
@@ -249,17 +611,31 @@ class WakewordMonitor:
 
         if self._state == "listen":
             if fire_b:
+                self._note_gate(now, float(scores["b"]))
                 self._enter_postroll(from_listen=True)
                 return None
-            if self.gate_a_listen.feed(float(scores["a"]), now):
+            if not self._listen_wake_rearmed:
+                self._listen_wake_rearmed = float(scores["a"]) < WAKE_NEAR_MISS_FLOOR
+                self.gate_a_listen.reset()
+            elif self._self_guarded(now):
+                self.gate_a_listen.reset()
+            elif self.gate_a_listen.feed(float(scores["a"]), now):
                 self._listen_heard_wake = True
             return self._listen_step(frame, now, vad)
 
         if fire_b:
+            self._note_gate(now, float(scores["b"]))
             self._enter_postroll()
             return None
-        if self.gate_a.feed(float(scores["a"]), now):
+        if self._feed_wake(float(scores["a"]), now):
             self.gate_b.reset()
+            self._followup_armed = False
+            if self._wake_gate:
+                self._wake_seq += 1
+                self._wake_verdict = "pending"
+                self._wake_pending_since = now
+                self._held = []
+                self._verdict_inbox = None
             self._on_wake()
             self._open_listen(followup=False, now=now)
             return "wake"
@@ -336,7 +712,9 @@ class WakewordMonitor:
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
         self._listen_heard_wake = False
+        self._listen_wake_rearmed = followup
         self.gate_a_listen.reset()
+        self._reset_wake_episode()
         self.last_listen_timing = None
         if followup:
             lookback = list(self._ring)[-HEAD_PRE_ROLL_FRAMES:]
@@ -361,12 +739,56 @@ class WakewordMonitor:
         self._saved_listen = self._collect if from_listen else None
         self._collect = []
         self.gate_a.reset()
+        self._reset_wake_episode()
         self._postroll_from_listen = from_listen
+
+    def _feed_emergency(self, score: float, now: float) -> bool:
+        """긴급 관문에 점수를 넣고 발동이면 True — 판정은 gate_b 그대로다."""
+        fired = self.gate_b.feed(score, now)
+        if score >= EMERGENCY_NEAR_MISS_FLOOR or fired:
+            if not self._em_episode:
+                self._em_episode, self._em_started_at = True, now
+                self._em_peak, self._em_over, self._em_blocked, self._em_fired = 0.0, 0, False, False
+            self._em_peak = max(self._em_peak, score)
+            self._em_over += score >= self.gate_b.threshold
+            self._em_blocked = self._em_blocked or self.gate_b.cooldown_blocked
+            self._em_fired = self._em_fired or fired
+        elif self._em_episode:
+            self._em_episode = False
+            if not self._em_fired:
+                info = {
+                    "result": "near", "peak": self._em_peak, "frames_over": self._em_over,
+                    "cooldown": self._em_blocked,
+                    "after_fire": (None if self._gate_fired_at is None
+                                   else self._em_started_at - self._gate_fired_at),
+                    "audio": np.concatenate([*self._ring]) if self._ring else np.zeros(0, np.int16),
+                }
+                try:
+                    self._on_emergency_score(info)
+                except Exception:
+                    pass
+        return fired
+
+    def _note_gate(self, now: float, score: float) -> None:
+        """긴급 관문이 발동한 프레임 시각·점수를 적어 둔다(기록용, 판정과 무관)."""
+        self._gate_fired_at = now
+        self._gate_score = score
 
     def _verify_emergency(self, now: float) -> str:
         audio = np.concatenate([*self._ring])
+        self.last_emergency_audio = audio
+        stt_started = time.monotonic()
         text = self._transcribe(audio)
+        stt_sec = time.monotonic() - stt_started
         from_listen = self._postroll_from_listen
+        self.last_emergency_check = {
+            "score": self._gate_score,
+            "postroll": None if self._gate_fired_at is None else now - self._gate_fired_at,
+            "stt": stt_sec,
+            "where": "listen" if from_listen else "idle",
+            "text": text,
+            "result": "",
+        }
         self._postroll_from_listen = False
         self._state = "idle"
         self._collect = []
@@ -376,22 +798,28 @@ class WakewordMonitor:
                 self._collect = (self._saved_listen or []) + self._collect
                 self._saved_listen = None
                 self._state = "listen"
+                self.last_emergency_check["result"] = "listen_resumed"
+                self._on_reject(text)
                 return "listen_resumed"
             text = text.strip()
             if (self._followup_armed and text and not is_hallucination(text)
                     and now - self._followup_armed_at
                     <= FOLLOWUP_ARM_TIMEOUT_SEC):
                 self._followup_armed = False
+                self.last_emergency_check["result"] = "followup_answer"
+                self._on_reject(text)
                 self.last_listen_stats = capture_stats(audio)
                 self._on_listen_state("closed")
                 self._on_user_text(text)
                 return "user_text"
+            self.last_emergency_check["result"] = "reject"
             self._on_reject(text)
             return "reject"
         if from_listen:
             self._saved_listen = None
             self._on_listen_state("empty")
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
+        self.last_emergency_check["result"] = "emergency"
         self._on_emergency(event)
         return "emergency"
 
@@ -434,8 +862,14 @@ class WakewordMonitor:
             self._listen_voiced_sec = 0.0
             self._listen_speech_started_at = 0.0
             silence_done = False
+        start_wait_over = (not self._listen_is_followup
+                           and not self._listen_started_speech
+                           and not self._speaking
+                           and now - max(self._listen_opened_at, self._speech_ended_at)
+                           >= LISTEN_START_SEC)
         done = (
             now - self._listen_opened_at >= max_sec
+            or start_wait_over
             or (silence_done and now - self._listen_opened_at >= min_open)
         )
         if not done:
@@ -455,8 +889,10 @@ class WakewordMonitor:
         rms = self.last_listen_stats["rms"]
         short = speech_sec < LISTEN_MIN_SPEECH_SEC
         short_rescue = (short and self._listen_is_followup
-                        and rms >= SHORT_ANSWER_MIN_RMS)
-        if rms < LISTEN_MIN_RMS or (short and not short_rescue):
+                        and rms >= self.short_answer_min_rms)
+        min_rms = (self.approach_min_rms if self._wake_suppressed and self.approach_min_rms is not None
+                   else self.listen_min_rms)
+        if rms < min_rms or (short and not short_rescue):
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(
@@ -467,6 +903,14 @@ class WakewordMonitor:
             transcribe = self._transcribe_confirm
         else:
             transcribe = self._transcribe_listen or self._transcribe
+        if self._on_user_audio is not None:
+            if self._listen_is_followup:
+                try:
+                    self._on_user_audio(audio)
+                except Exception:
+                    pass
+            else:
+                self._emit_free("audio", audio)
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
         self.last_listen_timing = {
@@ -490,8 +934,11 @@ class WakewordMonitor:
         if short_rescue and normalize_short_reply(text) not in _SHORT_ANSWER_WORDS:
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
             return "wake_silent"
-        self._on_listen_state("closed")
-        self._on_user_text(text)
+        if self._listen_is_followup:
+            self._on_listen_state("closed")
+            self._on_user_text(text)
+        else:
+            self._emit_free("text", text)
         return "user_text"
 
     def _load_real(self) -> None:
@@ -515,36 +962,58 @@ class WakewordMonitor:
             self._predict = _predict
         if self._transcribe is None:
             from . import stt  # noqa: F401
-            from faster_whisper import WhisperModel
 
-            size = os.environ.get("VICA_VERIFY_STT_MODEL", "medium")
-            device = os.environ.get("VICA_STT_DEVICE", "cpu")
-            compute = os.environ.get("VICA_STT_COMPUTE",
-                                     "float16" if device == "cuda" else "int8")
-            wm = WhisperModel(size, device=device, compute_type=compute)
+            listen_engine, verify_engine = ear_stt_engines()
+            if "qwen" in (listen_engine, verify_engine):
+                self.qwen = qwen_from_env()
+            if "whisper" in (listen_engine, verify_engine):
+                self._load_whisper(listen=listen_engine == "whisper", verify=verify_engine == "whisper")
+            if listen_engine == "qwen":
+                self._transcribe_listen = self.qwen.listen
+                self._transcribe_confirm = self.qwen.listen
+            if verify_engine == "qwen":
+                qwen = self.qwen
+                self._transcribe = lambda audio: qwen.verify(
+                    audio, lambda text: match_emergency_transcript(text) is not None)
 
-            def _transcribe(audio: np.ndarray) -> str:
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5)
-                return "".join(s.text for s in segs).strip()
+    def _load_whisper(self, *, listen: bool, verify: bool) -> None:
+        """whisper 를 맡은 역할만 올린다. _load_real 이 stt 모듈(CUDA libctranslate2 선적재)을 먼저 거친 뒤에 부른다."""
+        from faster_whisper import WhisperModel
 
-            def _transcribe_listen(audio: np.ndarray) -> str:
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=self._listen_hint,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        listen_name, verify_name = ear_stt_model_names()
+        device = os.environ.get("VICA_STT_DEVICE", "cpu")
+        compute = os.environ.get("VICA_STT_COMPUTE",
+                                 "float16" if device == "cuda" else "int8")
+        wm = WhisperModel(listen_name, device=device, compute_type=compute) if listen else None
+        wm_verify = None
+        if verify:
+            wm_verify = (wm if wm is not None and verify_name == listen_name
+                         else WhisperModel(verify_name, device=device, compute_type=compute))
 
-            def _transcribe_confirm(audio: np.ndarray) -> str:
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=CONFIRM_HINT,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        def _transcribe(audio: np.ndarray) -> str:
+            segs, _ = wm_verify.transcribe(audio.astype(np.float32) / 32768.0,
+                                           language="ko", beam_size=5)
+            return "".join(s.text for s in segs).strip()
 
+        def _transcribe_listen(audio: np.ndarray) -> str:
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=self._listen_hint,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
+
+        def _transcribe_confirm(audio: np.ndarray) -> str:
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=CONFIRM_HINT,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
+
+        if verify:
             self._transcribe = _transcribe
+        if listen:
             self._transcribe_listen = _transcribe_listen
             self._transcribe_confirm = _transcribe_confirm
 

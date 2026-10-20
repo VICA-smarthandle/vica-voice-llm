@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""소리→의도 직행 종단 스모크(실제 OpenAI 호출, 수동 실행 전용)."""
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from langchain_core.messages import AIMessage, HumanMessage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from src.destination_loader import load_destinations  # noqa: E402
+from src.langchain_intent_parser import parse_intent_audio  # noqa: E402
+from src.realtime_intent import float32_to_pcm16  # noqa: E402
+from src.tts import VicaTTS  # noqa: E402
+
+DEFAULT = ["화장실로 안내해줘", "오 분", "한 시간", "그래", "아니요", "여기 몇 층이야", "테스트3으로 가자"]
+
+
+def synth(tts, text: str) -> bytes:
+    audio, rate = tts.synthesize(text)
+    audio = np.asarray(audio, dtype=np.float32)
+    if rate != 16000:
+        x = np.linspace(0, len(audio) - 1, int(len(audio) * 16000 / rate))
+        audio = np.interp(x, np.arange(len(audio)), audio).astype(np.float32)
+    return float32_to_pcm16(audio)
+
+
+def run_case(tts, dests, text: str, history=None, label: str = "", pcm=None) -> None:
+    tag = label or text
+    pcm = pcm if pcm is not None else synth(tts, text)
+    t0 = time.monotonic()
+    try:
+        intent, heard, dt, info = parse_intent_audio(pcm, dests, history=history)
+        print(f"[{time.monotonic()-t0:5.2f}s rt={dt:4.2f}s src={info['src']}] '{tag}' → heard='{heard}' "
+              f"intent={intent.intent} dest={intent.matched_destination_id or '-'} nc={intent.need_confirm} "
+              f"reply='{intent.reply[:30]}'")
+    except Exception as exc:
+        print(f"[실패] '{tag}': {type(exc).__name__}: {exc}")
+
+
+def main() -> None:
+    dests = load_destinations()
+    tts = VicaTTS()
+    for text in sys.argv[1:] or DEFAULT:
+        run_case(tts, dests, text)
+
+    if dests:
+        confirm_prompt = dests[0].confirm_prompt
+        history = [HumanMessage("화장실"), AIMessage(confirm_prompt)]
+        run_case(tts, dests, "그래", history=history, label="[이력] 그래")
+
+    if len(dests) >= 2:
+        a, b = dests[0], dests[1]
+        run_case(tts, dests, f"아니 {b.name}로 가자",
+                 history=[HumanMessage(a.name), AIMessage(a.confirm_prompt)], label=f"[정정] 아니 {b.name}로 가자")
+        arrival = [HumanMessage(a.name), AIMessage(a.confirm_prompt), HumanMessage("그래"),
+                   AIMessage(f"{a.name}로 안내를 시작합니다."),
+                   AIMessage(f"{a.name} 앞에 도착했습니다. 여기서 대기할까요?"),
+                   HumanMessage("응"), AIMessage("몇 분쯤 걸리실까요?")]
+        run_case(tts, dests, "오 분", history=arrival, label="[도착 질문] 오 분")
+        import numpy as np
+        noise = (np.random.default_rng(0).normal(0, 300, 16000 * 2)).astype("<i2").tobytes()
+        run_case(tts, dests, "", history=arrival, label="[잡음 2초]", pcm=noise)
+
+    from src.building_directory import DirectoryEntry, format_directory_block
+    from src.ledger_view import render_ledger
+    from src.schema import RobotState
+    TPM_WINDOW_SEC, TPM_GAP_SEC = 60, 10
+    st = RobotState(current_floor=4, current_building="공학관", dialog_state="waiting", place_here="407호 앞",
+                    place_here_dist_m=1.2, last_destination="윤지영 교수님 사무실", last_arrived_age_sec=660,
+                    aborted_destination="공학관 2층 화장실", wait_minutes=10, wait_left_sec=300)
+    situation = render_ledger(st, awaiting_answer=False, now_text="15:40")
+    directory = format_directory_block([DirectoryEntry("대강당", "공학관", 3)], "공학관", 4)
+    print(f"[대장] TPM 창 비우기 {TPM_WINDOW_SEC}s …", flush=True)
+    time.sleep(TPM_WINDOW_SEC)
+    for q in ("우리 몇 층이야", "지금 어디 있어", "아까 어디 갔었지", "어디 가려고 했더라", "지금 몇 시야",
+              "대강당 갈 수 있어"):
+        pcm = synth(tts, q)
+        try:
+            intent, heard, dt, info = parse_intent_audio(pcm, dests, situation=situation, directory_block=directory)
+            print(f"[대장] '{q}' → intent={intent.intent} dest={intent.destination_candidate or '-'} "
+                  f"nc={intent.need_confirm} reply='{intent.reply[:40]}' dt={dt:.2f}s", flush=True)
+        except Exception as exc:
+            print(f"[대장 실패] '{q}': {type(exc).__name__}: {exc}", flush=True)
+        time.sleep(TPM_GAP_SEC)
+
+    if not dests:
+        print("[이력 케이스 생략] 목적지 목록이 비어 있다")
+
+
+if __name__ == "__main__":
+    main()

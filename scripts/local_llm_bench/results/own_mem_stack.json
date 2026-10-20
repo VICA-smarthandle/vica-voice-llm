@@ -1,0 +1,20 @@
+{
+ "midm2-mini": {
+  "gpu_mb": 2264,
+  "cpu_anon_mb": 170,
+  "cpu_file_mb": 263,
+  "total": 2697
+ },
+ "exaone3.5:2.4b": {
+  "gpu_mb": 1878,
+  "cpu_anon_mb": 156,
+  "cpu_file_mb": 213,
+  "total": 2247
+ },
+ "gemma4-e2b-text": {
+  "gpu_mb": 1674,
+  "cpu_anon_mb": 264,
+  "cpu_file_mb": 793,
+  "total": 2731
+ }
+}

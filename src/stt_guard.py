@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+from .ko_numbers import korean_numbers_to_digits
+
 NO_SPEECH_THRESHOLD = 0.6
 LOGPROB_THRESHOLD = -1.0
 
@@ -27,6 +29,17 @@ _STRIP = re.compile(r"[\s.,!?~♪…'\"”“]+")
 _SENTENCE_SPLIT = re.compile(r"[.!?…]+")
 
 
+_TOKEN = re.compile(r"[^\s.,!?~…'\"”“]+")
+_LOOP_MIN_TOKENS = 12
+_LOOP_MAX_DISTINCT_RATIO = 0.25
+
+
+def _is_repeat_loop(text: str) -> bool:
+    tokens = _TOKEN.findall(text)
+    return (len(tokens) >= _LOOP_MIN_TOKENS
+            and len(set(tokens)) / len(tokens) <= _LOOP_MAX_DISTINCT_RATIO)
+
+
 def _normalize(text: str) -> str:
     return _STRIP.sub("", text)
 
@@ -40,6 +53,8 @@ def is_hallucination(text: str) -> bool:
     norm = _normalize(text)
     if not norm:
         return False
+    if _is_repeat_loop(text):
+        return True
     if _is_ghost_piece(norm):
         return True
     pieces = [_normalize(p) for p in _SENTENCE_SPLIT.split(text)]
@@ -63,7 +78,7 @@ _ECHO_MIN_CHARS = 4
 
 
 def _norm_echo(text: str) -> str:
-    return re.sub(r"[\s.,!?~…\"'·\-]+", "", text)
+    return korean_numbers_to_digits(re.sub(r"[\s.,!?~…\"'·\-]+", "", text))
 
 
 def strip_robot_echo(text: str, robot_texts) -> str:
@@ -72,13 +87,16 @@ def strip_robot_echo(text: str, robot_texts) -> str:
               if len(n) >= _ECHO_MIN_CHARS]
     if not robots:
         return text.strip()
+    tails = robots + [n for n in (_norm_echo(s) for r in robot_texts if r
+                                  for s in re.split(r"(?<=[.?!])\s*", r))
+                      if len(n) >= _ECHO_MIN_CHARS]
     kept: list[str] = []
     for sent in re.split(r"(?<=[.?!])\s*", text):
         s = sent.strip()
         if not s:
             continue
         n = _norm_echo(s)
-        if len(n) >= _ECHO_MIN_CHARS and any(n in r for r in robots):
+        if len(n) >= _ECHO_MIN_CHARS and any(r.endswith(n) for r in tails):
             continue
         hit = next((r for r in robots if r in n), None)
         if hit is not None:
