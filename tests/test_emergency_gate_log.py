@@ -196,6 +196,8 @@ def test_save_emergency_clip_writes_wav_and_index(tmp_path):
 import sys
 import types
 
+import pytest
+
 from src.wakeword_monitor import ear_stt_model_names, emergency_single_frame_from_env
 
 
@@ -242,7 +244,7 @@ def test_ear_stt_model_names(monkeypatch):
     assert ear_stt_model_names() == ("medium", "medium")
 
 
-def _load_with_stub(monkeypatch, listen, verify):
+def _load_with_stub(monkeypatch, listen, verify, engines=("whisper", "whisper")):
     """faster_whisper·stt 를 가짜로 바꿔 _load_real 이 어떤 모델을 몇 개 띄우는지 본다."""
     loaded = []
 
@@ -261,6 +263,8 @@ def _load_with_stub(monkeypatch, listen, verify):
     monkeypatch.setattr(src, "stt", stub_stt, raising=False)
     monkeypatch.setenv("VICA_STT_MODEL", listen)
     monkeypatch.setenv("VICA_VERIFY_STT_MODEL", verify)
+    monkeypatch.setenv("VICA_STT_ENGINE", engines[0])
+    monkeypatch.setenv("VICA_VERIFY_STT_ENGINE", engines[1])
     m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=lambda t: None,
                         predict=lambda f: {"a": 0, "b": 0})
     m._load_real()
@@ -279,3 +283,59 @@ def test_verify_uses_its_own_model(monkeypatch):
 def test_same_name_loads_one_model(monkeypatch):
     m, loaded = _load_with_stub(monkeypatch, "turbo-x", "turbo-x")
     assert loaded == ["turbo-x"]
+
+
+
+# ---------------------------------------------------------------- 역할별 엔진(2026-10-15 Qwen 교체)
+class _FakeQwen:
+    name = "Qwen3-ASR-1.7B-Q8_0"
+
+    def listen(self, audio):
+        return "qwen-listen"
+
+    def verify(self, audio, is_emergency):
+        return "멈춰" if is_emergency("멈춰") else "?"
+
+
+def _with_qwen(monkeypatch, engines, fail=False):
+    import src.wakeword_monitor as wm_mod
+    from src.stt_qwen import QwenUnavailable
+
+    def fake_from_env(log=print):
+        if fail:
+            raise QwenUnavailable("모델 없음")
+        return _FakeQwen()
+    monkeypatch.setattr(wm_mod, "qwen_from_env", fake_from_env)
+    return _load_with_stub(monkeypatch, "turbo-x", "small", engines)
+
+
+def test_both_roles_qwen_load_no_whisper(monkeypatch):
+    m, loaded = _with_qwen(monkeypatch, ("qwen", "qwen"))
+    audio = np.zeros(1600, dtype=np.int16)
+    assert loaded == []
+    assert m._transcribe_listen(audio) == "qwen-listen"
+    assert m._transcribe_confirm(audio) == "qwen-listen"           # 귀띔 없는 같은 받아쓰기
+    assert m._transcribe(audio) == "멈춰"                          # 긴급 확인은 정확 매칭 함수를 넘겨받는다
+    assert m.qwen is not None
+
+
+def test_only_conversation_on_qwen_keeps_whisper_small_for_stop(monkeypatch):
+    m, loaded = _with_qwen(monkeypatch, ("qwen", "whisper"))
+    audio = np.zeros(1600, dtype=np.int16)
+    assert loaded == ["small"]                                       # turbo 는 안 올린다
+    assert m._transcribe(audio) == "small"
+    assert m._transcribe_listen(audio) == "qwen-listen"
+
+
+def test_only_stop_check_on_qwen_keeps_whisper_turbo_for_conversation(monkeypatch):
+    m, loaded = _with_qwen(monkeypatch, ("whisper", "qwen"))
+    audio = np.zeros(1600, dtype=np.int16)
+    assert loaded == ["turbo-x"]
+    assert m._transcribe_listen(audio) == "turbo-x"
+    assert m._transcribe(audio) == "멈춰"
+
+
+def test_qwen_failure_stops_the_ear_without_whisper_fallback(monkeypatch):
+    from src.stt_qwen import QwenUnavailable
+    with pytest.raises(QwenUnavailable):
+        _with_qwen(monkeypatch, ("qwen", "whisper"), fail=True)
