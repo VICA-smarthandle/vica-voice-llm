@@ -1054,14 +1054,23 @@ def parse_intent_audio(
         draft = _IntentDraft(**result.draft)
     except ValidationError as exc:
         raise ValueError(f"set_intent 인자가 _IntentDraft 와 맞지 않는다: {exc}") from exc
-    intent = deliver_audio_draft(draft, destinations, robot_state.dialog_state if robot_state else "",
-                                 robot_state.active_destination if robot_state else "")
-    return intent, heard, result.latency_sec, {"src": "llm", "usage": result.usage}
+    dialog_state = robot_state.dialog_state if robot_state else ""
+    shared = _audio_shared_guess(draft, heard, destinations, dialog_state)
+    intent = deliver_audio_draft(draft, destinations, dialog_state,
+                                 robot_state.active_destination if robot_state else "", shared=shared)
+    # 규칙이 모델 결정을 바꿨으면 [RT] 로그 줄의 src 로 보이게 한다.
+    src = "llm+고르기규칙" if shared else "llm"
+    return intent, heard, result.latency_sec, {"src": src, "usage": result.usage}
 
 
 def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
-                        dialog_state: str = "", active: str = "") -> VicaIntent:
-    """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만."""
+                        dialog_state: str = "", active: str = "",
+                        shared: Sequence[DestinationData] = ()) -> VicaIntent:
+    """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만.
+
+    shared 는 _audio_shared_guess 가 찾은 '여러 곳에 걸린 말에 모델이 한쪽을 짐작한' 후보들이다 — 둘 이상이면
+    고르기 질문으로 바꾼다(2026-10-21 사용자 요청).
+    """
     result = VicaIntent(
         intent=draft.intent,
         destination_candidate=draft.destination_candidate,
@@ -1072,7 +1081,9 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
     )
     tied = tied_destinations(draft.destination_candidate, list(destinations)) if draft.intent == "navigate" else []
     asked = _choice_in_reply(result.reply, destinations, active) if draft.intent == "navigate" else []
-    if len(tied) > 1:
+    if len(shared) > 1:
+        _ask_which(result, shared, dialog_state)
+    elif len(tied) > 1:
         _ask_which(result, tied, dialog_state)
     elif len(asked) > 1:
         # 입으로는 "남자 화장실과 여자 화장실 중 어디로…?"라고 고르게 하면서 목적지는 한쪽 정확한 이름으로 냈다
@@ -1152,6 +1163,55 @@ def _named_destination(user_text: str, destinations: Sequence[DestinationData]) 
     named = [d for d in destinations if d.name and squash(d.name) in said]
     outer = [d for d in named if not any(o.name != d.name and squash(d.name) in squash(o.name) for o in named)]
     return outer[0] if len(outer) == 1 else None
+
+
+def _alias_only_group(user_text: str, destinations: Sequence[DestinationData]) -> list[DestinationData]:
+    """사용자 말이 여러 갈 수 있는 곳에 같이 걸린 별칭만 담았으면 그 곳들(목록 순서), 아니면 빈 목록.
+
+    "화장실로 가자"·"나 배 아파"는 남자·여자 화장실 둘 다의 별칭이다. 목적지 이름을 말했거나("남자 화장실"),
+    한 곳에만 있는 말을 했으면("남자 쪽으로"의 '남자', "서류"의 사회복지) 사용자가 이미 고른 것이라 빈 목록이다.
+    띄어쓰기는 보지 않는다. 갈 수 없는 곳은 후보로 들지 않는다(tied_destinations 와 같은 기준).
+    """
+    def squash(s: str) -> str:
+        return "".join((s or "").split())
+
+    said = squash(user_text)
+    if not said or any(d.name and squash(d.name) in said for d in destinations):
+        return []
+    open_ = [d for d in destinations if d.is_approachable]
+    alias_sets = {d.id: {squash(a) for a in d.aliases if squash(a)} for d in open_}
+    heard = {a for aliases in alias_sets.values() for a in aliases if a in said}
+    if not heard:
+        return []
+    if any(sum(a in aliases for aliases in alias_sets.values()) == 1 for a in heard):
+        return []
+    group = [d for d in open_ if alias_sets[d.id] & heard]
+    return group if len(group) > 1 else []
+
+
+def _audio_shared_guess(draft: _IntentDraft, heard: str, destinations: Sequence[DestinationData],
+                        dialog_state: str = "") -> list[DestinationData]:
+    """소리 모드에서 여러 곳에 걸린 말에 모델이 한쪽을 짐작했으면 그 후보들(2026-10-21 실기·사용자 요청).
+
+    10-21 10:24 "화장실로 가자"→남자 화장실 바로 제안, 10:37 주행 중 "나 화장실 가고 싶어"→"여자 화장실로
+    바꿀까요". 글자 모드의 로컬 규칙(_shared_alias_tie)은 소리 모드를 거치지 않는다. 판단 근거는 모델이 들은 말
+    (heard_text)이다 — 그 말로 모델이 결정했기 때문이다.
+    - navigate: 고른 곳이 후보 중 하나면 고르기로. 확인 질문 중의 승낙(need_confirm false)은 물어 둔 그곳이라 둔다.
+    - clarify·question: 대답이 후보 중 한 곳만 들면 짐작이라 고르기로. 접근 질문 중에는 두지 않는다 — 미션이
+      그 되묻기에 "안내를 받으시겠어요?"를 다시 묻는다.
+    """
+    group = _alias_only_group(heard, destinations)
+    if not group:
+        return []
+    if draft.intent == "navigate":
+        if dialog_state == "confirming" and not draft.need_confirm:
+            return []
+        chosen = match_destination(draft.destination_candidate, list(destinations))
+        return group if chosen is not None and chosen.id in {d.id for d in group} else []
+    if draft.intent in ("clarify", "question") and dialog_state not in _APPROACH_STATES:
+        named = [d for d in group if d.name in (draft.reply or "")]
+        return group if len(named) == 1 else []
+    return []
 
 
 def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state: str = "") -> VicaIntent:

@@ -22,11 +22,11 @@ PCM = b"\x00\x00" * 1600
 
 
 class FakeRT:
-    def __init__(self, draft):
-        self.draft = draft
+    def __init__(self, draft, heard="화장실 가고 싶어"):
+        self.draft, self.heard = draft, heard
 
     def ask(self, pcm, history, instructions):
-        return RealtimeResult(draft=dict(self.draft), heard_text="화장실 가고 싶어", latency_sec=0.5, usage={})
+        return RealtimeResult(draft=dict(self.draft), heard_text=self.heard, latency_sec=0.5, usage={})
 
 
 def test_ties():
@@ -42,8 +42,8 @@ def test_choice_question_words():
     assert choose_between(["남자 화장실", "여자 화장실"]) == "남자 화장실과 여자 화장실 중 어디로 갈까요?"
 
 
-def _audio(draft, monkeypatch):
-    monkeypatch.setattr(parser, "get_realtime_client", lambda: FakeRT(draft))
+def _audio(draft, monkeypatch, heard="화장실 가고 싶어"):
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: FakeRT(draft, heard))
     return parse_intent_audio(PCM, DESTS)[0]
 
 
@@ -62,8 +62,10 @@ def test_audio_tie_with_a_guess_is_replaced(monkeypatch):
 
 
 def test_audio_exact_name_still_goes(monkeypatch):
+    # 사용자가 이름을 말했다. "화장실 가고 싶어"에 모델이 한쪽을 고르면 10-21 부터는 고르기 질문이다
+    # (tests/test_audio_shared_alias.py).
     out = _audio({"intent": "navigate", "destination_candidate": "여자 화장실", "need_confirm": True,
-                  "reply": "여자 화장실로 안내해드릴까요?", "confidence": 0.9}, monkeypatch)
+                  "reply": "여자 화장실로 안내해드릴까요?", "confidence": 0.9}, monkeypatch, heard="여자 화장실로 가자")
     assert out.intent == "navigate" and out.matched_destination_id == "w"
 
 
