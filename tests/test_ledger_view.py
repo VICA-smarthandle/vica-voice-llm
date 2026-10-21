@@ -79,7 +79,7 @@ class TestWaitSpotLines:
         assert "- 대화 단계: 안내 없음" in text
 
     def test_new_states_are_korean(self):
-        for state, word in (("waiting_release", "손 놓기 기다림"),
+        for state, word in (("waiting_release", "대기 장소로 떠나기 직전"),
                             ("moving_to_wait_spot", "대기 장소로 혼자 이동 중"),
                             ("moving_back_to_dest", "입구 앞으로 돌아가는 중")):
             text = render_ledger(RobotState(dialog_state=state), awaiting_answer=False, now_text="09:01")

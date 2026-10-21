@@ -28,8 +28,13 @@ def test_handle_pause_reads_differently_from_voice_pause():
 
 
 def test_facts_cover_the_questions_users_ask():
-    for must in ("진동", "손을 놓으면", "다시 잡으면", "잡지 않고", "당기면", "세 번"):
+    for must in ("진동", "손을 놓아도", "서지 않는다", "잡지 않고", "당기면", "세 번"):
         assert must in parser.HANDLE_FACTS, must
+    # 주행 중 놓침 정지는 껐다(2026-10-21) — "놓으면 선다"는 거짓이 된다.
+    assert "그 자리에 서고" not in parser.HANDLE_FACTS
+    # 로봇이 이 문장을 읽어 줄 때 긴급어로 오인하지 않게 한다.
+    for word in ("멈춰", "정지"):
+        assert word not in parser.HANDLE_FACTS, word
     # 바뀔 수치는 넣지 않는다.
     for number in ("0.5", "80", "2초"):
         assert number not in parser.HANDLE_FACTS, number

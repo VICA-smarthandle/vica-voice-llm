@@ -30,7 +30,7 @@ DIALOG_KO = {
     "waiting": "대기 중",
     # 대기 장소 (2026-10-07, ROS mission_logic State 의 새 값 셋). 대기의 일부라 남은
     # 시간이 흐른다. 빠지면 영어 이름이 그대로 LLM 에 간다 — 시험이 미션 상태 전부를 본다.
-    "waiting_release": "손 놓기 기다림(손을 놓으면 혼자 대기 장소로 감)",
+    "waiting_release": "대기 장소로 떠나기 직전(말이 끝나면 곧 혼자 감, 손은 안 봄 — 2026-10-21)",
     "moving_to_wait_spot": "대기 장소로 혼자 이동 중",
     "moving_back_to_dest": "대기 장소가 막혀 입구 앞으로 돌아가는 중",
     "returning": "제자리로 복귀 중",
