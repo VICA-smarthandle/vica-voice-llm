@@ -436,6 +436,7 @@ class WakewordMonitor:
         transcribe_listen: Optional[Callable[[np.ndarray], str]] = None,
         transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
         on_frame: Optional[Callable[[dict], None]] = None,
+        on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -519,6 +520,9 @@ class WakewordMonitor:
                                  else float(approach_min_rms))
         # 조각마다 점수 알림(점검기 화면용). 없으면 아무것도 하지 않는다 — ⑫ 노드는 주지 않는다.
         self._on_frame = on_frame
+        # 말소리가 있던 청취 창의 소리와 판정(통과·기각) — 받아쓰기·Realtime 을 다시 듣고 견주는 자료
+        # (2026-10-20 STT 시험, 10-21 운영 귀에도). 없으면 아무 일 없음.
+        self._on_listen_clip = on_listen_clip
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
         self._wake_peak = 0.0
         self._wake_episode = False
@@ -1306,6 +1310,7 @@ class WakewordMonitor:
             self._on_listen_state(
                 f"empty:ghost speech={speech_sec:.2f}s "
                 f"rms={rms:.4f}")
+            self._report_clip(audio, "ghost", rms=rms, speech=speech_sec)
             return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
@@ -1323,6 +1328,7 @@ class WakewordMonitor:
                 self._emit_free("audio", audio)
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
+        stt_text = text   # 구제가 "비카야"로 바꾸기 전 원문 — 말소리 저장 기록용
         self.last_listen_timing = {
             "wait": self._listen_speech_started_at - self._listen_opened_at,
             "speech": speech_end - self._listen_speech_started_at,
@@ -1349,11 +1355,13 @@ class WakewordMonitor:
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(f"empty:reject {text[:30]!r}")
+            self._report_clip(audio, "reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
             return "wake_silent"
         if short_rescue and normalize_short_reply(text) not in _SHORT_ANSWER_WORDS:
             # 구제 재판의 판정 제한: 짧은 소리의 전사가 정답 어휘가 아니면
             # 유령으로 본다 — 잡음 딸깍이 '방2' 같은 장소로 둔갑하는 것 방지.
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
+            self._report_clip(audio, "short-reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
             return "wake_silent"
         if self._listen_is_followup:
             self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
@@ -1361,7 +1369,21 @@ class WakewordMonitor:
         else:
             # 자유 창("비카야" 뒤) — 미션이 대답하기로 한 호출만 LLM 으로 간다.
             self._emit_free("text", text)
+        # 저장은 글자를 넘긴 뒤에 — 디스크가 바빠도 대답 길이 늦지 않게(10-20 검토).
+        self._report_clip(audio, "text", text, rms=rms, speech=speech_sec,
+                          stt=self.last_listen_timing["stt"], stt_text=stt_text)
         return "user_text"
+
+    def _report_clip(self, audio: np.ndarray, result: str, text: str = "", **extra) -> None:
+        """청취 창 소리와 판정을 넘긴다. 기록일 뿐이라 실패해도 귀는 계속 간다."""
+        if self._on_listen_clip is None:
+            return
+        info = {"result": result, "text": text, "followup": self._listen_is_followup,
+                **{k: round(v, 4) if isinstance(v, float) else v for k, v in extra.items()}}
+        try:
+            self._on_listen_clip(audio, info)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- 실행 (실기)
     def _load_real(self) -> None:

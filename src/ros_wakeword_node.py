@@ -180,6 +180,11 @@ class WakewordNode(Node):
         # 빠른 확인용 STT 를 현장 소리로 견주고 놓침을 다시 듣는 자료. "off" 면 끈다.
         clip_dir = os.environ.get("VICA_ESTOP_CLIP_DIR", "~/vica_data/estop_clips").strip()
         self._estop_clip_dir = None if clip_dir.lower() in ("", "off", "0", "false") else clip_dir
+        # 말소리 저장(2026-10-21 사용자 요청) — 청취 창에서 말소리가 있던 소리를 통과·기각 모두 wav 로.
+        # Realtime·받아쓰기가 무엇을 들었는지 다시 듣고 견주는 자료. 긴급 소리 저장처럼 기본 켬, "off" 면 끈다.
+        listen_dir = os.environ.get("VICA_LISTEN_CLIP_DIR", "~/vica_data/listen_clips").strip()
+        self._listen_clip_dir = None if listen_dir.lower() in ("", "off", "0", "false") else listen_dir
+        self._listen_clip_warned = False
         self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
 
@@ -194,6 +199,7 @@ class WakewordNode(Node):
             on_listen_state=self._on_listen_state,
             on_wake_doa=self._publish_wake_doa,
             on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
+            on_listen_clip=self._save_listen_clip if self._listen_clip_dir else None,
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
@@ -209,7 +215,7 @@ class WakewordNode(Node):
             f"짧은 답 최소 {self._monitor.short_answer_min_rms:.4f} · "
             + (f"접근 대답 최소 {self._monitor.approach_min_rms:.4f} · "
                if self._monitor.approach_min_rms is not None else "")
-            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'}")
+            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
         self.get_logger().info(
@@ -442,6 +448,15 @@ class WakewordNode(Node):
             if not self._estop_clip_warned:
                 self._estop_clip_warned = True
                 self.get_logger().warn(f"긴급 소리 저장 실패(이후 경고 생략): {exc}")
+
+    def _save_listen_clip(self, audio, info) -> None:
+        # 긴급 소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
+        try:
+            save_emergency_clip(self._listen_clip_dir, audio, info)
+        except Exception as exc:
+            if not self._listen_clip_warned:
+                self._listen_clip_warned = True
+                self.get_logger().warn(f"말소리 저장 실패(이후 경고 생략): {exc}")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
