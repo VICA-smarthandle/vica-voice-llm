@@ -3,7 +3,7 @@
 설계: docs/superpowers/specs/2026-10-12-mic-venue-check-design.md · 사용법: docs/mic-venue-check.md
 
     cd ~/VICA-smarthandle/vica-voice-llm && .venv/bin/python -m tools.mic_venue_check --name 시연장
-    .venv/bin/python -m tools.mic_venue_check --restore     # .env 의 마이크 값 7개를 가장 최근 백업으로
+    .venv/bin/python -m tools.mic_venue_check --restore     # .env 의 마이크 값 10개를 가장 최근 백업으로
     .venv/bin/python -m tools.mic_venue_check --demo        # 마이크·모델 없이 화면만(가짜 소리)
 
 전제: ⑫·⑬ 꺼짐 · 로봇 정지 · reSpeaker USB · 스피커는 reSpeaker 출력. 도구는 ROS 에 아무것도 보내지 않는다.
@@ -39,9 +39,9 @@ if __name__ == "__main__":
 
     load_dotenv(ROOT / ".env")
 
-from src.env_file import EnvEditError, latest_backup, restore_latest, values_from  # noqa: E402
+from src.env_file import KEYS, EnvEditError, latest_backup, restore_latest, values_from  # noqa: E402
 from src.mic_check_replay import Models  # noqa: E402
-from src.mic_check_rules import MicValues  # noqa: E402
+from src.mic_check_rules import AGC_MAX_GAIN_FACTORY, MicValues  # noqa: E402
 from src.mic_check_session import Clip, Hardware, Session, previous_robot_level  # noqa: E402
 from src.wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor  # noqa: E402
 from tools.mic_check_web import DEFAULT_PORT, LiveServer  # noqa: E402
@@ -117,17 +117,18 @@ def lan_ip() -> str:
 def write_chip(values: MicValues) -> list:
     """칩에 AGC·에코를 쓰고 읽어서 확인한다. 문제 목록(빈 목록 = 성공). 마이크 스트림이 닫혀 있을 때만 부를 것."""
     from src import audio_out
-    from src.dsp_state import agc_max_gain_from_env, apply_agc_desired_level, apply_agc_max_gain, apply_echo_tuning
+    from src import dsp_state
 
     audio_out.reset_device_cache()   # 재생 스트림이 열려 있으면 칩이 쓰기를 거부한다 — 먼저 닫는다
     problems = []
-    if not apply_agc_desired_level(values.agc):
+    if not dsp_state.apply_agc_desired_level(values.agc):
         problems.append(f"AGC {values.agc:.3f} 쓰기 실패")
-    # AGC 최대 증폭 한도(2026-10-15) — ⑫ 처럼 .env 줄이 있을 때만 쓴다. 점검기 화면에서 고치는 값은 아니다.
-    max_gain = agc_max_gain_from_env(os.environ.get("VICA_MIC_AGC_MAX_GAIN", ""))
-    if max_gain is not None and not apply_agc_max_gain(max_gain):
+    # AGC 최대 증폭 한도(2026-10-15, 화면에서 고침 10-21). ⑫ 는 줄이 없으면 쓰지 않아 칩이 공장값이다 — 점검기는
+    # 공장값을 직접 써서, 저장하지 않은 ×2 시험이 칩에 남아 ⑫ 로 넘어가지 않게 한다.
+    max_gain = AGC_MAX_GAIN_FACTORY if values.agc_max_gain is None else values.agc_max_gain
+    if not dsp_state.apply_agc_max_gain(max_gain):
         problems.append(f"AGC 최대 증폭 ×{max_gain:g} 쓰기 실패")
-    wrote = apply_echo_tuning(values.echo_etail, values.echo_nlatten)
+    wrote = dsp_state.apply_echo_tuning(values.echo_etail, values.echo_nlatten)
     etail = wrote.get("GAMMA_ETAIL")
     if etail is None or abs(float(etail) - values.echo_etail) > 1e-3:
         problems.append(f"에코 꼬리 {values.echo_etail} 쓰기 실패(읽은 값 {etail})")
@@ -246,7 +247,7 @@ def _restore_cli() -> int:
     if latest is None:
         print(f"되돌릴 백업이 없습니다 ({BACKUP_DIR})")
         return 1
-    answer = input(f".env 의 마이크 값 7개를 {latest.name} 으로 되돌릴까요? "
+    answer = input(f".env 의 마이크 값 {len(KEYS)}개를 {latest.name} 으로 되돌릴까요? "
                    "다른 줄은 그대로이고, 지금 .env 는 .before-restore 로 남깁니다 [y/N] ")
     if answer.strip().lower() != "y":
         print("그대로 둡니다.")
@@ -263,6 +264,13 @@ class _Demo:
     def __init__(self):
         self.vad = False
         self.rng = np.random.default_rng(0)
+        # 말소리는 1 kHz 소리 — 재채점이 대역 관문(400~3000 Hz)을 켠다. 첫 표본이 표시(어떤 말인지)다.
+        self._tone = (3000 * np.sin(2 * np.pi * 1000 * np.arange(FRAME) / SAMPLE_RATE)).astype(np.int16)
+
+    def _voice(self, mark: int) -> np.ndarray:
+        frame = self._tone.copy()
+        frame[0] = mark
+        return frame
 
     def predict(self, frame: np.ndarray) -> dict:
         v = int(frame[0])
@@ -280,10 +288,10 @@ class _Demo:
             return np.full(FRAME, self.WAKE, np.int16)
         if kind == "call" and 5 <= pos < 15:
             self.vad = True
-            return np.full(FRAME, self.VOICE, np.int16)
-        if kind == "answer" and 3 <= pos < 11:
+            return self._voice(self.VOICE)
+        if kind in ("answer", "far") and 3 <= pos < 11:
             self.vad = True
-            return np.full(FRAME, self.NO if session.recording_expected == "no" else self.YES, np.int16)
+            return self._voice(self.NO if session.recording_expected == "no" else self.YES)
         if kind == "stop" and pos == 3:
             return np.full(FRAME, self.STOP, np.int16)
         scale = 900 if session.robot_running else 100
@@ -341,7 +349,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--destinations", default=os.environ.get("VICA_DESTINATIONS_YAML", ""),
                     help="장소 귀띔용 destinations.yaml(⑫ 와 같은 파일). 없으면 귀띔 없이 받아쓴다")
-    ap.add_argument("--restore", action="store_true", help=".env 의 마이크 값 7개를 가장 최근 백업으로 되돌리고 끝낸다")
+    ap.add_argument("--restore", action="store_true", help=".env 의 마이크 값 10개를 가장 최근 백업으로 되돌리고 끝낸다")
     ap.add_argument("--demo", action="store_true", help="마이크·모델 없이 가짜 소리로 화면만 본다")
     args = ap.parse_args(argv)
     if args.restore:

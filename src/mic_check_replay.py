@@ -3,6 +3,7 @@
 10-06 src/venue_replay.py(feat/midm-fallback) 를 지금 귀에 맞게 옮겼다: 대화 STT·긴급 확인 STT 가 나뉘었고
 (10-12), "멈춰" 한 조각 규칙이 생겼다. 녹음 하나마다 새 귀를 만든다 — 같은 녹음·같은 값이면 늘 같은 결과다.
 칩 사람 말 표시(vad)는 노드처럼 청취 중일 때만 넣는다(WakewordMonitor.run 과 같은 규칙).
+대역 최소·접근 대답 최소도 노드처럼 귀에 넣는다(2026-10-21 — 그 전에는 재채점에 대역 관문이 꺼져 있었다).
 설계: docs/superpowers/specs/2026-10-12-mic-venue-check-design.md 5절
 """
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 
 from .handle_mode import AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply
-from .mic_check_rules import AnswerTry, CallTry, MicValues, StopTry
+from .mic_check_rules import AnswerTry, CallTry, MicValues, NearTry, StopTry
 from .wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor
 
 DT = FRAME / SAMPLE_RATE      # 0.08 s
@@ -70,7 +71,12 @@ class _Run:
             single_b=values.emergency_single,
             listen_min_rms=values.listen_min_rms,
             short_answer_min_rms=values.short_answer_min_rms,
+            approach_min_rms=values.approach_min_rms,
+            listen_band_min=values.band_min,
         )
+        # 귀는 approach_min_rms=None 을 '환경 변수에서 읽기'로 받는다 — 점검기는 .env 를 환경에 올리므로, 값이 None(줄 없음)
+        # 이면 그대로 None 이어야 한다(화면이 줄 없음인데 옛 .env 값으로 채점하던 결함, 10-21 검토).
+        self.monitor.approach_min_rms = values.approach_min_rms
 
     def _tracked(self, frame: np.ndarray) -> dict:
         scores = self._predict(frame)
@@ -94,9 +100,15 @@ def _cycle(quiet: Optional[Recording], n: int) -> list:
 
 
 def _play(models: Models, values: MicValues, rec: Recording, quiet: Optional[Recording],
-          followup: bool) -> tuple:
-    """조용한 조각 → (질문 창 열기) → 녹음 → 조용한 조각. (_Run, 녹음 이후 결과들) 을 돌려준다."""
+          followup: bool, approach: bool = False) -> tuple:
+    """조용한 조각 → (질문 창 열기) → 녹음 → 조용한 조각. (_Run, 녹음 이후 결과들) 을 돌려준다.
+
+    approach: 접근 질문 대답 창 — 노드처럼 호출을 끈다(미션 dialog_state=awaiting_user → set_wake_suppressed).
+    귀는 그동안 접근 대답 최소로 받는다.
+    """
     run = _Run(models, values)
+    if approach:
+        run.monitor.set_wake_suppressed(True)
     t, _ = run.feed(_cycle(quiet, FLUSH_FRAMES), [False] * FLUSH_FRAMES, 0.0)
     if followup:
         run.monitor.arm_followup(now=t)          # 노드처럼: 질문을 말했다는 예약
@@ -124,15 +136,26 @@ def replay_call(models: Models, rec: Recording, quiet: Optional[Recording], valu
 
 
 def replay_answer(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues,
-                  expected: str) -> AnswerTry:
-    """'네'·'아니요' — 질문 창을 열고 흘려 받아들여지는지와 긍정·부정을 본다."""
-    run, _ = _play(models, values, rec, quiet, followup=True)
+                  expected: str, approach: bool = False) -> AnswerTry:
+    """'네'·'아니요' — 질문 창을 열고 흘려 받아들여지는지와 긍정·부정을 본다. approach 면 접근 질문 대답 창."""
+    run, _ = _play(models, values, rec, quiet, followup=True, approach=approach)
     text = run.texts[0] if run.texts else ""
     stats = run.monitor.last_listen_stats
     correct = bool(text) and (is_affirmative(text) if expected == "yes" else is_negative(text))
     return AnswerTry(expected=expected, accepted=bool(run.texts), correct=correct,
                      clip_rms=float(stats["rms"]) if stats else None, text=text,
                      emergency=bool(run.emergencies))
+
+
+def replay_near(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues) -> NearTry:
+    """옆사람 잡담 — 질문 창과 접근 대답 창에 따로 흘린다. 받아쓰기까지 가면 샌 것이다."""
+    q, _ = _play(models, values, rec, quiet, followup=True)
+    a, _ = _play(models, values, rec, quiet, followup=True, approach=True)
+    stats = q.monitor.last_listen_stats or a.monitor.last_listen_stats
+    texts = q.texts or a.texts
+    return NearTry(leaked=bool(q.texts), leaked_approach=bool(a.texts),
+                   clip_rms=float(stats["rms"]) if stats else None, text=texts[0] if texts else "",
+                   emergency=bool(q.emergencies or a.emergencies))
 
 
 def replay_stop(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues) -> StopTry:

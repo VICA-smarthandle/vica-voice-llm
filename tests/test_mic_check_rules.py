@@ -1,13 +1,16 @@
 """마이크 점검기 합격 기준(설계 6절 초기값)·저장 검사(7절)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from src.mic_check_rules import (FAIL, PASS, REDO, WAIT, WARN, AnswerTry, CallTry, Measurements, MicValues,
-                                 RobotRun, StopTry, check_values, echo_name, judge, noise_floor)
+                                 NearTry, RobotRun, StopTry, check_values, echo_name, judge, noise_floor)
 
 V = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1)
-KEYS = ("noise", "call", "answer", "stop", "robot")
+KEYS = ("noise", "call", "answer", "stop", "far", "near", "robot")
+QUIET_NEAR = NearTry(False, False, 0.004)
 
 
 def good() -> Measurements:
@@ -17,6 +20,8 @@ def good() -> Measurements:
         runs=[CallTry(True, True, 0.91, "비카야 화장실로 가자")] * 2,
         answers=[AnswerTry("yes", True, True, 0.045, "그래")] * 2 + [AnswerTry("no", True, True, 0.040, "아니")] * 2,
         stops=[StopTry(True, True, 0.86, "멈춰")] * 5,
+        far=[AnswerTry("yes", True, True, 0.015, "그래"), AnswerTry("no", True, True, 0.014, "아니")],
+        near=[QUIET_NEAR] * 3,
         robot=RobotRun(0, 0.031),
         chips={k: V.chip() for k in KEYS},
         robot_thresholds=(0.70, 0.50),
@@ -169,7 +174,8 @@ def test_agc_change_needs_rerecord_echo_change_only_robot():
     agc = MicValues(0.008, 0.02, 0.70, 0.50, 0.010, 1.5, 1)
     v = judge(m, agc)
     assert {r.key: r.grade for r in v.rows} == {
-        "noise": REDO, "call": REDO, "run": REDO, "answer": REDO, "stop": REDO, "robot": REDO, "cross": REDO}
+        "noise": REDO, "call": REDO, "run": REDO, "answer": REDO, "stop": REDO, "far": REDO, "near": REDO,
+        "robot": REDO, "cross": REDO}
     assert v.overall == REDO and v.title == "다시 녹음 필요"
     echo = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.0, 1)
     v = judge(m, echo)
@@ -198,3 +204,98 @@ def test_noise_floor_and_echo_name():
     assert noise_floor([]) is None
     assert noise_floor([0.001 * i for i in range(1, 11)]) == pytest.approx(0.010)
     assert echo_name(1.5, 1) == "strong" and echo_name(1.0, 0) == "factory" and echo_name(2.0, 1) is None
+
+
+# ---------------------------------------------------------------- 10-21: 최대 증폭·접근 대답 최소·대역 최소, 먼 대답·옆사람
+def test_new_values_default_to_off():
+    """세 값의 기본은 None — 7개로 만든 값은 지금까지와 같다(최대 증폭 안 씀·접근 = 수음 최소·대역 관문 끔)."""
+    assert (V.agc_max_gain, V.approach_min_rms, V.band_min) == (None, None, None)
+
+
+def test_max_gain_change_needs_rerecord():
+    v = judge(good(), replace(V, agc_max_gain=2.0))
+    grades = {r.key: r.grade for r in v.rows}
+    assert all(grades[k] == REDO for k in ("noise", "call", "run", "answer", "stop", "far", "near", "robot", "cross"))
+
+
+def test_far_and_near_wait_before_recording():
+    m = Measurements()
+    assert row(m, "far").grade == WAIT and row(m, "near").grade == WAIT
+
+
+def test_far_row_judged_against_approach_min():
+    m = good()
+    v = replace(V, approach_min_rms=0.006)
+    m.far = [AnswerTry("yes", True, True, 0.0065, "그래"), AnswerTry("no", True, True, 0.010, "아니")]
+    r = row(m, "far", v)
+    assert r.grade == WARN and "0.0065" in r.detail and "접근 대답 최소 0.0060" in r.detail   # 0.0065 < 0.006 × 1.5
+    m.far = [AnswerTry("yes", True, True, 0.0095, "그래"), AnswerTry("no", True, True, 0.010, "아니")]
+    assert row(m, "far", v).grade == PASS
+    assert "수음 최소 0.0080" in row(m, "far", V).detail          # 줄이 없으면 수음 최소로 판단한다
+
+
+def test_far_row_fails_when_dropped_or_misheard():
+    m = good()
+    m.far = [AnswerTry("yes", False, False, 0.005), AnswerTry("no", True, True, 0.02, "아니")]
+    r = row(m, "far")
+    assert r.grade == FAIL and "접근 대답 최소" in r.todo
+    m.far = [AnswerTry("yes", True, True, 0.02, "그래"), AnswerTry("no", True, False, 0.02, "그래")]
+    r = row(m, "far")
+    assert r.grade == FAIL and "'그래'" in r.detail
+
+
+def test_near_leak_into_question_window_fails():
+    m = good()
+    m.near = [NearTry(True, True, 0.030, "어제 그거 봤어")] + [QUIET_NEAR] * 2
+    r = row(m, "near")
+    assert r.grade == FAIL and "질문 창 통과 1/3" in r.detail and "어제 그거 봤어" in r.detail
+    assert "수음 최소" in r.todo and "최대 증폭" in r.todo
+    assert judge(m, V).overall == FAIL
+
+
+def test_near_leak_only_in_approach_window_warns():
+    m = good()
+    m.near = [NearTry(False, True, 0.007, "응 그래")] + [QUIET_NEAR] * 2
+    r = row(m, "near")
+    assert r.grade == WARN and "접근 창 통과 1/3" in r.detail and "접근 대답 최소" in r.todo
+
+
+def test_near_detail_shows_gap_to_user_and_split_value():
+    """손잡이 사용자 최소(짧은 답)와 옆사람 최대 사이 dB, 둘을 가르는 수음 최소(기하 평균) — 10-15 주변 대화 시험기와 같은 셈."""
+    m = good()
+    m.answers = [AnswerTry("yes", True, True, 0.040)] * 4
+    m.near = [NearTry(False, False, 0.004), NearTry(False, False, 0.002), NearTry(False, False, None)]
+    r = row(m, "near")
+    assert r.grade == PASS
+    assert "옆사람 최대 0.0040" in r.detail and "+20.0 dB" in r.detail and "가를 값 0.0126" in r.detail
+    assert "먼 대답 최소 0.0140" in r.detail and "+10.9 dB" in r.detail
+
+
+def test_near_cross_trigger_counts():
+    m = good()
+    m.near = [NearTry(False, False, 0.004, emergency=True)] + [QUIET_NEAR] * 2
+    assert row(m, "cross").grade == FAIL
+    m = good()
+    m.far = [AnswerTry("yes", True, True, 0.015, "그래", emergency=True), m.far[1]]
+    assert row(m, "cross").grade == FAIL
+
+
+def test_check_values_new_ranges():
+    assert check_values(replace(V, approach_min_rms=0.006, band_min=0.004, agc_max_gain=2.0)) == []
+    assert any("접근 대답 최소" in p for p in check_values(replace(V, approach_min_rms=0.001)))
+    assert any("말소리 대역 최소" in p for p in check_values(replace(V, band_min=0.02)))
+
+
+def test_factory_gain_is_the_same_chip_as_no_line():
+    """줄 없음이면 점검기가 칩에 공장값 ×31.6 을 쓴다 — 둘은 같은 칩 상태다(검토 10-21)."""
+    factory = replace(V, agc_max_gain=31.6)
+    assert factory.chip() == V.chip() and factory.gain() == V.gain()
+    assert all(r.grade != REDO for r in judge(good(), factory).rows)
+
+
+def test_near_gap_skips_recordings_made_at_another_gain():
+    m = good()
+    m.answers = [AnswerTry("yes", True, True, 0.040)] * 4
+    m.chips["answer"] = replace(V, agc_max_gain=2.0).chip()                   # 4단계는 ×2 로 녹음했다
+    r = row(m, "near")
+    assert "옆사람 최대" in r.detail and "사용자 최소" not in r.detail and "먼 대답 최소" in r.detail

@@ -15,10 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Optional
 
-from .dsp_state import agc_desired_from_env, echo_tuning_from_env
+from .dsp_state import agc_desired_from_env, agc_max_gain_from_env, echo_tuning_from_env
 from .mic_check_rules import MicValues
-from .wakeword_monitor import (EMERGENCY_SINGLE_FRAME_DEFAULT, LISTEN_MIN_RMS, SHORT_ANSWER_MIN_RMS,
-                               WAKE_THRESHOLD_DEFAULT)
+from .wakeword_monitor import (EMERGENCY_SINGLE_FRAME_DEFAULT, LISTEN_BAND_MIN_DEFAULT, LISTEN_MIN_RMS,
+                               SHORT_ANSWER_MIN_RMS, WAKE_THRESHOLD_DEFAULT)
 
 KEYS = {   # MicValues 필드 → .env 키
     "listen_min_rms": "VICA_LISTEN_MIN_RMS",
@@ -28,8 +28,14 @@ KEYS = {   # MicValues 필드 → .env 키
     "agc": "VICA_MIC_AGC_DESIRED",
     "echo_etail": "VICA_MIC_GAMMA_ETAIL",
     "echo_nlatten": "VICA_MIC_NLATTEN",
+    # 2026-10-21 시연 준비 — 옆사람 말 막기·먼 대답 받기에 직접 걸리는 셋
+    "agc_max_gain": "VICA_MIC_AGC_MAX_GAIN",
+    "approach_min_rms": "VICA_APPROACH_MIN_RMS",
+    "band_min": "VICA_LISTEN_BAND_MIN",
 }
+OPTIONAL = ("agc_max_gain", "approach_min_rms", "band_min")   # None = 줄 없음·꺼짐 — `.env` 에는 "off" 로 쓴다
 APPEND_HEADER = "# 마이크 점검기에서 추가 (2026-10-12 설계)"
+TOOL_NOTES = ("점검에서 바꿈", "원래대로 (백업")   # 점검기가 쓴 줄 끝의 표시 — 저장(_note)·되돌리기(restore_latest)
 _BACKUP_RE = re.compile(r"^\.env\.\d{8}-\d{6}(-\d+)?$")
 _OFF = ("off", "none", "false", "no")
 
@@ -54,6 +60,10 @@ def _line_key(line: str) -> Optional[str]:
     if left.startswith("export "):
         left = left[len("export "):].strip()
     return left or None
+
+
+def _written_by_tool(line: str) -> bool:
+    return "#" in line and any(note in line.split("#", 1)[1] for note in TOOL_NOTES)
 
 
 def _line_value(line: str) -> str:
@@ -83,6 +93,32 @@ def _float(mapping: Mapping, key: str, default: float) -> float:
     return value if 0.0 < value < 1.0 else default
 
 
+def _optional_float(mapping: Mapping, key: str) -> Optional[float]:
+    """wakeword_monitor.approach_min_rms_from_env 와 같은 해석 — 0 < 값 < 1 이 아니면 None."""
+    raw = str(mapping.get(key, "")).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
+
+
+def _band_min(mapping: Mapping) -> Optional[float]:
+    """wakeword_monitor.listen_band_min_from_env 와 같은 해석 — 줄 없음·이상한 값은 0.004, off·0 은 None(끔)."""
+    raw = str(mapping.get(KEYS["band_min"], "")).strip().lower()
+    if raw in ("off", "false", "none"):
+        return None
+    if not raw:
+        return LISTEN_BAND_MIN_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return LISTEN_BAND_MIN_DEFAULT
+    if value == 0.0:
+        return None
+    return value if 0.0 < value < 1.0 else LISTEN_BAND_MIN_DEFAULT
+
+
 def values_from(mapping: Mapping) -> MicValues:
     """⑫ 노드가 같은 환경에서 쓰게 될 값. 노드와 같은 해석(빈 값·이상한 값은 기본값)."""
     if str(mapping.get(KEYS["emergency_single"], "")).strip().lower() in _OFF:
@@ -102,11 +138,18 @@ def values_from(mapping: Mapping) -> MicValues:
         # 줄이 없으면 ⑫ 는 칩에 쓰지 않는다 — 칩 공장값(1.0·꺼짐)으로 본다.
         echo_etail=1.0 if etail is None else etail,
         echo_nlatten=0 if nlatten is None else nlatten,
+        agc_max_gain=agc_max_gain_from_env(str(mapping.get(KEYS["agc_max_gain"], ""))),
+        approach_min_rms=_optional_float(mapping, KEYS["approach_min_rms"]),
+        band_min=_band_min(mapping),
     )
 
 
 def format_value(field: str, value) -> str:
-    if field in ("listen_min_rms", "short_answer_min_rms"):
+    if field in OPTIONAL and value is None:
+        return "off"
+    if field == "agc_max_gain":
+        return f"{float(value):g}"
+    if field in ("listen_min_rms", "short_answer_min_rms", "approach_min_rms", "band_min"):
         text = f"{float(value):.4f}".rstrip("0")
         return text + "0" if text.endswith(".") else text
     if field in ("wake_threshold", "emergency_single"):
@@ -217,10 +260,12 @@ def latest_backup(backup_dir: Path) -> Optional[Path]:
 
 
 def restore_latest(path: Path, backup_dir: Path, now: Optional[datetime] = None) -> Path:
-    """마이크 값 7개(KEYS)만 가장 최근 백업(마지막 저장 직전)의 값으로 되돌린다. 다른 줄은 그대로 둔다.
+    """마이크 값(KEYS)만 가장 최근 백업(마지막 저장 직전)의 값으로 되돌린다. 다른 줄은 그대로 둔다.
 
     되돌리기 전 지금 파일 전체를 .before-restore 로 남긴다. 백업에 있던 키는 그 값으로 쓰고(제자리 교체, 없으면
     끝에 추가), 백업에 없던 키는 지금 파일에서 줄을 지운다 — ⑫ 가 기본값으로 돌아가게(백업 때와 같게).
+    단 지우는 것은 점검기가 쓴 줄(TOOL_NOTES 표시)뿐이다. 백업 뒤 손으로 넣은 줄(10-15 의 최대 증폭·접근 대답 최소처럼)은
+    그대로 둔다 — 2026-10-21 키가 열 개로 늘어 옛 백업으로 되돌리면 시연 설정이 지워질 수 있었다(검토).
     """
     path = Path(path)
     latest = latest_backup(backup_dir)
@@ -248,7 +293,7 @@ def restore_latest(path: Path, backup_dir: Path, now: Optional[datetime] = None)
             else:
                 appended.append(text)
         else:
-            drop.update(hits)
+            drop.update(i for i in hits if _written_by_tool(lines[i]))
     lines = [line for i, line in enumerate(lines) if i not in drop]
     if appended:
         if APPEND_HEADER not in lines:

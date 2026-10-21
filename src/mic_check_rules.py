@@ -21,6 +21,9 @@ SHORT_OVER_LISTEN = 1.5        # 저장 검사: 짧은 답 최소 ≥ 수음 최
 NOISE_PERCENTILE = 0.9         # 잡음 바닥 = 조각 rms 의 상위 10 %
 
 CALL_REPS, ANSWER_REPS, STOP_REPS = 3, 4, 5
+FAR_REPS, NEAR_REPS = 2, 3     # 먼 대답(접근 질문, 1~1.5 m 앞)·옆사람 잡담(1~3 m) — 2026-10-21 시연 준비
+FAR_EXPECTED = ("yes", "no")
+FAR_MARGIN = 1.5               # 가장 작은 먼 대답이 접근 대답 최소 × 이것 아래면 아슬아슬
 RUN_REPS = 2                   # 3단계 끝의 '이어서 부르기' — 참고 줄(2026-10-13 사용자: 실제로는 쉬지 않고 말하기도 한다)
 PLACE_WORD = "화장실"           # 3단계 문장의 목적지 — 호출 뒤 받은 말에 이것이 있어야 목적지가 간 것이다
 
@@ -30,13 +33,19 @@ RANGES = {   # 필드: (최소, 최대, 눈금)
     "short_answer_min_rms": (0.012, 0.025, 0.001),
     "wake_threshold": (0.50, 0.90, 0.01),
     "emergency_single": (0.40, 0.70, 0.01),
+    # 2026-10-21: 칩 증폭을 ×4 → ×2 로 내리면 소리가 약 −6 dB(절반) — 접근 0.006→0.003, 대역 0.004→0.002 까지 내려갈 수 있게.
+    "approach_min_rms": (0.002, 0.012, 0.0005),
+    "band_min": (0.001, 0.008, 0.0005),
 }
 NAMES = {
     "listen_min_rms": "수음 최소", "short_answer_min_rms": "짧은 답 최소",
     "wake_threshold": "호출 문턱", "emergency_single": "“멈춰” 한 조각 문턱",
     "agc": "AGC 목표", "echo": "에코 지우기",
+    "approach_min_rms": "접근 대답 최소", "band_min": "말소리 대역 최소", "agc_max_gain": "AGC 최대 증폭",
 }
 AGC_CHOICES = (0.005, 0.007, 0.010)                                          # 이 로봇에서 써 본 값만
+AGC_MAX_GAIN_FACTORY = 31.6    # 칩 공장값(src/dsp_state.py) — `.env` 에 줄이 없을 때 칩이 갖는 값
+GAIN_CHOICES = (2.0, 4.0, 8.0, AGC_MAX_GAIN_FACTORY)                         # 10-15 주변 대화 시험기에서 잰 값
 ECHO_CHOICES = {"strong": (1.5, 1), "mid": (1.0, 1), "factory": (1.0, 0)}   # 이름: (GAMMA_ETAIL, NLATTENONOFF)
 ECHO_LABELS = {"strong": "센 (1.5·켜짐)", "mid": "중간 (1.0·켜짐)", "factory": "공장값 (1.0·꺼짐)"}
 
@@ -48,7 +57,11 @@ TITLES = {PASS: "시연 가능", WARN: "시연 가능 · 확인 필요", WAIT: "
 
 @dataclass(frozen=True)
 class MicValues:
-    """점검기가 다루는 값 일곱 개 — `.env` 와 1:1 (src/env_file.KEYS)."""
+    """점검기가 다루는 값 열 개 — `.env` 와 1:1 (src/env_file.KEYS).
+
+    뒤의 셋(2026-10-21)은 None 이 '줄 없음'이다: 최대 증폭은 칩에 쓰지 않음(공장값), 접근 대답 최소는 수음 최소를
+    그대로 씀, 대역 최소는 관문 끔. ⑫ 와 같은 값은 env_file.values_from 이 만든다(대역은 줄이 없으면 0.004).
+    """
     listen_min_rms: float
     short_answer_min_rms: float
     wake_threshold: float
@@ -56,14 +69,34 @@ class MicValues:
     agc: float
     echo_etail: float
     echo_nlatten: int
+    agc_max_gain: Optional[float] = None
+    approach_min_rms: Optional[float] = None
+    band_min: Optional[float] = None
 
     def chip(self) -> tuple:
-        """칩에 쓰는 셋 — 이것이 바뀌면 녹음이 무효다(칩이 소리 자체를 바꾼다)."""
-        return (round(float(self.agc), 6), round(float(self.echo_etail), 6), int(self.echo_nlatten))
+        """칩에 쓰는 넷 — 이것이 바뀌면 녹음이 무효다(칩이 소리 자체를 바꾼다). 최대 증폭 줄 없음 = 공장값(점검기가 쓴다)."""
+        gain = round(float(AGC_MAX_GAIN_FACTORY if self.agc_max_gain is None else self.agc_max_gain), 6)
+        return (round(float(self.agc), 6), round(float(self.echo_etail), 6), int(self.echo_nlatten), gain)
+
+    def gain(self) -> tuple:
+        """칩 증폭 둘(AGC 목표·최대 증폭) — 바뀌면 사람 목소리 녹음이 무효다."""
+        return gain_of(self.chip())
 
     def thresholds(self) -> tuple:
         """6단계(실시간으로 잰 자기 반응)에 영향을 주는 문턱 둘."""
         return (round(float(self.wake_threshold), 6), round(float(self.emergency_single), 6))
+
+
+def gain_of(chip: tuple) -> tuple:
+    """MicValues.chip() 에서 증폭 둘(AGC 목표·최대 증폭)."""
+    return chip[0], chip[3]
+
+
+def approach_threshold(v: MicValues) -> tuple:
+    """(이름, 값) — 접근 질문 대답을 받는 수음 최소. 줄이 없으면 ⑫ 처럼 수음 최소를 쓴다."""
+    if v.approach_min_rms is None:
+        return NAMES["listen_min_rms"], v.listen_min_rms
+    return NAMES["approach_min_rms"], v.approach_min_rms
 
 
 def echo_name(etail: float, nlatten: int) -> Optional[str]:
@@ -78,6 +111,8 @@ def check_values(v: MicValues) -> list:
     """저장을 막을 문제(빈 목록이면 저장 가능): 허용 범위 밖, 짧은 답 최소 < 수음 최소 × 1.5."""
     problems = []
     for key, (lo, hi, _step) in RANGES.items():
+        if getattr(v, key) is None:      # 줄 없음 — ⑫ 기본 동작
+            continue
         x = float(getattr(v, key))
         if not lo - 1e-9 <= x <= hi + 1e-9:
             problems.append(f"{NAMES[key]} {x:g} 은(는) 허용 범위 {lo:g} ~ {hi:g} 밖입니다")
@@ -126,6 +161,16 @@ class StopTry:
 
 
 @dataclass(frozen=True)
+class NearTry:
+    """옆사람 잡담 한 번 — 질문 창·접근 대답 창에 따로 흘려 받아쓰기까지 갔나(가면 샌 것이다)."""
+    leaked: bool                   # 질문 창(수음 최소)
+    leaked_approach: bool          # 접근 대답 창(접근 대답 최소)
+    clip_rms: Optional[float]      # 청취 창이 잰 소리 크기 — 말소리로 잡히지 않았으면 None
+    text: str = ""
+    emergency: bool = False
+
+
+@dataclass(frozen=True)
 class RobotRun:
     self_reactions: int
     level: float              # 재생 중 조각 rms 평균(에코 지우기 뒤 소리)
@@ -139,6 +184,8 @@ class Measurements:
     runs: list = field(default_factory=list)        # CallTry — 이어서 부르기(참고)
     answers: list = field(default_factory=list)     # AnswerTry
     stops: list = field(default_factory=list)       # StopTry
+    far: list = field(default_factory=list)         # AnswerTry — 접근 질문 대답(1~1.5 m 앞)
+    near: list = field(default_factory=list)        # NearTry — 옆사람 잡담(1~3 m)
     robot: Optional[RobotRun] = None
     chips: dict = field(default_factory=dict)       # 줄 키 → 녹음할 때 MicValues.chip()
     robot_thresholds: Optional[tuple] = None        # 6단계 때 MicValues.thresholds()
@@ -173,6 +220,8 @@ def judge(m: Measurements, v: MicValues, previous_robot_level: Optional[float] =
         _answer_row(m, v),
         _stop_row(m, v),
         _robot_row(m, v, previous_robot_level),
+        _far_row(m, v),
+        _near_row(m, v),
         _cross_row(m, v),
     ]
     overall = max((r.grade for r in rows), key=_RANK.__getitem__)
@@ -184,7 +233,7 @@ _AGC_REDO = "AGC 가 바뀌어 다시 녹음해야 합니다"
 
 def _agc_stale(m: Measurements, key: str, v: MicValues) -> bool:
     chip = m.chips.get(key)
-    return chip is not None and chip[0] != v.chip()[0]
+    return chip is not None and gain_of(chip) != v.gain()
 
 
 def _noise_row(m: Measurements, v: MicValues) -> Row:
@@ -304,6 +353,74 @@ def _stop_row(m: Measurements, v: MicValues) -> Row:
     return Row("stop", name, WARN if ok >= STOP_WARN else FAIL, detail, " ".join(todo))
 
 
+def _far_row(m: Measurements, v: MicValues) -> Row:
+    """접근 질문('안내를 받으시겠어요?')의 대답 — 사용자가 로봇 앞 1~1.5 m 에서 한다(10-15 사용자 결정 ②)."""
+    name = "먼 대답 “그래”·“아니” ×2 (1~1.5 m)"
+    tries = m.far
+    if tries and _agc_stale(m, "far", v):
+        return Row("far", name, REDO, _AGC_REDO, "7단계를 다시 하세요")
+    if len(tries) < FAR_REPS:
+        return Row("far", name, WAIT, f"{len(tries)}/{FAR_REPS}")
+    label, th = approach_threshold(v)
+    ok = sum(t.accepted and t.correct for t in tries)
+    sizes = [t.clip_rms for t in tries if t.clip_rms is not None]
+    low = min(sizes) if sizes else 0.0
+    detail = f"{ok}/{FAR_REPS} · 가장 작은 소리 {low:.4f} ({label} {th:.4f})"
+    if ok < FAR_REPS:
+        wrong = [t for t in tries if t.accepted and not t.correct]
+        if wrong:
+            return Row("far", name, FAIL, f"{detail} · 받아쓰기 '{wrong[0].text}'",
+                       "긍정·부정을 다르게 알아들었습니다. 받아쓴 글자를 보고 다시 해 보세요.")
+        return Row("far", name, FAIL, detail, "먼 대답이 버려졌습니다. 접근 대답 최소를 낮추세요.")
+    if low < th * FAR_MARGIN - 1e-9:
+        return Row("far", name, WARN, detail, "먼 대답이 아슬아슬하게 들어갑니다.")
+    return Row("far", name, PASS, detail)
+
+
+def _db_gap(a: float, b: float) -> str:
+    return f"{20.0 * math.log10(a / b):+.1f} dB"
+
+
+def _near_row(m: Measurements, v: MicValues) -> Row:
+    """옆사람 잡담 — 질문 창(수음 최소)과 접근 대답 창(접근 대답 최소)에서 받아쓰기까지 가면 안 된다.
+
+    가를 값은 손잡이 사용자 최소(짧은 답)와 옆사람 최대의 기하 평균 — 10-15 주변 대화 시험기(feat/stt-qwen-asr
+    tools/mic_bystander_check.py)와 같은 셈이다.
+    """
+    name = "옆사람 잡담 ×3 (1~3 m)"
+    tries = m.near
+    if tries and _agc_stale(m, "near", v):
+        return Row("near", name, REDO, _AGC_REDO, "8단계를 다시 하세요")
+    if len(tries) < NEAR_REPS:
+        return Row("near", name, WAIT, f"{len(tries)}/{NEAR_REPS}")
+    q = [t for t in tries if t.leaked]
+    a = [t for t in tries if t.leaked_approach]
+    parts = [f"질문 창 통과 {len(q)}/{NEAR_REPS}", f"접근 창 통과 {len(a)}/{NEAR_REPS}"]
+    sizes = [t.clip_rms for t in tries if t.clip_rms is not None]
+    loud = max(sizes) if sizes else None
+    if loud:
+        parts.append(f"옆사람 최대 {loud:.4f}")
+        # 다른 증폭으로 녹음한 단계와는 견주지 않는다(그 줄은 '다시 녹음 필요'다)
+        user = [] if _agc_stale(m, "answer", v) else [t.clip_rms for t in m.answers if t.accepted and t.clip_rms is not None]
+        if user:
+            low = min(user)
+            split = f", 가를 값 {math.sqrt(low * loud):.4f}" if low > loud else ""
+            parts.append(f"사용자 최소 {low:.4f} ({_db_gap(low, loud)}{split})")
+        far = [] if _agc_stale(m, "far", v) else [t.clip_rms for t in m.far if t.accepted and t.clip_rms is not None]
+        if far:
+            parts.append(f"먼 대답 최소 {min(far):.4f} ({_db_gap(min(far), loud)})")
+    detail = " · ".join(parts)
+    if q:
+        return Row("near", name, FAIL, f"{detail} · 받아쓰기 '{q[0].text}'",
+                   "옆사람 말이 질문 창에 들어갑니다. 수음 최소를 올리거나 최대 증폭을 낮추세요"
+                   "(증폭을 낮추면 접근 대답 최소·대역 최소도 함께 낮춰야 합니다).")
+    if a:
+        return Row("near", name, WARN, f"{detail} · 받아쓰기 '{a[0].text}'",
+                   "접근 질문 대답을 기다리는 동안 옆사람 말이 들어갑니다. 접근 대답 최소를 올리세요"
+                   "(먼 대답 줄이 버려지지 않는지 함께 보세요).")
+    return Row("near", name, PASS, detail)
+
+
 def _robot_row(m: Measurements, v: MicValues, previous: Optional[float]) -> Row:
     name = "로봇 혼자 말하기"
     r = m.robot
@@ -328,13 +445,15 @@ def _robot_row(m: Measurements, v: MicValues, previous: Optional[float]) -> Row:
 
 def _cross_row(m: Measurements, v: MicValues) -> Row:
     name = "오발동"
-    if any(_agc_stale(m, k, v) for k in ("call", "answer", "stop")) and (m.calls or m.answers or m.stops):
-        return Row("cross", name, REDO, _AGC_REDO, "3~5단계를 다시 하세요")
+    if (any(_agc_stale(m, k, v) for k in ("call", "answer", "stop", "far", "near"))
+            and (m.calls or m.answers or m.stops or m.far or m.near)):
+        return Row("cross", name, REDO, _AGC_REDO, "3~5·7~8단계를 다시 하세요")
     n = (sum(t.emergency for t in m.calls) + sum(t.emergency for t in m.runs)
-         + sum(t.emergency for t in m.answers) + sum(t.woke for t in m.stops))
+         + sum(t.emergency for t in m.answers) + sum(t.woke for t in m.stops)
+         + sum(t.emergency for t in m.far) + sum(t.emergency for t in m.near))
     if n:
         return Row("cross", name, FAIL, f"{n}회",
                    "다른 말에 멈춰나 비카야가 잘못 걸렸습니다. 문턱을 내렸다면 되돌리세요.")
     done = (len(m.calls) >= CALL_REPS and len(m.runs) >= RUN_REPS and len(m.answers) >= ANSWER_REPS
-            and len(m.stops) >= STOP_REPS)
+            and len(m.stops) >= STOP_REPS and len(m.far) >= FAR_REPS and len(m.near) >= NEAR_REPS)
     return Row("cross", name, PASS if done else WAIT, "0회")

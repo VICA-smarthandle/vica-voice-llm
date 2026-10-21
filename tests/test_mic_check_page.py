@@ -22,3 +22,19 @@ def test_ids_used_by_script_exist_once():
 def test_no_external_resources():
     html = PAGE.read_text(encoding="utf-8")
     assert "http://" not in html.replace("ws://", "") and "https://" not in html   # 시연장 인터넷 없이도
+
+
+def test_every_saved_value_has_a_control():
+    """`.env` 에 저장하는 값(env_file.KEYS)마다 화면에 고치는 칸이 있다 — 10-21 최대 증폭·접근 대답 최소·대역 최소."""
+    from src.env_file import KEYS
+
+    script = PAGE.read_text(encoding="utf-8").split("<script>", 1)[1]
+    sliders = script.split("const CTL = [", 1)[1].split("]", 1)[0]
+    for field in {("echo" if k.startswith("echo_") else k) for k in KEYS}:
+        assert f'"{field}"' in sliders or f'seg("{field}"' in script, field
+
+
+def test_step_count_matches_session():
+    from src.mic_check_session import TOTAL_STEPS
+
+    assert f"단계 – / {TOTAL_STEPS}" in PAGE.read_text(encoding="utf-8")

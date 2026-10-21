@@ -9,7 +9,10 @@ from datetime import datetime
 import numpy as np
 
 from src.mic_check_session import previous_robot_level
-from tools.mic_venue_check import DATA, ROBOT_CLIPS, _drain, _may_drain, lan_ip, load_clips, record_dir_for, voice_stack_running
+from src.mic_check_rules import MicValues
+from src.wakeword_monitor import LISTEN_BAND_MIN_DEFAULT, speech_band_rms
+from tools.mic_venue_check import (DATA, ROBOT_CLIPS, _Demo, _drain, _may_drain, lan_ip, load_clips, record_dir_for,
+                                   voice_stack_running, write_chip)
 
 
 def test_voice_stack_running():
@@ -79,3 +82,37 @@ def test_may_drain_only_when_not_recording():
     assert _may_drain(_Busy()) is True
     assert _may_drain(_Busy(kind="stop")) is False
     assert _may_drain(_Busy(robot=True)) is False
+
+
+def test_write_chip_takes_max_gain_from_values(monkeypatch):
+    """최대 증폭은 화면 값(10-21)을 쓴다. 줄 없음이면 공장값 ×31.6 을 써서, 저장 안 한 ×2 시험이 칩에 남지 않게."""
+    import src.audio_out as audio_out
+    import src.dsp_state as dsp
+
+    gains = []
+    monkeypatch.setattr(audio_out, "reset_device_cache", lambda: None)
+    monkeypatch.setattr(dsp, "apply_agc_desired_level", lambda v: True)
+    monkeypatch.setattr(dsp, "apply_agc_max_gain", lambda v: gains.append(v) or True)
+    monkeypatch.setattr(dsp, "apply_echo_tuning", lambda e, n: {"GAMMA_ETAIL": e, "NLATTENONOFF": n})
+    monkeypatch.setenv("VICA_MIC_AGC_MAX_GAIN", "8")          # 환경 변수가 아니라 값을 따른다
+    v = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1, agc_max_gain=2.0)
+    assert write_chip(v) == [] and gains == [2.0]
+    assert write_chip(MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1)) == [] and gains == [2.0, 31.6]
+    monkeypatch.setattr(dsp, "apply_agc_max_gain", lambda v: False)
+    assert write_chip(v) == ["AGC 최대 증폭 ×2 쓰기 실패"]
+
+
+class _Rec:
+    def __init__(self, kind, pos, expected=None):
+        self.recording_kind, self.recording_pos, self.recording_expected, self.robot_running = kind, pos, expected, False
+
+
+def test_demo_voice_frames_pass_band_gate():
+    """--demo 의 가짜 말소리도 말소리 대역에 힘이 있어야 한다 — 재채점이 대역 관문을 켠 뒤(10-21)."""
+    demo = _Demo()
+    for kind, pos, expected in (("call", 6, None), ("answer", 5, "yes"), ("answer", 5, "no")):
+        f = demo.frame(_Rec(kind, pos, expected))
+        assert demo.vad and speech_band_rms(f) >= LISTEN_BAND_MIN_DEFAULT
+    no = demo.frame(_Rec("answer", 5, "no"))
+    assert demo.models().transcribe_confirm(no) == "아니"
+    assert demo.predict(demo.frame(_Rec("call", 3)))["a"] > 0.9
