@@ -119,6 +119,43 @@ def approach_min_rms_from_env() -> Optional[float]:
         return None
     return value if 0.0 < value < 1.0 else None
 
+
+# 말소리 대역 관문 (2026-10-21 실기·사용자 승인) — 청취 창의 말 시작·말끝은 칩 말소리 감지(SPEECHDETECTED)로 재는데,
+# 칩이 바람·기계음(150~400 Hz)도 말로 봐 "네" 한마디 뒤 창이 4.7초 동안 안 닫혔다. 칩이 말이라 해도 이 대역의
+# 크기가 문턱 아래면 침묵으로 친다. 10-21 저장 소리 54개: 꼬리 소리 95 %가 0.0035 아래, 실제 말 99 %가 0.0058 위
+# (칩 증폭 ×4 기준 — 증폭을 바꾸면 다시 잰다). 소리 크기만 보던 옛 말끝(약한 어미를 자름)과 달리 칩 판정은 그대로 둔다.
+LISTEN_BAND_HZ = (400.0, 3000.0)
+LISTEN_BAND_MIN_DEFAULT = 0.004
+_BAND_WINDOW = np.hanning(FRAME).astype(np.float32)
+
+
+def speech_band_rms(frame: np.ndarray) -> float:
+    """int16 프레임의 말소리 대역(400~3000 Hz) 크기 — 그 대역만 남긴 소리의 rms 와 같은 눈금(-1~1)."""
+    x = np.asarray(frame, dtype=np.float32).reshape(-1) / 32768.0
+    if x.size == 0:
+        return 0.0
+    window = _BAND_WINDOW if x.size == FRAME else np.hanning(x.size).astype(np.float32)
+    freqs = np.fft.rfftfreq(x.size, 1.0 / SAMPLE_RATE)
+    mask = (freqs >= LISTEN_BAND_HZ[0]) & (freqs < LISTEN_BAND_HZ[1])
+    power = np.abs(np.fft.rfft(x * window)[mask]) ** 2
+    return float(np.sqrt(2.0 * power.sum() / (x.size * float(np.sum(window ** 2)))))
+
+
+def listen_band_min_from_env() -> Optional[float]:
+    """VICA_LISTEN_BAND_MIN — 줄이 없거나 이상한 값이면 기본 0.004, "off"·0 이면 None(관문 끔, 옛 동작)."""
+    raw = os.environ.get("VICA_LISTEN_BAND_MIN", "").strip().lower()
+    if raw in ("off", "false", "none"):
+        return None
+    if not raw:
+        return LISTEN_BAND_MIN_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return LISTEN_BAND_MIN_DEFAULT
+    if value == 0.0:
+        return None
+    return value if 0.0 < value < 1.0 else LISTEN_BAND_MIN_DEFAULT
+
 # 창 안 호출 구제 (2026-09-02) — 창이 열린 동안의 "비카야"는 음향 모델이
 # 꺼져 있어 **오직 STT 전사로만** 판별된다. 그런데 whisper 는 사전에 없는
 # 이 이름을 못 적는다: 실기 13회 전수에서 '비카야'로 적힌 것이 **0건**
@@ -437,6 +474,7 @@ class WakewordMonitor:
         transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
         on_frame: Optional[Callable[[dict], None]] = None,
         on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
+        listen_band_min: Optional[float] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -523,6 +561,8 @@ class WakewordMonitor:
         # 말소리가 있던 청취 창의 소리와 판정(통과·기각) — 받아쓰기·Realtime 을 다시 듣고 견주는 자료
         # (2026-10-20 STT 시험, 10-21 운영 귀에도). 없으면 아무 일 없음.
         self._on_listen_clip = on_listen_clip
+        # 말소리 대역 관문 문턱 — None 이면 끔(칩 판정만, 옛 동작). 노드가 listen_band_min_from_env() 로 켠다.
+        self.listen_band_min = None if listen_band_min is None else float(listen_band_min)
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
         self._wake_peak = 0.0
         self._wake_episode = False
@@ -1216,14 +1256,18 @@ class WakewordMonitor:
         """
         self._collect.append(frame)
         loud = _frame_rms(frame) >= SPEECH_RMS
-        if vad:
+        # 말소리 대역 관문: 칩이 말이라 해도, 소리가 커도 말소리 대역이 조용하면(바람·기계음) 말로 치지 않는다 —
+        # 말 시작·말끝·소리 크기 보강 세 갈래 모두. 관문이 꺼져 있으면(None) 옛 동작 그대로다.
+        band_ok = (self.listen_band_min is None or not (vad or loud)
+                   or speech_band_rms(frame) >= self.listen_band_min)
+        if vad and band_ok:
             if not self._listen_started_speech:
                 self._listen_speech_started_at = now
                 self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
             self._listen_voiced_sec += FRAME / SAMPLE_RATE
-        elif vad is None and loud:
+        elif vad is None and loud and band_ok:
             # 칩 판정 부재 (2026-09-01): 제어 읽기가 죽으면 vad 가 None 으로
             # 오는데, 예전엔 그 동안의 진짜 말이 트림으로 통째 증발하거나
             # 침묵으로 세져 조기 마감됐다 — 실기 유령 "소리 큼 + 발화
@@ -1234,7 +1278,7 @@ class WakewordMonitor:
             self._listen_started_speech = True
             self._listen_silence = 0.0
             self._listen_voiced_sec += FRAME / SAMPLE_RATE
-        elif not self._listen_started_speech and loud:
+        elif not self._listen_started_speech and loud and band_ok:
             # 칩은 살아 있는데(False) 시작을 놓친 경우 — 시작만 소리로
             # 보강한다. 말끝은 기존대로 칩 기준: RMS 말끝은 약한 어미를
             # 자르고 배경 소음에 안 닫히던 전력으로 폐기됐다.

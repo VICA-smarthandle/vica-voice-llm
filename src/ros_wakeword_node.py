@@ -55,7 +55,7 @@ from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
 from .wakeword_monitor import (
     LISTEN_START_SEC, WakewordMonitor, describe_emergency_check, describe_emergency_near,
-    ear_stt_model_names, save_emergency_clip)
+    ear_stt_model_names, listen_band_min_from_env, save_emergency_clip)
 
 # 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
@@ -200,6 +200,8 @@ class WakewordNode(Node):
             on_wake_doa=self._publish_wake_doa,
             on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
             on_listen_clip=self._save_listen_clip if self._listen_clip_dir else None,
+            # 말소리 대역 관문(2026-10-21) — 바람·기계음이 청취 창을 붙잡지 않게. off 면 옛 동작.
+            listen_band_min=listen_band_min_from_env(),
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
@@ -215,6 +217,8 @@ class WakewordNode(Node):
             f"짧은 답 최소 {self._monitor.short_answer_min_rms:.4f} · "
             + (f"접근 대답 최소 {self._monitor.approach_min_rms:.4f} · "
                if self._monitor.approach_min_rms is not None else "")
+            + (f"말소리 대역 최소 {self._monitor.listen_band_min:.4f} · "
+               if self._monitor.listen_band_min is not None else "말소리 대역 관문 꺼짐 · ")
             + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
