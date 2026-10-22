@@ -193,8 +193,11 @@ def test_overall_takes_worst():
 
 def test_check_values():
     assert check_values(V) == []
-    bad = MicValues(0.014, 0.02, 0.70, 0.50, 0.007, 1.5, 1)
-    assert any("1.5배" in p for p in check_values(bad))
+    # 2026-10-22: 짧은 답 최소 ≥ 수음 최소 × 1.0 — 같아도 되고, 옛 1.5배 규칙에서 막히던 0.014·0.02 도 된다
+    assert check_values(replace(V, listen_min_rms=0.02)) == []
+    assert check_values(replace(V, listen_min_rms=0.014)) == []
+    problems = check_values(replace(V, listen_min_rms=0.025))
+    assert any("짧은 답 최소는 수음 최소 이상" in p and "0.80배" in p for p in problems)
     out = MicValues(0.008, 0.02, 0.95, 0.30, 0.007, 1.5, 1)
     problems = check_values(out)
     assert any("호출 문턱" in p for p in problems) and any("멈춰" in p for p in problems)
@@ -299,3 +302,13 @@ def test_near_gap_skips_recordings_made_at_another_gain():
     m.chips["answer"] = replace(V, agc_max_gain=2.0).chip()                   # 4단계는 ×2 로 녹음했다
     r = row(m, "near")
     assert "옆사람 최대" in r.detail and "사용자 최소" not in r.detail and "먼 대답 최소" in r.detail
+
+
+def test_ranges_cover_hallway_levels():
+    """10-22 복도(×4): 옆사람 최대 0.021·먼 대답 최소 0.049 → 가를 수음 최소 ≈ 0.032 를 고칠 수 있어야 한다."""
+    ok = replace(V, listen_min_rms=0.040, short_answer_min_rms=0.050, approach_min_rms=0.030)
+    assert check_values(ok) == []
+    assert check_values(replace(V, short_answer_min_rms=0.010)) == []
+    for over in (dict(listen_min_rms=0.0405, short_answer_min_rms=0.050), dict(short_answer_min_rms=0.051),
+                 dict(short_answer_min_rms=0.009), dict(approach_min_rms=0.0305)):
+        assert check_values(replace(V, **over)), over

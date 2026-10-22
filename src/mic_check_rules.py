@@ -17,7 +17,10 @@ WAKE_MARGIN = 0.10             # 가장 낮은 호출 점수가 호출 문턱 + 
 SHORT_MARGIN = 1.5             # 가장 작은 짧은 답 소리가 짧은 답 최소 × 이것 아래면 아슬아슬
 STOP_PASS, STOP_WARN = 5, 4    # "멈춰" 5번 중 확정 수
 ROBOT_LEVEL_WARN = 1.5         # 로봇 목소리가 지난 점검의 이 배를 넘으면 볼륨이 올라가 있다
-SHORT_OVER_LISTEN = 1.5        # 저장 검사: 짧은 답 최소 ≥ 수음 최소 × 이것 (10-06 규칙)
+# 저장 검사: 짧은 답 최소 ≥ 수음 최소 × 이것. 10-06 설계 초기값 1.5 → 2026-10-22 사용자 1.0 — 복도(×4)에서 가를 수음
+# 최소가 ≈0.032 인데 1.5배면 짧은 답 최소가 먼 대답(0.049)에 닿는다. 1.0 은 '짧은 답 최소가 수음 최소보다 작으면 판정에
+# 쓰이지 않는다'(짧은 소리는 둘 다 넘어야 한다)만 막는다.
+SHORT_OVER_LISTEN = 1.0
 NOISE_PERCENTILE = 0.9         # 잡음 바닥 = 조각 rms 의 상위 10 %
 
 CALL_REPS, ANSWER_REPS, STOP_REPS = 3, 4, 5
@@ -28,13 +31,13 @@ RUN_REPS = 2                   # 3단계 끝의 '이어서 부르기' — 참고
 PLACE_WORD = "화장실"           # 3단계 문장의 목적지 — 호출 뒤 받은 말에 이것이 있어야 목적지가 간 것이다
 
 # ---------------------------------------------------------------- 값 고치기 허용 범위 (설계 7절)
-RANGES = {   # 필드: (최소, 최대, 눈금)
-    "listen_min_rms": (0.005, 0.015, 0.0005),
-    "short_answer_min_rms": (0.012, 0.025, 0.001),
+RANGES = {   # 필드: (최소, 최대, 눈금). 2026-10-22: 수음·짧은 답·접근 대답 최대를 복도(×4) 수준까지 넓혔다
+    "listen_min_rms": (0.005, 0.040, 0.0005),
+    "short_answer_min_rms": (0.010, 0.050, 0.001),
     "wake_threshold": (0.50, 0.90, 0.01),
     "emergency_single": (0.40, 0.70, 0.01),
     # 2026-10-21: 칩 증폭을 ×4 → ×2 로 내리면 소리가 약 −6 dB(절반) — 접근 0.006→0.003, 대역 0.004→0.002 까지 내려갈 수 있게.
-    "approach_min_rms": (0.002, 0.012, 0.0005),
+    "approach_min_rms": (0.002, 0.030, 0.0005),
     "band_min": (0.001, 0.008, 0.0005),
 }
 NAMES = {
@@ -117,8 +120,9 @@ def check_values(v: MicValues) -> list:
         if not lo - 1e-9 <= x <= hi + 1e-9:
             problems.append(f"{NAMES[key]} {x:g} 은(는) 허용 범위 {lo:g} ~ {hi:g} 밖입니다")
     if v.short_answer_min_rms < v.listen_min_rms * SHORT_OVER_LISTEN - 1e-9:
-        problems.append(f"짧은 답 최소는 수음 최소의 {SHORT_OVER_LISTEN:g}배 이상이어야 합니다 "
-                        f"(지금 {v.short_answer_min_rms / v.listen_min_rms:.2f}배)")
+        need = "수음 최소 이상" if abs(SHORT_OVER_LISTEN - 1.0) < 1e-9 else f"수음 최소의 {SHORT_OVER_LISTEN:g}배 이상"
+        problems.append(f"짧은 답 최소는 {need}이어야 합니다 "
+                        f"(지금 수음 최소의 {v.short_answer_min_rms / v.listen_min_rms:.2f}배)")
     return problems
 
 

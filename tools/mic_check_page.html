@@ -504,9 +504,10 @@ ol.wrap { margin: 0; padding-left: 1.3em; font-size: 14px; display: grid; gap: 4
     const w = $("warn-emergency_single");
     w.hidden = !(v.emergency_single < 0.5 - 1e-9);
     w.textContent = "0.50 아래입니다. 다른 말에 멈춰가 잘못 걸릴 수 있으니 결과표의 오발동 줄을 꼭 보세요.";
-    const bad = v.short_answer_min_rms < v.listen_min_rms * 1.5 - 1e-9;
+    const k = S.short_over_listen, need = k === 1 ? "수음 최소 이상" : `수음 최소의 ${k}배 이상`;   // 저장 검사(SHORT_OVER_LISTEN)
+    const bad = v.short_answer_min_rms < v.listen_min_rms * k - 1e-9;
     $("ctlErr").hidden = !bad;
-    $("ctlErr").textContent = `짧은 답 최소는 수음 최소의 1.5배 이상이어야 합니다(지금 ${(v.short_answer_min_rms / v.listen_min_rms).toFixed(2)}배). 이대로는 저장할 수 없습니다.`;
+    $("ctlErr").textContent = `짧은 답 최소는 ${need}이어야 합니다(지금 수음 최소의 ${(v.short_answer_min_rms / v.listen_min_rms).toFixed(2)}배). 이대로는 저장할 수 없습니다.`;
     $("saveBtn").disabled = bad;
   }
 

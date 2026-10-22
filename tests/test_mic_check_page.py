@@ -38,3 +38,9 @@ def test_step_count_matches_session():
     from src.mic_check_session import TOTAL_STEPS
 
     assert f"단계 – / {TOTAL_STEPS}" in PAGE.read_text(encoding="utf-8")
+
+
+def test_save_rule_ratio_comes_from_the_server():
+    """저장 검사 비율(SHORT_OVER_LISTEN)은 화면에 따로 적지 않고 상태 메시지로 받는다 — 둘이 어긋나지 않게."""
+    script = PAGE.read_text(encoding="utf-8").split("<script>", 1)[1]
+    assert "S.short_over_listen" in script and "listen_min_rms * 1.5" not in script

@@ -242,9 +242,9 @@ def test_save_and_restore(tmp_path):
 
 def test_save_blocked_by_rule(tmp_path):
     s, hw, msgs = make(tmp_path)
-    s.handle({"cmd": "set", "key": "listen_min_rms", "value": 0.014})     # 0.02 < 0.014 × 1.5
+    s.handle({"cmd": "set", "key": "listen_min_rms", "value": 0.025})     # 짧은 답 최소 0.02 < 수음 최소 0.025
     s.handle({"cmd": "save_preview"})
-    assert "1.5배" in last(msgs, "toast")["text"]
+    assert "짧은 답 최소는 수음 최소 이상" in last(msgs, "toast")["text"]
     assert not [m for m in msgs if m["type"] == "save_preview"]
 
 
@@ -477,6 +477,8 @@ def test_status_offers_gain_choices_and_new_names(tmp_path):
     assert st["env_keys"]["approach_min_rms"] == "VICA_APPROACH_MIN_RMS"
     assert st["env_keys"]["band_min"] == "VICA_LISTEN_BAND_MIN"
     assert st["ranges"]["band_min"] == [0.001, 0.008, 0.0005]
+    assert st["ranges"]["listen_min_rms"] == [0.005, 0.04, 0.0005]
+    assert st["short_over_listen"] == 1.0
 
 
 def test_set_approach_and_band_update_live_without_chip(tmp_path):

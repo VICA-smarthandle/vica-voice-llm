@@ -23,10 +23,10 @@ import numpy as np
 from .env_file import (KEYS, change_line, plan_changes, read_env, restore_latest, values_from,
                        write_changes)
 from .mic_check_replay import DT, Models, Recording, replay_answer, replay_call, replay_near, replay_stop
-from .mic_check_rules import (AGC_CHOICES, AGC_MAX_GAIN_FACTORY, ANSWER_REPS, CALL_REPS, ECHO_CHOICES, ECHO_LABELS, FAR_EXPECTED,
-                              FAR_REPS, GAIN_CHOICES, NAMES, NEAR_REPS, RANGES, RUN_REPS, STOP_REPS, Measurements,
-                              MicValues, RobotRun, call_delivered, check_values, echo_name, gain_of, judge,
-                              noise_floor)
+from .mic_check_rules import (AGC_CHOICES, AGC_MAX_GAIN_FACTORY, ANSWER_REPS, CALL_REPS, ECHO_CHOICES, ECHO_LABELS,
+                              FAR_EXPECTED, FAR_REPS, GAIN_CHOICES, NAMES, NEAR_REPS, RANGES, RUN_REPS,
+                              SHORT_OVER_LISTEN, STOP_REPS, Measurements, MicValues, RobotRun, call_delivered,
+                              check_values, echo_name, gain_of, judge, noise_floor)
 from .wakeword_monitor import SAMPLE_RATE, WakewordMonitor
 
 NOISE_WINDOW = 125         # 실시간 잡음 바닥 = 최근 10 s
@@ -778,7 +778,7 @@ class Session:
             "values": _values_dict(self.values), "env_values": _values_dict(self.env_values),
             "ranges": {k: list(v) for k, v in RANGES.items()}, "names": NAMES,
             "agc_choices": agc_choices, "echo_choices": echo_labels, "gain_choices": self._gain_choices(),
-            "gain_factory": AGC_MAX_GAIN_FACTORY,
+            "gain_factory": AGC_MAX_GAIN_FACTORY, "short_over_listen": SHORT_OVER_LISTEN,
             "env_keys": {**{k: KEYS[k] for k in RANGES}, "agc": KEYS["agc"], "agc_max_gain": KEYS["agc_max_gain"],
                          "echo": f"{KEYS['echo_etail']} · {KEYS['echo_nlatten']}"},
             "chip_ok": not self.chip_problems, "chip_problems": self.chip_problems,
