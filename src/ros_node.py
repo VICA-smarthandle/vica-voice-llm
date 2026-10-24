@@ -45,8 +45,8 @@ from .mission_phrases import WAIT_BEACON
 from .mission_question import (quiet_for_mission, reask_held_resume,
                                should_reask_resume_on_silence)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import (ab_shadow_enabled, audio_turn_applies, get_realtime_client,
-                              pcm16_from_audio_msg)
+from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_turn_applies,
+                              get_realtime_client, pcm16_from_audio_msg)
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
@@ -203,10 +203,10 @@ class LlmIntentNode(Node):
                 f"LLM 워밍업 완료 ({time.monotonic() - started:.1f}초)")
         except Exception as exc:
             self.get_logger().warning(f"LLM 워밍업 실패(무시 가능): {exc}")
-        # 워밍업 중 클라우드가 실패했으면 관리자는 이미 LOCAL 이다. 그 경우 로컬
-        # 모델을 지금 미리 올려 첫 발화가 적재 7초를 기다리지 않게 한다.
-        if self._backend.state is BackendState.LOCAL:
-            self._backend.warm_local_async()
+        # 로컬 모델(VICA_LLM_FALLBACK_MODEL)은 클라우드가 살아 있어도 지금 올려 둔다(2026-10-24 사용자) —
+        # Realtime 연결 오류 때 첫 답이 적재를 기다리지 않게(10-24 실측: 처음 10.8 s → 2 s, 상주 약 2.2 GB).
+        # 예전에는 워밍업 중 클라우드가 실패해 LOCAL 일 때만 올렸다. 로컬이 없으면 아무것도 안 한다.
+        self._backend.warm_local_async()
         # audio 모드는 Realtime 접속도 미리 맺는다(항목 E) — 첫 발화가 연결까지
         # 기다리지 않게 한다. 실패해도(네트워크 없음 등) 노드는 그대로 간다.
         if self._intent_input == "audio":
@@ -538,9 +538,19 @@ class LlmIntentNode(Node):
                 directory_block=format_directory_block(
                     self._directory, self._robot_state.current_building, self._robot_state.current_floor))
         except Exception as exc:
+            # 연결 오류(접속 실패·끊김)면 이 발화부터 글자 경로를 바로 로컬 LLM 으로 — 클라우드 글자 LLM 도
+            # 같은 인터넷이라 VICA_LLM_CLOUD_TIMEOUT 기다려 실패할 뿐이다(2026-10-24 사용자). 응답 지연·그 밖의
+            # 실패는 글자 경로가 클라우드(VICA_LLM_PROVIDER=openai 면 gpt-5.4-mini)부터 부른다.
+            to_local = isinstance(exc, RealtimeConnectionError) and self._backend.go_local("Realtime 연결 오류")
+            if isinstance(exc, RealtimeConnectionError) and not self._backend.has_local:
+                where = "로컬 LLM 없음(VICA_LLM_FALLBACK_MODEL 비어 있음) — 클라우드 글자 경로"
+            elif self._backend.state is BackendState.LOCAL:
+                where = "로컬 LLM" + (" 으로 바로 전환" if to_local else "")
+            else:
+                where = "클라우드 글자 LLM"
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "
-                f"dt={time.monotonic() - call_started:.2f}s — 텍스트 경로가 처리")
+                f"dt={time.monotonic() - call_started:.2f}s — 텍스트 경로가 처리({where})")
             return
         finally:
             self._thinking_pub.publish(Bool(data=False))

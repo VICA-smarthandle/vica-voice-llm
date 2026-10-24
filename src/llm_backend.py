@@ -153,6 +153,21 @@ class LlmBackendManager:
             raise RuntimeError("LOCAL 상태인데 로컬 백엔드가 없다")
         return self._local(messages)
 
+    def go_local(self, reason: str) -> bool:
+        """클라우드를 부르지 않고 바로 LOCAL 로 — 다른 길(Realtime)에서 연결 오류를 이미 봤을 때(2026-10-24 사용자).
+
+        같은 인터넷을 쓰는 클라우드 호출은 VICA_LLM_CLOUD_TIMEOUT 까지 기다려 실패할 뿐이다. 복귀 규칙은
+        클라우드 실패 때와 같다(확인 성공 + 주행 끝·정지). 로컬이 없거나 이미 LOCAL 이면 그대로 두고 False.
+        """
+        if not self.has_local:
+            return False
+        with self._lock:
+            if self.state is BackendState.LOCAL:
+                return False
+            self._enter_local()
+        self._log("warning", f"[LLM] {reason} → 클라우드 건너뛰고 로컬({self._local_name})로")
+        return True
+
     # ----- 내부 ---------------------------------------------------------
     def _switch_to_local(self, exc: BaseException) -> None:
         kind = classify_failure(exc)

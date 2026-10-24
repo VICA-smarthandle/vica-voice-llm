@@ -99,6 +99,33 @@ def history_to_items(history: Optional[Sequence[Any]]) -> list[dict]:
     return items
 
 
+class RealtimeConnectionError(ConnectionError):
+    """Realtime 에 닿지 못했다 — 접속 실패, 또는 주고받는 중 연결이 끊김(2026-10-24 사용자).
+
+    응답 지연(TimeoutError: 연결은 됐는데 timeout_sec 안에 답이 없음)과 나눈다. 호출부(ros_node)는
+    연결 오류면 글자 경로를 바로 로컬 LLM 으로, 지연이면 클라우드 글자 LLM(gpt-5.4-mini)부터 보낸다.
+    """
+
+
+def _is_link_failure(exc: BaseException) -> bool:
+    """소켓이 끊겼거나 닿지 않는 실패인가. websockets 를 import 하지 않고 클래스 이름으로도 본다
+    (ConnectionClosedError 는 OSError 가 아니다). TimeoutError 는 OSError 의 하위지만 지연이라 뺀다.
+    ConnectionClosedOK(서버의 정상 종료 1000 — 세션 최대 시간 등)는 인터넷 문제가 아니라 뺀다."""
+    if isinstance(exc, TimeoutError):
+        return False
+    if isinstance(exc, (OSError, EOFError)):
+        return True
+    names = {c.__name__ for c in type(exc).__mro__}
+    # WebSocketConnectionClosedError: openai 가 보내지 못한 메시지를 안은 채 ConnectionClosedError 를 다시 던지는 꼴
+    return bool(names & {"ConnectionClosedError", "WebSocketConnectionClosedError", "APIConnectionError"})
+
+
+def _as_connection_error(exc: BaseException, where: str) -> BaseException:
+    if isinstance(exc, RealtimeConnectionError) or not _is_link_failure(exc):
+        return exc
+    return RealtimeConnectionError(f"{where}({type(exc).__name__}: {exc})")
+
+
 @dataclass
 class RealtimeResult:
     draft: dict
@@ -134,15 +161,22 @@ class RealtimeIntentClient:
     # ----- 연결 --------------------------------------------------------
     def _ensure_conn(self):
         if self._conn is None:
-            conn = self._connect()
+            try:
+                conn = self._connect()
+            except Exception as exc:
+                # 접속 단계의 실패는 무엇이든 연결 오류다 — DNS·거부·여는 중 시간 초과(open_timeout)·인증 거절
+                raise RealtimeConnectionError(f"접속 실패({type(exc).__name__}: {exc})") from exc
             try:
                 conn.session.update(session=self._session_config())
-            except BaseException:
+            except BaseException as exc:
                 try:
                     conn.close()   # 세션 설정에 실패한 연결은 바로 닫는다 — 누수 방지
                 except Exception:
                     pass
-                raise
+                err = _as_connection_error(exc, "세션 설정 중 끊김")
+                if err is exc:
+                    raise
+                raise err from exc
             self._conn = conn
         return self._conn
 
@@ -202,9 +236,12 @@ class RealtimeIntentClient:
                     "input": items,
                 })
                 done = self._wait_done(conn)
-            except BaseException:
+            except BaseException as exc:
                 self.close()   # 다음 호출이 새로 연결한다
-                raise
+                err = _as_connection_error(exc, "주고받는 중 끊김")
+                if err is exc:
+                    raise
+                raise err from exc
             draft, usage = self._parse_done(done)
             heard = str(draft.pop("heard_text", "") or "")
             return RealtimeResult(draft=draft, heard_text=heard,
@@ -224,6 +261,8 @@ class RealtimeIntentClient:
                     if ev.type == "response.done":
                         box["done"] = ev
                         return
+                # openai 의 이벤트 반복은 정상 종료(ConnectionClosedOK)를 조용히 끝낸다 — 서버가 세션을 닫은 것이라
+                # 연결 오류로 보지 않는다(비정상 끊김은 ConnectionClosedError 로 아래 except 에 온다).
                 box["exc"] = RuntimeError("연결이 응답 없이 닫혔다")
             except Exception as exc:  # 소켓 오류 등
                 box["exc"] = exc
