@@ -47,12 +47,13 @@ def _audio(draft, monkeypatch, heard="화장실 가고 싶어"):
     return parse_intent_audio(PCM, DESTS)[0]
 
 
-def test_audio_tie_becomes_a_question_keeping_the_model_words(monkeypatch):
+def test_audio_tie_becomes_a_question_with_the_fixed_words(monkeypatch):
+    # 10-23 부터 모델 말이 후보를 다 들어도 정해진 문장으로 묻는다(리허설 09:54:32 어색한 문장)
     reply = "남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"
     out = _audio({"intent": "navigate", "destination_candidate": "화장실", "need_confirm": True,
                   "reply": reply, "confidence": 0.9}, monkeypatch)
     assert out.intent == "clarify" and out.matched_destination_id == "" and out.need_confirm is False
-    assert out.reply == reply and request_for_intent(out)          # 음성이 묻고, 미션에는 목적지가 안 간다
+    assert out.reply == choose_between(["남자 화장실", "여자 화장실"]) and request_for_intent(out)
 
 
 def test_audio_tie_with_a_guess_is_replaced(monkeypatch):
@@ -95,8 +96,8 @@ def test_choice_question_with_an_exact_name_sends_no_destination():
     reply = "남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"
     draft = _IntentDraft(intent="navigate", destination_candidate="남자 화장실", need_confirm=True, reply=reply)
     out = parser.deliver_audio_draft(draft, DESTS, "waiting")
-    assert out.intent == "clarify" and out.matched_destination_id == "" and out.reply == reply
-    assert request_for_intent(out)
+    assert out.intent == "clarify" and out.matched_destination_id == ""
+    assert out.reply == choose_between(["남자 화장실", "여자 화장실"]) and request_for_intent(out)
 
 
 def test_change_question_while_guiding_is_kept():

@@ -789,6 +789,35 @@ def is_scripted_intent(intent: VicaIntent, destinations: Sequence[DestinationDat
             and intent.reply == RETRY_PROMPT and intent.confidence == 1.0)
 
 
+# 대기를 권하는 질문("…여기서 기다릴까요?"·"여기서 대기할까요?")에 '필요 없다'는 대답 — 정규화(띄어쓰기·끝 구두점 뺌)한 글자.
+# '괜찮아'는 넣지 않는다 — 권유에 "괜찮아"는 승낙으로도 거절로도 쓴다.
+_NO_NEED_TO_WAIT = frozenset({"필요없어", "필요없어요", "필요없습니다", "안기다려도돼", "안기다려도돼요", "안기다려도되요",
+                              "안해도돼", "안해도돼요", "됐어", "됐어요"})
+_WAIT_OFFER_ENDS = ("기다릴까요?", "대기할까요?")
+
+
+def _mission_question_answer(user_text: str, history: Optional[list[BaseMessage]],
+                             robot_state: Optional[RobotState], local: bool) -> Optional[VicaIntent]:
+    """미션이 방금 물은 질문의 답을 단어로 바로 읽는다(2026-10-24 사용자 "시연 대사 고정은 별로 — 말이 조금만 달라도
+    이상해진다"). LLM 앞에서 — 10-24 재생에서 midm2-mini 가 "한 십 분 정도"·"삼십 분"을 목적지로, "필요 없어"를 취소로 봤다.
+
+    - 대기 시간 질문(asking_wait_time): 말에서 분을 읽을 수 있으면 wait. 못 읽으면 LLM.
+    - 대기 권유(asking_next, 로봇의 마지막 말이 '기다릴까요?'·'대기할까요?')에 '필요 없어'류 → deny.
+      "여기까지 안내를 마칠까요?"에는 뜻이 갈려 LLM 에 맡긴다.
+    """
+    state = robot_state.dialog_state if robot_state else ""
+    if state == "asking_wait_time":
+        # 범위 처리는 _finalize 의 wait 와 같다(로컬 규칙이면 큰 쪽 그대로, 아니면 ×1.5)
+        minutes = parse_wait_minutes(user_text, range_factor=1.0) if local else parse_wait_minutes(user_text)
+        if minutes:
+            return VicaIntent(intent="wait", wait_minutes=minutes, confidence=1.0, reply="", need_confirm=False)
+    if state == "asking_next" and _normalize_short_reply(user_text) in _NO_NEED_TO_WAIT:
+        last = next((m.content for m in reversed(history or []) if isinstance(m, AIMessage)), "")
+        if str(last).strip().endswith(_WAIT_OFFER_ENDS):
+            return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
+    return None
+
+
 def parse_intent(
     user_text: str,
     destinations: Sequence[DestinationData],
@@ -807,6 +836,9 @@ def parse_intent(
                                 dialog_state=dialog_state, local=local)
     if shortcut is not None:
         return shortcut
+    answer = _mission_question_answer(user_text, history, robot_state, local)
+    if answer is not None:
+        return answer
     pending_command = _pending_command(history)
     pending = _pending_for(history, destinations, local, dialog_state)
 
@@ -1060,7 +1092,33 @@ def parse_intent_audio(
                                  robot_state.active_destination if robot_state else "", shared=shared)
     # 규칙이 모델 결정을 바꿨으면 [RT] 로그 줄의 src 로 보이게 한다.
     src = "llm+고르기규칙" if shared else "llm"
+    if _audio_short_answer(intent, heard, dialog_state):
+        src += "+짧은답규칙"
     return intent, heard, result.latency_sec, {"src": src, "usage": result.usage}
+
+
+def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bool:
+    """대답을 기다리는 단계에서 짧은 긍정·부정만 말했는데 모델이 대답으로 안 봤으면 affirm·deny 로 바꾼다.
+
+    10-23 리허설(run105) 10:03:39·47 — 접근 질문 "안내를 받으시겠어요?"에 "그래"를 question 으로 봐 같은 질문이
+    세 번 나왔다. 글자 모드의 짧은 대답 지름길(_shortcut_intent, local_rules.ANSWER_WAIT_STATES)과 같은 판단이다.
+    모델이 대답 의도(affirm·deny·navigate·wait …)를 냈으면 건드리지 않는다. 바꿨으면 True.
+    """
+    if dialog_state not in local_rules.ANSWER_WAIT_STATES or intent.intent not in ("question", "unknown", "clarify"):
+        return False
+    word = _normalize_short_reply(heard)
+    if word in _SOLO_AFFIRMATIVES:
+        kind = "affirm"
+    elif word in _NEGATIVES:
+        kind = "deny"
+    else:
+        return False
+    intent.intent = kind
+    intent.reply = ""                    # 계약: affirm·deny 의 말은 미션 몫
+    intent.need_confirm = False
+    intent.destination_candidate = None
+    intent.matched_destination_id = ""
+    return True
 
 
 def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
@@ -1105,8 +1163,10 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
             result.matched_destination_id = matched.id
             if not result.need_confirm:
                 result.reply = ""            # 출발 안내는 미션이 말한다 (계약)
-            elif not result.reply:
-                result.reply = matched.confirm_prompt   # 모델이 비웠으면 목록 문구
+            elif "".join(matched.name.split()) not in "".join(result.reply.split()):
+                # 모델이 비웠거나 고른 곳의 이름을 말하지 않았으면 목록 문구 — 10-23 리허설 10:11:54 사회복지를 고르고
+                # "장애인 서류로 안내해드릴까요?"라고 물었다. 이름이 든 모델 말(주행 중 바꾸기 질문 포함)은 그대로 둔다.
+                result.reply = matched.confirm_prompt
     elif draft.intent == "wait":
         result.need_confirm = False
         result.reply = ""
@@ -1127,6 +1187,9 @@ def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationD
     elif draft.intent == "clarify":
         result.need_confirm = False
         result.reply = result.reply or ASK_DESTINATION
+        named = _choice_in_reply(result.reply, destinations, active)
+        if len(named) > 1:
+            result.reply = choose_between([d.name for d in named])   # 고르기 질문은 정해진 문장(10-23 리허설)
     else:                                    # question / unknown — 모델의 reply 그대로 (빈 말이면 침묵)
         result.need_confirm = False
     return result
@@ -1220,6 +1283,7 @@ def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state
     10-11 실기: "화장실 가고 싶어"(남자·여자 화장실 둘 다 별칭 '화장실')에 한쪽을 짐작했다. 지시문으로 막아도
     모델이 이름 대신 '화장실'로 navigate 를 내면 match_destination 이 목록 앞쪽을 골라 미션이 그곳을 확인하는
     중이 됐다. 모델의 되묻는 말이 후보를 다 들면 그대로, 아니면 코드가 묻는다.
+    되묻는 말은 늘 choose_between 의 정해진 문장이다(2026-10-23).
     접근 질문 중이면 되묻지 않고 목적지 없는 수락(navigate)으로 둔다 — 미션은 되묻기를 수락으로 안 받고
     "안내를 받으시겠어요?"를 다시 묻는데, 목적지 없는 navigate 는 수락으로 받고 돌아선 뒤 직접 목적지를 묻는다.
     """
@@ -1228,13 +1292,13 @@ def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state
         result.matched_destination_id = ""
         result.reply = ""
         return result
-    names = [d.name for d in tied]
-    keep = result.reply.strip().endswith("?") and all(n in result.reply for n in names)
     result.intent = "clarify"
     result.destination_candidate = None
     result.matched_destination_id = ""
     result.need_confirm = False
-    result.reply = result.reply if keep else choose_between(names)
+    # 늘 정해진 문장으로 묻는다 — 10-23 리허설 09:54:32 모델 말을 그대로 두었더니 "남자 화장실로인지 여자 화장실로인지요,
+    # 남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"가 나갔다(옛 동작: 후보를 다 들면 모델 말 그대로).
+    result.reply = choose_between([d.name for d in tied])
     return result
 
 
@@ -1291,6 +1355,14 @@ def _finalize(
                 minutes = draft.wait_minutes
         result.wait_minutes = minutes if minutes else -1
         return result
+
+    # 여러 곳에 같이 걸린 별칭만 말했는데 모델이 한쪽을 짐작했으면 고르기 질문(2026-10-24 사용자 "'나 배아파' → 화장실을
+    # 가자는 것"). 소리 모드(_audio_shared_guess)와 같은 규칙을 글자 경로(⑬ 오프라인·⑫ 예비)에도 — 10-24 재생에서 글자
+    # 경로만 '나 배 아파.'에 남자 화장실을 짐작했다. 판단 근거는 사용자 말(user_text)이다.
+    dialog = robot_state.dialog_state if robot_state else ""
+    shared = _audio_shared_guess(draft, user_text, destinations, dialog)
+    if len(shared) > 1:
+        return _ask_which(result, shared, dialog)
 
     # 로컬 규칙(2026-10-16): 사용자가 목적지 이름을 하나만 말했으면 그곳을 따른다 — 10-16 2단계 실기 재생에서
     # 로봇 안 모델이 "남자 화장실."에 407호를 골랐다(모델 원답). 이름이 둘 이상이거나 없으면 모델 판단 그대로.

@@ -95,10 +95,11 @@ class TestLeftAlone:
         assert intent.intent == "navigate" and intent.matched_destination_id == "men"
 
     def test_model_already_asks_both(self, rt):
+        # 둘 다 묻는 모델 되묻기는 짐작이 아니라 고르기 규칙(src)은 안 탄다. 문장은 10-23 부터 정해진 문장이다.
         asked = "남자 화장실과 여자 화장실 중 어디로 안내해드릴까요?"
         rt({"intent": "clarify", "reply": asked, "confidence": 0.8}, "화장실 가자")
         intent, _, _, info = parse_intent_audio(PCM, DESTS, robot_state=state())
-        assert intent.reply == asked and info["src"] == "llm"
+        assert intent.reply == CHOOSE and info["src"] == "llm"
 
     def test_unique_alias_destination_untouched(self, rt):
         rt(nav("사회복지"), "장애인 서류 내는 곳")
