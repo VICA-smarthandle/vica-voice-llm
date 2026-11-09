@@ -1285,6 +1285,9 @@ def _alias_only_group(user_text: str, destinations: Sequence[DestinationData]) -
     open_ = [d for d in destinations if d.is_approachable]
     alias_sets = {d.id: {squash(a) for a in d.aliases if squash(a)} for d in open_}
     heard = {a for aliases in alias_sets.values() for a in aliases if a in said}
+    # 걸린 별칭 중 다른 걸린 별칭 안에 든 짧은 것은 뺀다 — 사용자가 말한 것은 긴 쪽이다(2026-10-29 행사 지도:
+    # "서울로봇고 가자"에 세 곳 공통 '로봇고'가 함께 걸려 경남로봇고까지 물었다).
+    heard = {a for a in heard if not any(a != b and a in b for b in heard)}
     if not heard:
         return []
     if any(sum(a in aliases for aliases in alias_sets.values()) == 1 for a in heard):
