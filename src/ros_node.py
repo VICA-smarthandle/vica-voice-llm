@@ -38,7 +38,7 @@ from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
 from .langchain_intent_parser import (
-    get_backend_manager, is_instant_utterance, is_scripted_intent, is_scripted_reply,
+    get_backend_manager, is_instant_utterance, is_relisten_noise, is_scripted_reply,
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
@@ -373,14 +373,13 @@ class LlmIntentNode(Node):
         #      무응답이 됐다(실기). 판별은 SHORTCUT_REPLIES 로 한다 — LLM 이
         #      지어낸 잡담 대꾸는 이 목록에 없으므로 종전대로 버려진다.
         #      '음' 단독의 확인 재질문(2026-09-28)도 같은 까닭으로 통과한다 —
-        #      판별은 is_scripted_reply(호출 응답 + 목적지 확인 문구).
+        #      판별은 is_scripted_reply(호출 응답 + 목적지 확인 문구 + 고르기 질문, 2026-10-24).
         #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
-        if (not llm_first
-                and time.time() < self._followup_until
-                and intent.intent in ("unknown", "clarify")
-                and not intent.need_confirm
-                and not is_scripted_intent(intent, self._destinations)
-                and intent.safety_flag != "emergency"):
+        #      로봇의 마지막 말이 호출 응답 "네?"면 호출 창이라 기각하지 않는다(2026-10-24, is_relisten_noise).
+        last_spoken = self._robot_recent[-1][1] if self._robot_recent else ""
+        if not llm_first and is_relisten_noise(intent, self._destinations,
+                                               in_window=time.time() < self._followup_until,
+                                               last_robot_text=last_spoken):
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")
             return

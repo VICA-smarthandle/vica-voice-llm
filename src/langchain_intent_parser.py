@@ -268,10 +268,42 @@ def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bo
         return False
     # "지금 409호로 가는 중이에요."(_finalize 가 만든 사실 한 줄, 2026-10-07)도 코드 문구다 —
     # 로컬 규칙의 '못 알아들음' 대체·재청취 기각이 이것을 지우면 안 된다.
-    return reply in SHORTCUT_REPLIES or any(
+    return reply in SHORTCUT_REPLIES or _is_choice_question(reply, destinations) or any(
         (d.confirm_prompt and d.confirm_prompt == reply)
         or reply == ALREADY_GOING.format(cur=d.name, cur_josa=_josa_euro(d.name))
         for d in destinations)
+
+
+def _is_choice_question(reply: str, destinations: Sequence[DestinationData]) -> bool:
+    """choose_between 이 만든 고르기 질문인가 — 목록에 있는 두 곳 이상을 고정 문장으로 묻는다(2026-10-24).
+
+    재청취 기각이 이것을 지우면 확인 질문에 "아니, 나 배 아파"라고 답해도 침묵이 된다.
+    """
+    suffix = " 중 어디로 갈까요?"
+    if not reply.endswith(suffix):
+        return False
+    names = [d.name for d in destinations if d.name]
+    head = reply[:-len(suffix)]
+    if ", " in head:
+        parts = head.split(", ")
+        return all(p in names for p in parts) and reply == choose_between(parts)
+    return any(reply == choose_between([a, b]) for a in names for b in names if a != b)
+
+
+def is_relisten_noise(intent: VicaIntent, destinations: Sequence[DestinationData], *,
+                      in_window: bool, last_robot_text: str) -> bool:
+    """재청취 기각(ros_node 2-1) 판정 — 대답 창 안의, 할 말을 들고 오지 않은 판정만 참.
+
+    로봇이 마지막으로 한 말이 호출 응답("네?")이면 대답 창이 아니라 호출 창이다(2026-10-24). 대답 창 안의
+    "비카야"는 창 안 호출 구제로 글자 '비카야'만 오고 _followup_until 이 남는다 — 창 밖 호출(/vica/wake 가
+    비움)과 같게 다음 요청을 기각하지 않는다. 10-24 음성만 시험: 고르기 질문 3번이 이 자리에서 지워졌다.
+    """
+    return (in_window
+            and (last_robot_text or "").strip() != WAKE_GREETING
+            and intent.intent in ("unknown", "clarify")
+            and not intent.need_confirm
+            and not is_scripted_intent(intent, destinations)
+            and intent.safety_flag != "emergency")
 
 
 def _question_destination(text: str, destinations: Sequence[DestinationData]):
