@@ -49,6 +49,7 @@ from vica_interfaces.msg import RobotState as RobotStateMsg
 from . import audio_cue
 from .approach_chime import ApproachChime
 from .destination_loader import load_destinations
+from .locator_beep import LocatorBeep
 from .ment_cache import MentCache
 from .mission_phrases import ARRIVAL_QUESTIONS, merged_prewarm, standalone_prewarm
 from .synth_cache import SynthCache
@@ -130,6 +131,11 @@ class TtsNode(Node):
             self._chime_dbfs = float(os.environ.get("VICA_APPROACH_CHIME_DBFS", "-12"))
         except ValueError:
             self._chime_dbfs = -12.0
+        # 위치 비프 (2026-10-23 사용자 결정, C3M21): 손잡이 잡기 요청 멘트 뒤와 비상정지를
+        # 알린 멘트 뒤에 4초 한 번. 잡음 판정·해제로 대화 단계가 바뀌면 그 자리에서 끊는다
+        # (locator_beep docstring). 크기는 코드 상수다 — 설정 키를 두지 않는다(사용자).
+        self._locator = LocatorBeep()
+        self._locator_wave = audio_cue.locator_beep()
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
 
         self._worker = threading.Thread(target=self._playback_loop, daemon=True)
@@ -195,7 +201,29 @@ class TtsNode(Node):
             self._thinking_until = 0.0
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
-        self._chime.on_robot_state(msg.dialog_state, time.time())
+        now = time.time()
+        self._chime.on_robot_state(msg.dialog_state, now)
+        self._locator.on_robot_state(msg.dialog_state, now)
+
+    def _play_locator(self) -> None:
+        """위치 비프 한 묶음(4초). 단계가 바뀌거나(잡음 판정·해제) 할 말이 오면 그 자리에서 끊는다."""
+        started = time.time()
+        self._locator.played(started)
+        section = self._locator.state
+        ok = self._tts.play_audio(
+            self._locator_wave, audio_cue.SAMPLE_RATE,
+            should_stop=lambda: (self._preempt.is_set() or len(self._queue) > 0
+                                 or not self._locator.still_wanted(time.time())),
+            peak_dbfs=audio_cue.LOCATOR_DBFS)
+        took = time.time() - started
+        if not ok:
+            self.get_logger().warn(f"위치 비프 재생 실패({section})")
+        elif took < audio_cue.LOCATOR_TOTAL_SEC - 0.2:
+            why = ("단계 바뀜" if not self._locator.still_wanted(time.time())
+                   else "할 말" if len(self._queue) > 0 else "선점")
+            self.get_logger().info(f"위치 비프 끊김({section}, {why}, {took:.2f} s)")
+        else:
+            self.get_logger().info(f"위치 비프 끝({section}, {took:.2f} s)")
 
     def _play_chime(self) -> None:
         """사람 접근 차임 한 번. 할 말이 들어오거나 선점되면 그 자리에서 비킨다."""
@@ -254,6 +282,8 @@ class TtsNode(Node):
             if item is None:
                 if time.time() < self._thinking_until:
                     self._play_thinking_slice()
+                elif self._locator.due(time.time()):
+                    self._play_locator()
                 elif self._chime.due(time.time()):
                     self._play_chime()
                 else:
@@ -267,6 +297,7 @@ class TtsNode(Node):
             finally:
                 self._playing_priority = None
             self._chime.on_speech_end(time.time())   # 말 직후 한숨 쉬고 차임
+            self._locator.on_speech_end(item.priority, time.time())
             # 완주·중단 불문 종료를 알린다 — 응답 시계의 기점 (docstring).
             done = String()
             done.data = item.text
