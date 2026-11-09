@@ -246,6 +246,9 @@ def _build_system_prompt(
 # 기존 호출부와 테스트가 쓰던 것이라 별칭으로 남긴다.
 _AFFIRMATIVES = AFFIRMATIVES
 _NEGATIVES = NEGATIVES
+# 받아쓰기가 "아니"를 잘못 적은 꼴 — 대답을 기다리는 단계(ANSWER_WAIT_STATES)에서만 거절로 읽는다. 공용 NEGATIVES 에는
+# 넣지 않는다(귀의 짧은 답 구제·점검기도 그 목록을 쓴다). 10-24 12:44:36 Qwen3-ASR 이 "아니"를 말레이어 'hani' → '하니.'.
+_ASR_SLIP_NEGATIVES = frozenset({"하니"})
 # 혼잣소리('음'·'어어')는 발화 전체가 그것뿐일 때만 긍정으로 본다.
 # 첫 단어 지름길에는 넣지 않는다 — "음… 아니야"가 승낙이 되면 안 된다.
 _SOLO_AFFIRMATIVES = AFFIRMATIVES | SOFT_AFFIRMATIVES
@@ -790,8 +793,10 @@ def _confirming_shortcut(user_text: str, history: Optional[list[BaseMessage]],
     word = _normalize_short_reply(user_text)
     tokens = user_text.split()
     first = _normalize_short_reply(tokens[0]) if tokens else ""
-    denied = (word in _NEGATIVES
-              or any(_normalize_short_reply(t) in _NEGATIVES for t in tokens))
+    # 확인 중(confirming)은 대답을 기다리는 단계라 받아쓰기 오기 '하니'도 거절이다(2026-10-24) — 출발하지 않는 쪽.
+    no_words = _NEGATIVES | _ASR_SLIP_NEGATIVES
+    denied = (word in no_words
+              or any(_normalize_short_reply(t) in no_words for t in tokens))
     dest = _recent_confirm_destination(history, destinations)
     if denied:
         return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
@@ -836,8 +841,12 @@ def _mission_question_answer(user_text: str, history: Optional[list[BaseMessage]
     - 대기 시간 질문(asking_wait_time): 말에서 분을 읽을 수 있으면 wait. 못 읽으면 LLM.
     - 대기 권유(asking_next, 로봇의 마지막 말이 '기다릴까요?'·'대기할까요?')에 '필요 없어'류 → deny.
       "여기까지 안내를 마칠까요?"에는 뜻이 갈려 LLM 에 맡긴다.
+    - 대답을 기다리는 단계(ANSWER_WAIT_STATES)의 받아쓰기 오기 '하니'(= "아니") → deny. 로컬 규칙이 꺼진 ⑫ 예비
+      경로는 지름길에 대화 상태를 넘기지 않아 여기서 본다.
     """
     state = robot_state.dialog_state if robot_state else ""
+    if state in local_rules.ANSWER_WAIT_STATES and _normalize_short_reply(user_text) in _ASR_SLIP_NEGATIVES:
+        return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
     if state == "asking_wait_time":
         # 범위 처리는 _finalize 의 wait 와 같다(로컬 규칙이면 큰 쪽 그대로, 아니면 ×1.5)
         minutes = parse_wait_minutes(user_text, range_factor=1.0) if local else parse_wait_minutes(user_text)
@@ -1393,6 +1402,11 @@ def _finalize(
     # 경로만 '나 배 아파.'에 남자 화장실을 짐작했다. 판단 근거는 사용자 말(user_text)이다.
     dialog = robot_state.dialog_state if robot_state else ""
     shared = _audio_shared_guess(draft, user_text, destinations, dialog)
+    if not shared and draft.intent == "unknown" and dialog not in _APPROACH_STATES:
+        # 모델이 아예 못 알아들어도(unknown) 말이 여러 곳의 별칭만 담았으면 고르기 질문(2026-10-24 미션 대역 시험
+        # 12:49:16 '나 배 아파.'에 midm2-mini 가 "잘 듣지 못했습니다"). 글자 경로만 — 소리 모드의 unknown 은
+        # '사람 말 아님'(옆사람·메아리) 판단이기도 해 _audio_shared_guess 가 그대로 둔다.
+        shared = _alias_only_group(user_text, destinations)
     if len(shared) > 1:
         return _ask_which(result, shared, dialog)
 
