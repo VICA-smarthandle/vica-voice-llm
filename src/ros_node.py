@@ -43,8 +43,8 @@ from .langchain_intent_parser import (
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
-from .mission_question import (quiet_for_mission, reask_held_resume,
-                               should_reask_resume_on_silence)
+from .mission_question import (identity_answer, quiet_for_mission, reask_held_resume,
+                               should_reask_resume_on_silence, spk_gate_question)
 from .llm_backend import BackendState, parse_goal_event
 from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_turn_applies,
                               get_realtime_client, pcm16_from_audio_msg)
@@ -143,6 +143,7 @@ class LlmIntentNode(Node):
         self._last_text_publish_intent = ""   # 그때 낸 intent — 멈춤 중복 발행 방지용
         # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
         self._robot_recent: list = []
+        self._last_robot_line = (0.0, "")   # (시각, 대기 알림 뺀 마지막 로봇 말) — 본인 확인 질문 판단용
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
         self.get_logger().info(
@@ -378,6 +379,11 @@ class LlmIntentNode(Node):
                 "speaker_verdict": str(spk.get("verdict", "")),
                 "speaker_score": float(spk.get("score", -1.0)),
                 "speaker_joined": float(spk.get("joined", -1.0))})
+        # 2-0b) 대기 중 본인 확인 질문이 열려 있나. 본인 질문의 네/아니요는 글자로 정한다(11-11 실기).
+        gate_t, gate_text = self._last_robot_line
+        spk_gate = spk_gate_question(gate_text, time.time() - gate_t,
+                                     self._robot_state.dialog_state, self._spk_on)
+        intent = identity_answer(intent, text, spk_gate)
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -412,7 +418,7 @@ class LlmIntentNode(Node):
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
                                     time.time() - last_t, [d.name for d in self._destinations],
-                                    spk_on=self._spk_on)
+                                    spk_on=self._spk_on, spk_gate=spk_gate)
         silenced = quieted is not intent
         intent = quieted
 
@@ -496,6 +502,8 @@ class LlmIntentNode(Node):
             (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
         self._robot_recent.append((now, msg.data))
         text = (msg.data or "").strip()
+        if text and text != WAIT_BEACON:
+            self._last_robot_line = (now, text)
         # 대기 중 10초 알림(M3)은 기록에 넣지 않는다(2026-10-07 검토) — 30분 대기면 180번이라
         # 16줄 기록이 3분이면 그것으로 가득 차, 돌아온 사용자의 말에 앞 대화를 잃는다.
         if self._spoken_history and text and text != WAIT_BEACON:
