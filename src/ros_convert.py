@@ -34,6 +34,9 @@ def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
     msg.reply = intent.reply
     msg.safety_flag = intent.safety_flag
     msg.wait_minutes = int(intent.wait_minutes)
+    msg.speaker_verdict = intent.speaker_verdict
+    msg.speaker_score = float(intent.speaker_score)
+    msg.speaker_score_joined = float(intent.speaker_joined)
     return msg
 
 

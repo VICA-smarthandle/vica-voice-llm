@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, dataclass
 from typing import Callable, Mapping, Optional, Tuple
 
@@ -133,6 +134,8 @@ class SpeakerFollow:
         self._target: Optional[np.ndarray] = None
         self._wake: Optional[Tuple[float, np.ndarray]] = None          # (시각, 자른 소리)
         self._last: Optional[Tuple[float, Optional[np.ndarray], np.ndarray]] = None   # (시각, 벡터, 발화 소리)
+        # 감시 스레드(check·note_wake_audio)와 ROS 콜백 스레드(on_dialog_state)가 같이 부른다.
+        self._lock = threading.Lock()
 
     @property
     def has_target(self) -> bool:
@@ -141,9 +144,14 @@ class SpeakerFollow:
     def note_wake_audio(self, audio_i16: np.ndarray, now: float) -> None:
         if self.cfg.mode == "off":
             return
-        self._wake = (now, trim_speech(np.asarray(audio_i16, dtype=np.float32) / 32768.0))
+        with self._lock:
+            self._wake = (now, trim_speech(np.asarray(audio_i16, dtype=np.float32) / 32768.0))
 
     def on_dialog_state(self, state: str, now: float) -> None:
+        with self._lock:
+            self._on_dialog_state(state, now)
+
+    def _on_dialog_state(self, state: str, now: float) -> None:
         event = self.session.on_dialog_state(state)
         if event == "start":
             last = self._last
@@ -164,6 +172,11 @@ class SpeakerFollow:
               now: float, text: str = "") -> Verdict:
         if self.cfg.mode == "off":
             return Verdict("no_target", -1.0, -1.0, "utt", speech_sec, doa, False, "꺼짐", text)
+        with self._lock:
+            return self._check(audio_i16, is_wake_window, doa, speech_sec, now, text)
+
+    def _check(self, audio_i16: np.ndarray, is_wake_window: bool, doa: Optional[float], speech_sec: float,
+               now: float, text: str) -> Verdict:
         utt = trim_speech(np.asarray(audio_i16, dtype=np.float32) / 32768.0)
         unit, audio = "utt", utt
         if is_wake_window and self._wake is not None and now - self._wake[0] <= WAKE_MAX_AGE_SEC:

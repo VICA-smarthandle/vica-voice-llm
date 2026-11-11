@@ -48,6 +48,8 @@ from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
 from .realtime_intent import float32_to_pcm16
+from .speaker_follow import SpeakerFollow, spk_config_from_env
+from .spk_embed import load_embedder
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
 from .stt_qwen import QwenUnavailable, ear_stt_engines
@@ -188,6 +190,17 @@ class WakewordNode(Node):
         self._listen_clip_warned = False
         self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
+        # 세션 주인 목소리 판정(2026-11-11 설계 speaker-follow). off 면 판정기를 만들지 않는다 — 지금 그대로.
+        self._spk_cfg = spk_config_from_env(os.environ)
+        self._speaker = None
+        if self._spk_cfg.mode != "off":
+            try:
+                embed = load_embedder(os.path.expanduser(self._spk_cfg.model_path))
+                self._speaker = SpeakerFollow(self._spk_cfg, embed, log=self.get_logger().info)
+            except Exception as exc:  # noqa: BLE001 — 모델을 못 올려도 듣기는 멈추지 않는다
+                self.get_logger().fatal(f"[화자] 모델을 못 올림 — 화자 판정 끔: {exc!r}")
+        self._spk_pending = None   # (시각, Verdict) — 다음 글자 발행 때 /vica/user_speaker 로 함께 낸다
+        self._pub_speaker = self.create_publisher(String, "/vica/user_speaker", 10)
 
         self._monitor = WakewordMonitor(
             listen_hint=listen_hint,
@@ -211,7 +224,12 @@ class WakewordNode(Node):
             on_wake_score=self._on_wake_score,
             on_emergency_score=self._on_emergency_score,
             log=self.get_logger().info,
+            speaker=self._speaker,
+            on_speaker_verdict=self._on_speaker_verdict if self._speaker is not None else None,
         )
+        self.get_logger().info(
+            f"[화자] {self._spk_cfg.mode if self._speaker is not None else 'off'} · 문턱 비카야+발화 "
+            f"{self._spk_cfg.th_wake:.2f}·발화 {self._spk_cfg.th:.2f}·짧은 말 {self._spk_cfg.short_sec:.1f}s")
         self.get_logger().info(
             f"호출 문턱 {self._monitor.gate_a.threshold:.2f} · "
             f"말 시작 기다림 {LISTEN_START_SEC:.1f}s · "
@@ -324,6 +342,12 @@ class WakewordNode(Node):
                 return
             self.get_logger().info(f"에코 제거: {text!r} -> {cleaned!r}")
             text = cleaned
+        pending, self._spk_pending = self._spk_pending, None
+        if pending is not None and now - pending[0] <= 15.0:
+            # 판정은 글자 바로 앞에 — 의도 노드가 같은 글자로 짝을 찾는다(에코 제거 뒤 글자로 맞춘다).
+            verdict = pending[1]
+            verdict.text = text
+            self._pub_speaker.publish(String(data=verdict.to_json()))
         msg = String()
         msg.data = text
         self._pub_text.publish(msg)
@@ -397,10 +421,19 @@ class WakewordNode(Node):
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
+    def _on_speaker_verdict(self, verdict) -> None:  # noqa: ANN001
+        """감시 스레드에서 온 판정 — 기록하고, 다음 글자와 함께 낼 때까지 둔다."""
+        self._spk_pending = (time.time(), verdict)
+        self.get_logger().info(
+            f"[화자] {verdict.verdict} 점수 {verdict.score:.2f}/{verdict.joined:.2f} {verdict.unit} "
+            f"{verdict.speech_sec:.1f}s 방향 {verdict.doa if verdict.doa is not None else '-'} {verdict.reason}"
+            + (" — 버림" if verdict.drop else ""))
+
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 '비카야'를 호출로 듣지 않는다(2026-10-09
         사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
         self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
+        self._monitor.set_dialog_state(msg.dialog_state)   # 화자 판정의 세션 시작·끝(판정기 없으면 무시)
         off = msg.dialog_state == "awaiting_user"
         if off != self._wake_off:
             self._wake_off = off

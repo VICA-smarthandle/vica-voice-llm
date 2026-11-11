@@ -37,6 +37,7 @@ from .building_directory import directory_path, format_directory_block, load_dir
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
+from .speaker_link import SpeakerLink
 from .langchain_intent_parser import (
     get_backend_manager, is_instant_utterance, is_relisten_noise, is_scripted_reply,
     parse_intent, parse_intent_audio)
@@ -148,6 +149,11 @@ class LlmIntentNode(Node):
             f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
             f" | 비교 기록(GPT): {'켬' if self._ab_shadow else '꺼짐'}")
 
+        # 화자 판정(2026-11-11 설계 speaker-follow) — 같은 글자의 의도에 싣는다. 글자보다 먼저 구독한다.
+        self._spk_link = SpeakerLink()
+        self._spk_on = os.environ.get("VICA_SPK_FOLLOW", "off").strip().lower() == "on"
+        self.create_subscription(String, "/vica/user_speaker",
+                                 lambda m: self._spk_link.put(m.data, time.time()), 10)
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
         # 재청취 창 문맥 추적 (2026-09-01): 질문 뒤 자동으로 열린 창에서 온
@@ -363,6 +369,12 @@ class LlmIntentNode(Node):
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
         intent = reask_held_resume(intent, self._history.messages)
+        spk = self._spk_link.take(text, time.time())
+        if spk is not None:
+            intent = intent.model_copy(update={
+                "speaker_verdict": str(spk.get("verdict", "")),
+                "speaker_score": float(spk.get("score", -1.0)),
+                "speaker_joined": float(spk.get("joined", -1.0))})
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -396,7 +408,8 @@ class LlmIntentNode(Node):
         #      (2026-10-08 미션 요청 반응표). 판단은 순수 함수(mission_question)가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
-                                    time.time() - last_t, [d.name for d in self._destinations])
+                                    time.time() - last_t, [d.name for d in self._destinations],
+                                    spk_on=self._spk_on)
         silenced = quieted is not intent
         intent = quieted
 

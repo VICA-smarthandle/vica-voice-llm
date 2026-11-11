@@ -85,6 +85,11 @@ class VicaIntent(BaseModel):
     safety_flag: SafetyFlag = "normal"
     # wait 의 요청 시간(분). 없거나 무관하면 -1. 상한 강제는 Mission 몫.
     wait_minutes: int = -1
+    # 화자 판정(2026-11-11 설계 speaker-follow) — LLM 이 만들지 않는다. 의도 노드가 호출 노드의
+    # /vica/user_speaker 판정을 발행 직전에 싣는다. 없으면 "" · −1.
+    speaker_verdict: str = ""
+    speaker_score: float = -1.0
+    speaker_joined: float = -1.0
 
 
 class EmergencyEvent(BaseModel):

@@ -59,12 +59,21 @@ def confirming_same_place(intent, dialog_state: str, last_robot_text: str,
     return outer == [name]
 
 
+SPK_WAIT_STATES = ("waiting", "waiting_release")
+SPK_GATED_KINDS = ("navigate", "cancel", "finish", "resume", "wait")
+
+
 def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
-                      last_robot_age_sec: float, place_names: Sequence[str] = ()):
+                      last_robot_age_sec: float, place_names: Sequence[str] = (),
+                      spk_on: bool = False):
     """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다.
     주행 중 "다시 가자"는 확인 질문도 뺀다 — 미션이 가는 곳을 말한다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
         return intent
+    if spk_on and dialog_state in SPK_WAIT_STATES and intent.intent in SPK_GATED_KINDS:
+        # 대기 중 본인 확인(2026-11-11 설계 B5) — 확인 질문·되묻기·본인 질문은 미션이 말한다. 음성까지
+        # 말하면 두 목소리이고, 다른 사람에게도 확인 질문이 나간다.
+        return intent.model_copy(update={"reply": ""})
     if dialog_state == "awaiting_user" and intent.intent != "question":
         # 접근 질문('안내를 받으시겠어요?') 중에는 질문에만 소리 내어 답한다. 되묻기·"네?"·확인 질문은
         # 지우고 다시 묻기는 미션이 한다(2026-10-09 사용자 결정 — run82 17:19 LLM 이 "어느 곳으로 안내를
