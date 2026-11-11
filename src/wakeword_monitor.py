@@ -36,6 +36,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from .frame_watch import FrameWatch
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from .mission_phrases import OBSTACLE_STOP
@@ -1560,17 +1561,33 @@ class WakewordMonitor:
         channels = 6
 
         q: queue.Queue[np.ndarray] = queue.Queue()
+        # 끊김 기록(2026-11-11 사용자) — 콜백은 상태 문자열만 넣고, 로그는 감시 스레드가 쓴다.
+        status_q: queue.SimpleQueue[str] = queue.SimpleQueue()
+        watch = FrameWatch()
 
         def cb(indata, frames, t, status):  # noqa: ANN001
+            if status:
+                status_q.put(str(status))
             block = np.frombuffer(indata, dtype=np.int16).reshape(-1, channels)
             q.put(block[:, 0].copy())
+
+        def note(line: Optional[str]) -> None:
+            if line:
+                self._log(line)
 
         print(f"웨이크워드 상시 감시 시작 (장치 {device}, {channels}ch — Ctrl+C 종료)")
         with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME,
                                channels=channels, dtype="int16",
                                device=device, callback=cb):
             while True:
-                frame = q.get()
+                while not status_q.empty():
+                    note(watch.on_status(status_q.get(), time.monotonic()))
+                try:
+                    frame = q.get(timeout=0.5)
+                except queue.Empty:
+                    note(watch.on_idle(time.monotonic()))
+                    continue
+                note(watch.on_frame(time.monotonic()))
                 vad = doa = vad2 = None
                 if self._state == "listen":
                     # 청취 중: 발화 시작/끝 판정용 (여기서는 AND 를 쓰지
