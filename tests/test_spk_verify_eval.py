@@ -36,6 +36,21 @@ def test_trim_ignores_quiet_hiss_relative_to_speech():
     assert abs(len(y) / SR - 0.7) <= 0.02
 
 
+def test_trim_drops_small_click_far_after_speech():
+    # 말 0.5 s(0.3) 뒤 2 s 떨어진 0.04 s 짧은 잡음(0.02, 말보다 −23 dB) — 녹음 64개 중 30여 개에 있던 모양.
+    # 잡음까지 이으면 2.24 s 가 되어 무음이 판정에 섞인다 → 말 0.5 s + 덧댐 0.2 s 만
+    x = np.concatenate([np.zeros(SR), _tone(0.5, 0.3), np.zeros(2 * SR), _tone(0.04, 0.02), np.zeros(SR)])
+    y = trim_speech(x.astype(np.float32), SR)
+    assert abs(len(y) / SR - 0.7) <= 0.02
+
+
+def test_trim_keeps_two_loud_words_with_a_pause_between():
+    # 말 0.4 s · 쉼 0.6 s · 말 0.4 s — 둘 다 크면 둘 다 말이다 → 1.4 s + 덧댐 0.2 s
+    x = np.concatenate([np.zeros(SR), _tone(0.4, 0.3), np.zeros(int(0.6 * SR)), _tone(0.4, 0.2), np.zeros(SR)])
+    y = trim_speech(x.astype(np.float32), SR)
+    assert abs(len(y) / SR - 1.6) <= 0.02
+
+
 def test_trim_returns_empty_for_silence():
     assert len(trim_speech(np.zeros(2 * SR, dtype=np.float32), SR)) == 0
 
