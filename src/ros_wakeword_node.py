@@ -204,6 +204,12 @@ class WakewordNode(Node):
                 self.get_logger().fatal(f"[화자] 모델을 못 올림 — 화자 판정 끔: {exc!r}")
         self._spk_pending = None   # (시각, Verdict) — 다음 글자 발행 때 /vica/user_speaker 로 함께 낸다
         self._pub_speaker = self.create_publisher(String, "/vica/user_speaker", 10)
+        # 모드를 미션에 알린다 — on 이면 미션이 대기 중 본인 확인을 켠다(마지막 값 보관, 늦게 뜬 미션도 받음).
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        self._pub_spk_mode = self.create_publisher(
+            String, "/vica/speaker_mode",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._pub_spk_mode.publish(String(data=self._spk_cfg.mode if self._speaker is not None else "off"))
 
         self._monitor = WakewordMonitor(
             listen_hint=listen_hint,
