@@ -186,7 +186,9 @@ class SpeakerFollow:
         score = cosine(self._target, vec) if self._target is not None and vec is not None else None
         joined = -1.0
         last = self._last
-        if self._target is not None and last is not None and now - last[0] <= JOIN_MAX_AGE_SEC and len(utt):
+        # 이어 붙인 점수는 대기 중 되묻기에만 쓴다 — 안내 중에는 임베딩 1 회로 감시 스레드 지연을 줄인다(검토 I4).
+        if (self.session.waiting and self._target is not None and last is not None
+                and now - last[0] <= JOIN_MAX_AGE_SEC and len(utt)):
             jv = self._vec(np.concatenate([last[2], utt]))
             if jv is not None:
                 joined = cosine(self._target, jv)

@@ -28,6 +28,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 
 # .env 를 다른 어떤 모듈보다 먼저 로드한다 (2026-09-01). 예전엔 stt.py 의
@@ -49,6 +50,7 @@ from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_d
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
 from .realtime_intent import float32_to_pcm16
 from .speaker_follow import SpeakerFollow, spk_config_from_env
+from .speaker_link import verdict_label
 from .spk_embed import load_embedder
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
@@ -196,6 +198,7 @@ class WakewordNode(Node):
         if self._spk_cfg.mode != "off":
             try:
                 embed = load_embedder(os.path.expanduser(self._spk_cfg.model_path))
+                embed((np.random.default_rng(0).standard_normal(16000) * 0.01).astype(np.float32))  # 예열(검토 I4)
                 self._speaker = SpeakerFollow(self._spk_cfg, embed, log=self.get_logger().info)
             except Exception as exc:  # noqa: BLE001 — 모델을 못 올려도 듣기는 멈추지 않는다
                 self.get_logger().fatal(f"[화자] 모델을 못 올림 — 화자 판정 끔: {exc!r}")
@@ -468,6 +471,10 @@ class WakewordNode(Node):
         msg = UInt8MultiArray()
         # size 는 표본 수(샘플), stride 는 바이트 수(pcm16 이라 표본당 2 바이트) — 단위가 다르다.
         msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm) // 2, stride=len(pcm)))
+        pending = self._spk_pending
+        if pending is not None and time.time() - pending[0] <= 15.0:
+            # 화자 판정은 소리와 한 메시지로 — 의도 노드가 소리 의도에 그대로 싣는다(검토 C2).
+            msg.layout.dim.append(MultiArrayDimension(label=verdict_label(pending[1].to_json()), size=0, stride=0))
         msg.data = array.array('B', pcm)
         self._pub_audio.publish(msg)
         self.get_logger().info(f"🎧 발화 소리 -> /vica/user_audio ({len(pcm)/2/16000:.2f}s)")

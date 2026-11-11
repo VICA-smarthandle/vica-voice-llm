@@ -34,3 +34,23 @@ class SpeakerLink:
     def _prune(self, now: float) -> None:
         for key in [k for k, (t, _) in self._by_text.items() if now - t > self.ttl_sec]:
             del self._by_text[key]
+
+
+LABEL_PREFIX = "spk:"
+
+
+def verdict_label(json_text: str) -> str:
+    """판정 JSON → /vica/user_audio layout.dim 라벨. 소리 의도 경로는 소리와 판정을 한 메시지로 짝짓는다(검토 C2)."""
+    return LABEL_PREFIX + json_text
+
+
+def verdict_from_labels(labels) -> Optional[dict]:  # noqa: ANN001
+    """layout.dim 라벨들에서 판정을 꺼낸다. 없거나 깨졌으면 None."""
+    for label in labels:
+        if isinstance(label, str) and label.startswith(LABEL_PREFIX):
+            try:
+                data = json.loads(label[len(LABEL_PREFIX):])
+            except ValueError:
+                return None
+            return data if isinstance(data, dict) else None
+    return None

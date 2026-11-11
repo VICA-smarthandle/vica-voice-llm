@@ -67,3 +67,37 @@ def test_quiet_for_mission_waiting_gated_kinds():
 def test_quiet_for_mission_unchanged_when_off_or_not_waiting():
     assert _quiet("navigate", "waiting", False) != ""
     assert _quiet("navigate", "navigating", True) != ""
+
+
+# --- 최종 검토 수정(I2·I3·C2) ----------------------------------------------------------------------------------
+
+def test_quiet_waiting_resume_is_sent_without_confirm():
+    """I2: 대기 중 '다시 가자' — 확인 전 보류되면 말도 미션 전달도 없다. 확정으로 보내 미션이 어디로 갈지 묻는다."""
+    intent = VicaIntent(intent="resume", reply="다시 출발할까요?", need_confirm=True)
+    out = quiet_for_mission(intent, "waiting", "", 99.0, spk_on=True)
+    assert (out.reply, out.need_confirm) == ("", False)
+
+
+def test_intent_to_msg_tolerates_old_interface(monkeypatch):
+    """I3: 옛 vica_interfaces 설치본(__slots__ 에 새 필드 없음)에서도 의도 발행이 깨지지 않는다."""
+    import src.ros_convert as rc
+
+    class OldMsg:
+        __slots__ = ("intent", "destination_candidate", "matched_destination_id", "confidence", "need_confirm",
+                     "reply", "safety_flag", "wait_minutes")
+
+    monkeypatch.setattr(rc, "VicaIntentMsg", OldMsg)
+    msg = rc.intent_to_msg(VicaIntent(intent="cancel", speaker_verdict="pass"))
+    assert msg.intent == "cancel"
+
+
+def test_verdict_label_round_trip():
+    """C2: 판정을 /vica/user_audio 의 layout.dim 라벨에 실어 소리와 원자적으로 짝짓는다."""
+    from src.speaker_link import verdict_from_labels, verdict_label
+
+    label = verdict_label(_j("", "fail", 0.31, -1.0))
+    assert label.startswith("spk:")
+    got = verdict_from_labels(["pcm16_mono_16000", label])
+    assert (got["verdict"], got["score"]) == ("fail", 0.31)
+    assert verdict_from_labels(["pcm16_mono_16000"]) is None
+    assert verdict_from_labels(["pcm16_mono_16000", "spk:{깨진"]) is None

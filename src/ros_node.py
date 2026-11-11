@@ -37,7 +37,7 @@ from .building_directory import directory_path, format_directory_block, load_dir
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
-from .speaker_link import SpeakerLink
+from .speaker_link import SpeakerLink, verdict_from_labels
 from .langchain_intent_parser import (
     get_backend_manager, is_instant_utterance, is_relisten_noise, is_scripted_reply,
     parse_intent, parse_intent_audio)
@@ -151,6 +151,7 @@ class LlmIntentNode(Node):
 
         # 화자 판정(2026-11-11 설계 speaker-follow) — 같은 글자의 의도에 싣는다. 글자보다 먼저 구독한다.
         self._spk_link = SpeakerLink()
+        self._audio_spk = None   # 지금 처리 중인 소리 발화에 실려 온 판정(소리 의도 경로, 검토 C2)
         self._spk_on = os.environ.get("VICA_SPK_FOLLOW", "off").strip().lower() == "on"
         self.create_subscription(String, "/vica/user_speaker",
                                  lambda m: self._spk_link.put(m.data, time.time()), 10)
@@ -370,6 +371,8 @@ class LlmIntentNode(Node):
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
         intent = reask_held_resume(intent, self._history.messages)
         spk = self._spk_link.take(text, time.time())
+        if spk is None and self._audio_spk is not None:
+            spk, self._audio_spk = self._audio_spk, None
         if spk is not None:
             intent = intent.model_copy(update={
                 "speaker_verdict": str(spk.get("verdict", "")),
@@ -518,6 +521,7 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[A/B] Realtime 최근 실패 — {REALTIME_RETRY_AFTER_SEC:.0f}초간 소리 경로 생략, 텍스트 경로가 처리")
             return
+        self._audio_spk = verdict_from_labels([d.label for d in msg.layout.dim])
         try:
             label = msg.layout.dim[0].label if msg.layout.dim else ""
             pcm = pcm16_from_audio_msg(msg.data, label)

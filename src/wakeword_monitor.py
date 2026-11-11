@@ -36,6 +36,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from .emergency_filter import detect_stop_request
 from .frame_watch import FrameWatch
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
@@ -1379,16 +1380,16 @@ class WakewordMonitor:
             transcribe = self._transcribe_confirm
         else:
             transcribe = self._transcribe_listen or self._transcribe
+        spk = None
+        audio_sent = False
         if self._on_user_audio is not None:
             # 소리→의도 직행(audio 모드): whisper 보다 먼저 클립을 넘긴다. 실패해도 전사는 계속.
-            # 자유 창이면 미션 판정을 거친다(호출 반응표).
-            if self._listen_is_followup:
-                try:
-                    self._on_user_audio(audio)
-                except Exception:
-                    pass
-            else:
-                self._emit_free("audio", audio)
+            # 화자 판정은 소리를 보내기 **전에** 한다 — 버릴 말이면 소리도 보내지 않는다(검토 C2).
+            if self._speaker is not None:
+                spk = self._speaker_check(audio, speech_sec, now, "")
+            if spk is None or not spk.drop:
+                self._send_user_audio(audio)
+                audio_sent = True
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
         stt_text = text   # 구제가 "비카야"로 바꾸기 전 원문 — 말소리 저장 기록용
@@ -1426,7 +1427,14 @@ class WakewordMonitor:
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
             self._report_clip(audio, "short-reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
             return "wake_silent"
-        spk = self._speaker_check(audio, speech_sec, now, text)
+        if spk is None:
+            spk = self._speaker_check(audio, speech_sec, now, text)
+        if spk is not None and spk.drop and detect_stop_request(text):
+            # 다른 사람 말이라도 멈춤 말이면 버리지 않는다 — 글자 경로의 2차 정지(D12, 검토 C1).
+            spk.drop = False
+            spk.reason += " · 멈춤 말이라 넘김"
+        if spk is not None and not spk.drop and self._on_user_audio is not None and not audio_sent:
+            self._send_user_audio(audio)
         spk_extra = {} if spk is None else {"spk_verdict": spk.verdict, "spk_score": spk.score,
                                             "spk_joined": spk.joined, "spk_reason": spk.reason}
         if spk is not None and spk.drop:
@@ -1446,6 +1454,16 @@ class WakewordMonitor:
         self._report_clip(audio, "text", text, rms=rms, speech=speech_sec,
                           stt=self.last_listen_timing["stt"], stt_text=stt_text, **spk_extra)
         return "user_text"
+
+    def _send_user_audio(self, audio: np.ndarray) -> None:
+        """소리→의도 직행 — 질문 창은 바로, 자유 창은 미션 판정을 거친다(호출 반응표)."""
+        if self._listen_is_followup:
+            try:
+                self._on_user_audio(audio)
+            except Exception:
+                pass
+        else:
+            self._emit_free("audio", audio)
 
     def _speaker_check(self, audio: np.ndarray, speech_sec: float, now: float, text: str):
         """판정기가 있으면 이번 발화를 판정하고, 글자보다 먼저 판정을 넘긴다. 실패해도 귀는 계속 간다."""

@@ -73,6 +73,9 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
     if spk_on and dialog_state in SPK_WAIT_STATES and intent.intent in SPK_GATED_KINDS:
         # 대기 중 본인 확인(2026-11-11 설계 B5) — 확인 질문·되묻기·본인 질문은 미션이 말한다. 음성까지
         # 말하면 두 목소리이고, 다른 사람에게도 확인 질문이 나간다.
+        if intent.intent == "resume":
+            # 확인 전 resume 은 음성이 보류한다 — 말도 미션 전달도 없게 된다. 확정으로 보내 미션이 어디로 갈지 묻는다(검토 I2).
+            return intent.model_copy(update={"reply": "", "need_confirm": False})
         return intent.model_copy(update={"reply": ""})
     if dialog_state == "awaiting_user" and intent.intent != "question":
         # 접근 질문('안내를 받으시겠어요?') 중에는 질문에만 소리 내어 답한다. 되묻기·"네?"·확인 질문은

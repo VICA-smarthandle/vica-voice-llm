@@ -554,3 +554,51 @@ def test_no_speaker_unchanged():
     _wake_and_speak(m)
     m.set_dialog_state("confirming")                           # 판정기가 없으면 아무 일도 없다
     assert order == ["화장실 가자"]
+
+
+# --- 최종 검토 수정(C1·C2) -------------------------------------------------------------------------------------
+
+def test_drop_keeps_stop_words_in_text_path():
+    """C1: 다른 사람 말이라도 멈춤 말이 들었으면 버리지 않는다(글자 경로의 2차 정지, D12)."""
+    spk = FakeSpeaker(_verdict(True))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="멈춰 멈춰 앞에 사람 있어요"),
+                 spk, order, [], [])
+    _wake_and_speak(m)
+    assert ("text", "멈춰 멈춰 앞에 사람 있어요") in order
+
+
+def _audio_monitor(verdict, text):
+    spk = FakeSpeaker(verdict)
+    order = []
+    m = WakewordMonitor(
+        on_emergency=lambda e: None, on_user_text=lambda t: order.append(("text", t)),
+        on_user_audio=lambda a: order.append(("audio", len(a))),
+        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40).predict,
+        transcribe=lambda a: text, speaker=spk,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+    return m, order
+
+
+def test_audio_mode_drop_sends_no_audio():
+    """C2: 소리 의도 모드 — 판정을 소리 발송 앞에서 하고, 버리면 소리도 보내지 않는다."""
+    m, order = _audio_monitor(_verdict(True), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order] == ["verdict"]
+
+
+def test_audio_mode_verdict_before_audio():
+    m, order = _audio_monitor(_verdict(False), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order][:2] == ["verdict", "audio"]
+
+
+def test_audio_mode_drop_but_stop_word_still_sends_audio():
+    m, order = _audio_monitor(_verdict(True), "멈춰 멈춰")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    kinds = [o[0] for o in order]
+    assert "audio" in kinds and ("text", "멈춰 멈춰") in order

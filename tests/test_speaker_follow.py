@@ -152,8 +152,20 @@ def test_wake_audio_prepended_in_wake_window():
 
 def test_joined_uses_previous_within_20s():
     f = started(follow()[0])
+    f.on_dialog_state("navigating", 11.0)
+    f.on_dialog_state("waiting", 12.0)                                      # 되묻기는 대기 중에만 쓴다(I4)
     assert f.check(voice(+1, 1.5), False, None, 1.5, 20.0).joined > 0.9     # 시작 발화(10 s)와 이어 붙임
     assert f.check(voice(+1, 1.5), False, None, 1.5, 45.0).joined == -1.0    # 25 s 지남
+
+
+def test_joined_not_computed_while_guiding():
+    """I4: 안내 중에는 이어 붙인 점수를 계산하지 않는다 — 임베딩 1 회로 감시 스레드 지연을 줄인다."""
+    f, emb = follow()
+    started(f)
+    f.on_dialog_state("navigating", 12.0)
+    before = emb.calls
+    v = f.check(voice(+1, 1.5), False, None, 1.5, 13.0)
+    assert (v.joined, emb.calls - before) == (-1.0, 1)
 
 
 def test_embed_none():
