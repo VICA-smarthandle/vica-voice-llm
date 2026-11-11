@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 import time
 import wave
 from pathlib import Path
@@ -26,13 +27,14 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-SAMPLE_RATE = 16000
-FRAME_SEC = 0.02          # 말소리 자르기 창 20 ms
-REL_DB = 30.0             # 가장 큰 창보다 30 dB 넘게 작은 창은 말이 아니다
-FLOOR = 0.003             # 이것보다 작은 창은 크기와 상관없이 말이 아니다(칩 처리음 바닥 잡음 수준)
-PAD_SEC = 0.10            # 자른 말 앞뒤로 남길 여유
-MERGE_GAP_SEC = 0.30      # 이보다 짧은 쉼은 한 덩어리로 본다
-KEEP_REL = 0.2            # 가장 큰 덩어리보다 −14 dB 넘게 작은 덩어리는 버린다(숨·키보드 소리. 11-10 녹음 실측)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.speech_trim import (FLOOR, FRAME_SEC, KEEP_REL, MERGE_GAP_SEC, PAD_SEC, REL_DB,  # noqa: E402,F401
+                             SAMPLE_RATE, trim_speech)
+from src.spk_embed import cosine, load_embedder, mean_embedding  # noqa: E402,F401
+
 BINS = ((0.6, "<0.6"), (1.0, "0.6~1.0"), (1.5, "1.0~1.5"), (2.5, "1.5~2.5"))
 LAST_BIN = "≥2.5"
 DEFAULT_THRESHOLDS = tuple(round(0.05 * i, 2) for i in range(19))   # 0.00 ~ 0.90
@@ -51,44 +53,6 @@ MODELS = {   # 이름 → 파일(csukuangfj/speaker-embedding-models). 한국어
 
 # --- 순수한 부분 -----------------------------------------------------------------------------------------
 
-def trim_speech(x: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
-    """앞뒤 조용한 부분을 잘라 말소리 + 앞뒤 PAD_SEC 만 남긴다. 말이 없으면 빈 배열.
-
-    소리 나는 창을 MERGE_GAP_SEC 보다 짧은 쉼으로 이어 덩어리로 묶고, 가장 큰 덩어리보다 KEEP_REL 배 넘게
-    작은 덩어리(말 뒤 숨·키보드 소리)는 버린다 — 첫 덩어리부터 끝 덩어리까지를 남긴다.
-    """
-    frame = int(sr * FRAME_SEC)
-    n = len(x) // frame
-    if n == 0:
-        return x[:0]
-    rms = np.sqrt(np.mean(x[: n * frame].reshape(n, frame).astype(np.float64) ** 2, axis=1))
-    peak = float(rms.max())
-    if peak < FLOOR:
-        return x[:0]
-    voiced = np.flatnonzero(rms >= max(FLOOR, peak * 10 ** (-REL_DB / 20)))
-    max_gap = int(round(MERGE_GAP_SEC / FRAME_SEC))
-    groups = [[int(voiced[0]), int(voiced[0])]]
-    for i in voiced[1:]:
-        if int(i) - groups[-1][1] - 1 <= max_gap:
-            groups[-1][1] = int(i)
-        else:
-            groups.append([int(i), int(i)])
-    loud = [g for g in groups if float(rms[g[0]:g[1] + 1].max()) >= KEEP_REL * peak]
-    pad = int(sr * PAD_SEC)
-    start = max(0, loud[0][0] * frame - pad)
-    end = min(len(x), (loud[-1][1] + 1) * frame + pad)
-    return x[start:end]
-
-
-def mean_embedding(vectors: Sequence[np.ndarray]) -> np.ndarray:
-    """벡터마다 단위 길이로 맞춘 뒤 평균하고, 평균도 단위 길이로."""
-    units = [np.asarray(v, dtype=np.float64) / np.linalg.norm(v) for v in vectors]
-    m = np.mean(units, axis=0)
-    return m / np.linalg.norm(m)
-
-
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 def attempts_for(cmd_ids: Sequence[str], wake_id: Optional[str]) -> list:
@@ -198,25 +162,20 @@ def read_wav(path: Path) -> np.ndarray:
 
 
 class Embedder:
-    def __init__(self, model_path: Path, threads: int = 2):
-        import sherpa_onnx
+    """load_embedder 를 감싸 판정마다 걸린 시간을 기록한다(평가 보고용)."""
 
-        cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model_path), num_threads=threads,
-                                                          debug=False, provider="cpu")
-        if not cfg.validate():
-            raise SystemExit(f"모델 설정이 맞지 않습니다: {model_path}")
-        self._x = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
+    def __init__(self, model_path: Path, threads: int = 2):
+        try:
+            self._embed = load_embedder(str(model_path), threads)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         self.seconds: list = []   # (음성 길이 s, 걸린 시간 s)
 
     def __call__(self, audio: np.ndarray) -> Optional[np.ndarray]:
-        stream = self._x.create_stream()
-        stream.accept_waveform(sample_rate=SAMPLE_RATE, waveform=np.ascontiguousarray(audio, dtype=np.float32))
-        stream.input_finished()
-        if not self._x.is_ready(stream):
-            return None     # 너무 짧다
         t0 = time.perf_counter()
-        v = np.array(self._x.compute(stream))
-        self.seconds.append((len(audio) / SAMPLE_RATE, time.perf_counter() - t0))
+        v = self._embed(audio)
+        if v is not None:
+            self.seconds.append((len(audio) / SAMPLE_RATE, time.perf_counter() - t0))
         return v
 
 
