@@ -478,6 +478,8 @@ class WakewordMonitor:
         on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
         listen_band_min: Optional[float] = None,
         log: Optional[Callable[[str], None]] = None,
+        speaker=None,
+        on_speaker_verdict: Optional[Callable[[object], None]] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -570,6 +572,10 @@ class WakewordMonitor:
         self.listen_band_min = None if listen_band_min is None else float(listen_band_min)
         # Qwen 감싸개 로그가 갈 곳 — 노드는 ROS 로거를 넘겨 시각이 찍히게 한다.
         self._log = log or print
+        # 세션 주인 목소리 판정(2026-11-11 설계 speaker-follow). None 이면 지금 동작 그대로.
+        self._speaker = speaker
+        self._on_speaker_verdict = on_speaker_verdict
+        self._listen_doas: list = []   # 청취 창에서 말소리 조각의 DOA(도)
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
         self._wake_peak = 0.0
         self._wake_episode = False
@@ -990,7 +996,7 @@ class WakewordMonitor:
                 self.gate_a_listen.reset()
             elif self.gate_a_listen.feed(float(scores["a"]), now):
                 self._listen_heard_wake = True
-            return self._listen_step(frame, now, vad)
+            return self._listen_step(frame, now, vad, doa)
 
         # idle
         if fire_b:
@@ -1015,6 +1021,9 @@ class WakewordMonitor:
                 self._held = []
                 self._verdict_inbox = None
             self._on_wake()
+            if self._speaker is not None:
+                # "비카야" 소리는 링에만 있다 — 호출 창 판정에 붙이려고 지금 복사한다.
+                self._speaker.note_wake_audio(np.concatenate(list(self._ring)), now)
             self._open_listen(followup=False, now=now)
             return "wake"
 
@@ -1113,6 +1122,7 @@ class WakewordMonitor:
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
         self._listen_heard_wake = False
+        self._listen_doas = []
         # 자유 창은 그 창을 연 "비카야"의 여운(모델이 직전 2초를 기억)이 몇 조각 남는다 — 점수가 한 번
         # 내려가기 전에는 재호출로 세지 않는다(2026-10-13). 질문 창은 호출로 열지 않아 처음부터 센다.
         self._listen_wake_rearmed = followup
@@ -1253,7 +1263,7 @@ class WakewordMonitor:
         return "emergency"
 
     def _listen_step(self, frame: np.ndarray, now: float,
-                     vad: Optional[bool]) -> Optional[str]:
+                     vad: Optional[bool], doa: Optional[float] = None) -> Optional[str]:
         """청취 창 한 프레임. 발화 시작·끝은 칩의 발화 판정(vad)으로 잰다.
 
         소리 크기(RMS) 판정은 폐기했다 — 약한 어미("...주세요")를 침묵으로
@@ -1262,6 +1272,8 @@ class WakewordMonitor:
         증거 없음 (장치가 없으면 애초에 기동이 실패한다 — 폴백 없음).
         """
         self._collect.append(frame)
+        if vad and doa is not None:
+            self._listen_doas.append(float(doa))
         loud = _frame_rms(frame) >= SPEECH_RMS
         # 말소리 대역 관문: 칩이 말이라 해도, 소리가 커도 말소리 대역이 조용하면(바람·기계음) 말로 치지 않는다 —
         # 말 시작·말끝·소리 크기 보강 세 갈래 모두. 관문이 꺼져 있으면(None) 옛 동작 그대로다.
@@ -1414,6 +1426,16 @@ class WakewordMonitor:
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
             self._report_clip(audio, "short-reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
             return "wake_silent"
+        spk = self._speaker_check(audio, speech_sec, now, text)
+        spk_extra = {} if spk is None else {"spk_verdict": spk.verdict, "spk_score": spk.score,
+                                            "spk_joined": spk.joined, "spk_reason": spk.reason}
+        if spk is not None and spk.drop:
+            # 세션 주인이 아닌 사람의 긴 말 — 조용히 버린다(설계 4.3). 기록은 남긴다.
+            if not self._listen_is_followup:
+                self._on_listen_empty()
+            self._on_listen_state(f"empty:speaker {spk.reason} {text[:30]!r}")
+            self._report_clip(audio, "spk-drop", text, rms=rms, speech=speech_sec, stt_text=stt_text, **spk_extra)
+            return "wake_silent"
         if self._listen_is_followup:
             self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
             self._on_user_text(text)
@@ -1422,8 +1444,30 @@ class WakewordMonitor:
             self._emit_free("text", text)
         # 저장은 글자를 넘긴 뒤에 — 디스크가 바빠도 대답 길이 늦지 않게(10-20 검토).
         self._report_clip(audio, "text", text, rms=rms, speech=speech_sec,
-                          stt=self.last_listen_timing["stt"], stt_text=stt_text)
+                          stt=self.last_listen_timing["stt"], stt_text=stt_text, **spk_extra)
         return "user_text"
+
+    def _speaker_check(self, audio: np.ndarray, speech_sec: float, now: float, text: str):
+        """판정기가 있으면 이번 발화를 판정하고, 글자보다 먼저 판정을 넘긴다. 실패해도 귀는 계속 간다."""
+        if self._speaker is None:
+            return None
+        doa = float(np.median(self._listen_doas)) if self._listen_doas else None
+        try:
+            verdict = self._speaker.check(audio, not self._listen_is_followup, doa, speech_sec, now, text)
+        except Exception as exc:  # noqa: BLE001 — 판정 오류로 듣기를 멈추지 않는다
+            self._log(f"[화자] 판정 오류 — 거르지 않고 넘김: {exc!r}")
+            return None
+        if self._on_speaker_verdict is not None:
+            try:
+                self._on_speaker_verdict(verdict)
+            except Exception:
+                pass
+        return verdict
+
+    def set_dialog_state(self, state: str, now: Optional[float] = None) -> None:
+        """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다)."""
+        if self._speaker is not None:
+            self._speaker.on_dialog_state(state, time.time() if now is None else now)
 
     def _report_clip(self, audio: np.ndarray, result: str, text: str = "", **extra) -> None:
         """청취 창 소리와 판정을 넘긴다. 기록일 뿐이라 실패해도 귀는 계속 간다."""
@@ -1593,6 +1637,8 @@ class WakewordMonitor:
                     # 청취 중: 발화 시작/끝 판정용 (여기서는 AND 를 쓰지
                     # 않는다 — 짧은 답이 말머리·말끝에서 잘린다)
                     vad = dsp.speech_detected()
+                    if vad and self._speaker is not None:
+                        doa = dsp.doa_angle()   # 화자 판정의 손잡이 방향 근거(설계 6절)
                 elif (self._voice_barge_in and self._speaking
                         and self._followup_armed):
                     # 질문 재생 중: barge-in 판정용 (+방향)

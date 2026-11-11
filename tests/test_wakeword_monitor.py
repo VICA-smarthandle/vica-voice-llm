@@ -453,3 +453,104 @@ def test_out_of_window_speech_still_rejected_without_followup():
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
     assert "reject" in results
     assert texts == []
+
+
+# --- 세션 주인 목소리 판정 연결(2026-11-11 설계 speaker-follow, 계획 작업 4) ------------------------------------
+
+from src.speaker_follow import Verdict  # noqa: E402
+
+
+class FakeSpeaker:
+    """정해 둔 판정을 돌려주고 호출을 기록한다."""
+
+    def __init__(self, verdict: Verdict):
+        self.verdict = verdict
+        self.wake_lens = []
+        self.checks = []
+        self.states = []
+
+    def note_wake_audio(self, audio, now):
+        self.wake_lens.append(len(audio))
+
+    def check(self, audio, is_wake_window, doa, speech_sec, now, text=""):
+        self.checks.append({"is_wake_window": is_wake_window, "doa": doa, "text": text})
+        return self.verdict
+
+    def on_dialog_state(self, state, now):
+        self.states.append(state)
+
+
+def _verdict(drop: bool) -> Verdict:
+    return Verdict("fail" if drop else "pass", 0.3, -1.0, "wake+utt", 0.4, None, drop, "시험")
+
+
+def make_spk(fake: Fake, speaker, order: list, clips: list, states: list):
+    return WakewordMonitor(
+        on_emergency=lambda e: order.append(("emergency", e)),
+        on_user_text=lambda t: order.append(("text", t)),
+        on_listen_state=states.append,
+        on_listen_clip=lambda a, d: clips.append(d),
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+        speaker=speaker,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+
+
+def _wake_and_speak(m, doas=None):
+    run_frames(m, 2, LOUD)                                     # 호출 확정
+    for i in range(5):                                         # 발화(칩 판정)
+        d = None if doas is None else doas[i % len(doas)]
+        m.process_frame(LOUD, now=1.0 + i * 0.08, vad=True, doa=d)
+    return run_frames(m, 12, QUIET, t0=2.0)                    # 침묵 → 닫힘
+
+
+def test_wake_audio_copied_on_wake():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    assert run_frames(m, 2, LOUD)[-1] == "wake"
+    assert spk.wake_lens == [2 * 1280]                         # 그때 링에 있던 조각 전부
+
+
+def test_drop_verdict_suppresses_text():
+    spk = FakeSpeaker(_verdict(True))
+    order, clips, states = [], [], []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, clips, states)
+    results = _wake_and_speak(m)
+    assert "user_text" not in results
+    assert [k for k, _ in order] == ["verdict"]
+    assert clips[-1]["result"] == "spk-drop" and clips[-1]["spk_verdict"] == "fail"
+    assert any(s.startswith("empty:speaker") for s in states)
+
+
+def test_verdict_callback_before_text():
+    spk = FakeSpeaker(_verdict(False))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, [], [])
+    _wake_and_speak(m)
+    assert order == [("verdict", "pass"), ("text", "화장실 가자")]
+    assert spk.checks[0]["is_wake_window"] is True and spk.checks[0]["text"] == "화장실 가자"
+
+
+def test_doa_median_passed():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    _wake_and_speak(m, doas=[170.0, 182.0, 190.0])
+    assert spk.checks[0]["doa"] == 182.0
+
+
+def test_set_dialog_state_forwarded():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[]), spk, [], [], [])
+    m.set_dialog_state("confirming")
+    assert spk.states == ["confirming"]
+
+
+def test_no_speaker_unchanged():
+    order = []
+    m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=lambda t: order.append(t),
+                        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자").predict,
+                        transcribe=lambda a: "화장실 가자")
+    _wake_and_speak(m)
+    m.set_dialog_state("confirming")                           # 판정기가 없으면 아무 일도 없다
+    assert order == ["화장실 가자"]
