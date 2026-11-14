@@ -6,6 +6,7 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
       /vica/user_text (std_msgs/String)                 ← 호출 후 발화 (기존 계약)
       /vica/tts_stop  (std_msgs/Empty)                  ← barge-in: 재생 즉시 중단 요청
       /vica/wake      (std_msgs/String)                 ← "wake" 호출 / "rescue" 창 안 구제
+      /vica/patrol/event (std_msgs/String)              ← 경비 순찰 중 큰 소리 sound JSON (2026-11-14)
 구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 경계 (뮤트 또는 AEC 모드)
       /vica/tts_now (std_msgs/String)                   ← 지금 재생하는 문장 (자기 목소리 호출 무시)
       /vica/listen_request (std_msgs/Bool)              ← 질문 후 재청취 예약 (true=예약)
@@ -48,6 +49,7 @@ from vica_interfaces.msg import RobotState as RobotStateMsg
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
+from .patrol_sound import PatrolSoundTap
 from .realtime_intent import float32_to_pcm16
 from .speaker_follow import SpeakerFollow, spk_config_from_env
 from .speaker_link import verdict_label
@@ -306,6 +308,12 @@ class WakewordNode(Node):
                 self.get_logger().warning(
                     "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
+        # 경비(순찰) 큰 소리 판정(2026-11-14) — patrolling·patrol_dwell 에서만 계산·발행한다. 로직은 patrol_sound.py.
+        self._pub_patrol = self.create_publisher(String, "/vica/patrol/event", 10)
+        self._patrol = PatrolSoundTap(
+            emit=lambda data: self._pub_patrol.publish(String(data=data)), log=self.get_logger().info)
+        self._monitor.patrol_tap = self._patrol   # 감시 스레드를 띄우기 전에 붙인다
+
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._monitor_error: "BaseException | None" = None
         self._thread = threading.Thread(target=self._run_monitor, daemon=True)
@@ -443,6 +451,7 @@ class WakewordNode(Node):
         사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
         self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
         self._monitor.set_dialog_state(msg.dialog_state)   # 화자 판정의 세션 시작·끝(판정기 없으면 무시)
+        self._patrol.set_state(msg.dialog_state)   # 경비 소리 판정 — patrolling·patrol_dwell 일 때만 켜진다
         off = msg.dialog_state == "awaiting_user"
         if off != self._wake_off:
             self._wake_off = off
@@ -558,6 +567,7 @@ class WakewordNode(Node):
 
     def _on_tts_state(self, msg: Bool) -> None:
         self._tts_speaking = bool(msg.data)
+        self._patrol.set_speaking(self._tts_speaking)   # 로봇이 말하는 동안 경비 소리 판정을 쉰다
         if self._mute_during_tts:
             self._monitor.set_muted(bool(msg.data))
         else:

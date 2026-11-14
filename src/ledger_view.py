@@ -36,6 +36,12 @@ DIALOG_KO = {
     "returning": "제자리로 복귀 중",
     "estopped": "비상 정지",
     "failed": "이동 실패",
+    # 경비(순찰) 상태 다섯(2026-11-14, ROS mission_logic 의 patrol*). 순찰 중에는 호출·음성 명령을 받지 않는다.
+    "patrolling": "경비 순찰 중(다음 지점으로 이동)",
+    "patrol_dwell": "경비 순찰 중(지점에서 잠깐 정지)",
+    "patrol_alarm": "경비 경보로 정지(사람·큰 소리·카메라 끊김)",
+    "patrol_light": "경비 경보로 정지(불 켜짐)",
+    "patrol_paused": "경비 순찰 일시정지",
 }
 
 HEADER = ("\n[지금 상황] (미션이 확인한 사실 — 대화 이력이 비어 있어도 이것은 맞다. "
