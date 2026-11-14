@@ -7,7 +7,30 @@ import pytest
 
 from src.replies import LLM_UNAVAILABLE
 from src.schema import DestinationData, VicaIntent
-from tools.answer_replay import clip_for, replay
+from tools.answer_replay import call_with_retry, clip_for, replay
+
+
+def test_call_with_retry_retries_rate_limit_then_succeeds():
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("Realtime 응답 failed: rate_limit_exceeded")
+        return "ok"
+    assert call_with_retry(flaky, tries=3, wait_s=0) == "ok" and len(calls) == 3
+
+
+def test_call_with_retry_gives_up_and_other_errors_pass_through():
+    def always():
+        raise RuntimeError("rate_limit_exceeded")
+    with pytest.raises(RuntimeError):
+        call_with_retry(always, tries=2, wait_s=0)
+
+    def other():
+        raise ValueError("bad args")
+    with pytest.raises(ValueError):
+        call_with_retry(other, tries=3, wait_s=0)
 
 
 @pytest.fixture

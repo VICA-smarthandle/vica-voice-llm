@@ -38,6 +38,18 @@ def _quantile(values: list[float], q: float) -> float:
     return s[min(len(s) - 1, int(q * len(s)))]
 
 
+def call_with_retry(fn: Callable, tries: int = 3, wait_s: float = 5.0, retry_on: str = "rate_limit"):
+    """요청 한도 초과(오류 글자에 retry_on)만 wait_s 쉬고 다시. 다른 오류는 바로 올린다."""
+    for attempt in range(tries):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            if retry_on not in str(exc) or attempt == tries - 1:
+                raise
+            time.sleep(wait_s * (attempt + 1))
+    return None
+
+
 def clip_for(row: dict, clips: list[dict], clips_dir: Path, window_s: float = 3.0) -> Optional[Path]:
     """행과 같은 말의 저장 소리. 시각이 window_s 안이고, 받아쓴 글자가 있으면 글자도 같아야 한다."""
     ts = float(row["ts"])
@@ -176,7 +188,8 @@ def main() -> None:
                 return None, 0.0
             pcm = w.readframes(w.getnframes())
         dests, history, state = context(row)
-        intent, _heard, latency, _info = parse_intent_audio(pcm, dests, history=history, robot_state=state)
+        intent, _heard, latency, _info = call_with_retry(
+            lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state))
         return intent, latency
 
     interpret = interpret_audio if args.path == "realtime" else interpret_text

@@ -10,10 +10,19 @@ from typing import Sequence
 VALUED = ("destination", "choice", "minutes")   # 값까지 같아야 맞는 대답
 
 
+def _squash(text: str) -> str:
+    return "".join((text or "").split())
+
+
 def _question_destination_id(question: str, destinations: Sequence) -> str:
-    """질문 글자에 든 가장 긴 목적지 이름의 id. 없으면 ""."""
-    named = [d for d in destinations if d.name and d.name in (question or "")]
-    return max(named, key=lambda d: len(d.name)).id if named else ""
+    """질문 글자에 든 가장 긴 목적지 이름·별칭의 id(띄어쓰기 무시). 없으면 ""."""
+    q = _squash(question)
+    best = ("", "")
+    for d in destinations:
+        for key in (_squash(k) for k in [d.name, *(getattr(d, "aliases", []) or [])]):
+            if key and key in q and len(key) > len(best[0]):
+                best = (key, d.id)
+    return best[1]
 
 
 def answer_of(intent, kind: str, question: str, destinations: Sequence) -> tuple[str, str]:  # noqa: ANN001
@@ -25,7 +34,9 @@ def answer_of(intent, kind: str, question: str, destinations: Sequence) -> tuple
         return "no", ""
     if i == "navigate":
         dest = intent.matched_destination_id or ""
-        if kind == "confirm" and not intent.need_confirm and dest and dest == _question_destination_id(question, destinations):
+        # other = LLM 이 지은 확인 질문("…로 안내하면 될까요?")도 같은 꼴
+        if (kind in ("confirm", "other") and not intent.need_confirm and dest
+                and dest == _question_destination_id(question, destinations)):
             return "yes", ""
         return ("choice", dest) if kind == "choice" else ("destination", dest)
     if i == "wait":

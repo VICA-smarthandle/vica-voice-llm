@@ -34,6 +34,21 @@ def test_answer_of(intent, kind, question, expect, dests):
     assert answer_of(intent, kind, question, dests) == expect
 
 
+def test_confirm_question_matches_alias_and_spaces():
+    """10-24 Realtime 재생: 이름 '사회 복지창구'·질문 '사회복지로…' — 맞는 '그래'가 wrong 으로 세어졌다."""
+    dests = [DestinationData(id="s", name="사회 복지창구", aliases=["사회복지", "장애인"]),
+             DestinationData(id="t", name="화장실")]
+    intent = VicaIntent(intent="navigate", matched_destination_id="s", need_confirm=False)
+    assert answer_of(intent, "confirm", "사회복지로 안내해드릴까요?", dests) == ("yes", "")
+    assert answer_of(intent, "confirm", "사회복지창구로 안내해드릴까요?", dests) == ("yes", "")
+
+
+def test_confirm_like_free_question_is_yes(dests):
+    """LLM 이 지은 확인 질문(kind other)에 확정 navigate 도 yes."""
+    intent = VicaIntent(intent="navigate", matched_destination_id="d1", need_confirm=False)
+    assert answer_of(intent, "other", "장애인 관련 서류는 사회복지로 안내하면 될까요?", dests) == ("yes", "")
+
+
 def test_navigate_on_choice_question_is_choice(dests):
     intent = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=False)
     assert answer_of(intent, "choice", "사회복지와 화장실 중 어디로 갈까요?", dests) == ("choice", "d2")

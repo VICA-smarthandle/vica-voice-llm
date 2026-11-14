@@ -48,6 +48,8 @@ def draft_label(row: dict, destinations: Sequence) -> tuple[str, str, str]:
     if "".join(words) in WAKE_WORDS:
         return "repeat", "", "rule"
     dest = _destination_id(text, destinations)
+    if row.get("kind") == "open" and not dest and (words[0] in NEGATIVES or all(w in AFFIRMATIVES for w in words)):
+        return "unclear", "", "rule"   # 열린 질문에 네/아니요는 답이 아니다 — 되묻기가 맞음
     if words[0] in NEGATIVES:
         return ("destination", dest, "rule") if dest else ("no", "", "rule")
     if all(w in AFFIRMATIVES for w in words):

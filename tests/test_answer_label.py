@@ -32,6 +32,12 @@ def test_draft_label(text, kind, expect, dests):
     assert draft_label({"answer_text": text, "kind": kind}, dests) == expect
 
 
+@pytest.mark.parametrize("text", ["네?", "네", "아니"])
+def test_open_question_yes_no_is_unclear(text, dests):
+    """호출 응답 '네?' 같은 열린 질문에 네/아니요는 답이 아니다 — 되묻기가 맞음."""
+    assert draft_label({"answer_text": text, "kind": "open"}, dests) == ("unclear", "", "rule")
+
+
 def test_draft_label_choice_question_gives_choice(dests):
     assert draft_label({"answer_text": "화장실로 가자", "kind": "choice"}, dests) == ("choice", "d2", "rule")
 
