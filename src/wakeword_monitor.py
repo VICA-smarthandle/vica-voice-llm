@@ -642,6 +642,8 @@ class WakewordMonitor:
         self._verdict_inbox: Optional[tuple[str, Optional[int]]] = None
         self._held: list[tuple[str, object]] = []    # 판정 전에 나온 ("audio"|"text", 값)
         self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
+        # 경비(순찰) 큰 소리 판정 연결(2026-11-14, patrol_sound.PatrolSoundTap). 노드가 붙인다 — None 이면 지금 그대로.
+        self.patrol_tap = None
 
     @property
     def state(self) -> str:
@@ -1626,11 +1628,14 @@ class WakewordMonitor:
         # 끊김 기록(2026-11-11 사용자) — 콜백은 상태 문자열만 넣고, 로그는 감시 스레드가 쓴다.
         status_q: queue.SimpleQueue[str] = queue.SimpleQueue()
         watch = FrameWatch()
+        tap = self.patrol_tap   # 판정 상태(tap.armed — patrolling·patrol_dwell)일 때만 아래 두 곳에서 불린다
 
         def cb(indata, frames, t, status):  # noqa: ANN001
             if status:
                 status_q.put(str(status))
             block = np.frombuffer(indata, dtype=np.int16).reshape(-1, channels)
+            if tap is not None and tap.armed:
+                tap.push(block)   # 원음 ch1~4 제곱 평균 한 번 — 판정·발행은 감시 루프(poll)에서
             q.put(block[:, 0].copy())
 
         def note(line: Optional[str]) -> None:
@@ -1642,6 +1647,8 @@ class WakewordMonitor:
                                channels=channels, dtype="int16",
                                device=device, callback=cb):
             while True:
+                if tap is not None and tap.armed:
+                    tap.poll()
                 while not status_q.empty():
                     note(watch.on_status(status_q.get(), time.monotonic()))
                 try:
