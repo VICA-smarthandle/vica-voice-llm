@@ -75,3 +75,21 @@ def test_rt_line_attaches_reply_and_path():
     [row] = extract_rows(lines)
     assert (row["path"], row["nc"], row["llm_reply"], row["stt"], row["dest_id"]) == (
         "audio", "True", "화장실로 안내해드릴까요?", "화장실.", "d2")
+
+
+def test_voice_node_map_line_wins_over_mission():
+    """검토 I1: 해석기가 실제로 쓴 목록은 음성 노드의 로드 줄이다."""
+    lines = [
+        (100.0, "vica_mission_manager", "목적지 9개 로드: /x/old/destinations.yaml"),
+        (105.0, "vica_llm_intent_node", "목적지 6개 로드(비공개 1개는 접근 불가로): /y/new/destinations.yaml"),
+        (110.0, "vica_tts_node", "재생[response]: 네?"),
+        (115.0, "vica_llm_intent_node", "입력='408호로 가자' -> intent=navigate matched=x safety=normal"),
+    ]
+    [row] = extract_rows(lines)
+    assert row["dest_yaml"] == "/y/new/destinations.yaml"
+
+
+def test_no_map_line_leaves_dest_yaml_empty():
+    lines = [(110.0, "vica_tts_node", "재생[response]: 네?"),
+             (115.0, "vica_llm_intent_node", "입력='화장실' -> intent=navigate matched=x safety=normal")]
+    assert extract_rows(lines)[0]["dest_yaml"] == ""

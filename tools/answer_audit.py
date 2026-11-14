@@ -28,7 +28,8 @@ _RT = re.compile(r"^\[RT\] heard='(.*?)' intent=(\w+) dest=(\S+) nc=(\w+) conf=\
 _AB = re.compile(r"^\[A/B\] .*whisper='(.*)'$")
 _MSAY = re.compile(r"^TTS\[(\w+)\]: (.*)$")
 _MREQ = re.compile(r"^음성 요청 intent=(\w+) dest=(\S+) confirm=(\w+): (\w+) -> (\w+) (.*)$")
-_MAP = re.compile(r"^목적지 \d+개 로드: (\S+)")
+_MAP = re.compile(r"^목적지 \d+개 로드: (\S+)")                        # 미션
+_MAP_VOICE = re.compile(r"^목적지 \d+개 로드\(.*?\): (\S+)")          # 음성 노드 — 해석기가 실제로 쓴 목록
 _PREFIX = re.compile(r"^.*?(도착했습니다|있습니다)\.\s*")
 
 
@@ -64,7 +65,7 @@ def _is_question(text: str) -> bool:
 def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
     """(시각, 노드, 본문) 줄들 → 질문 뒤 대답 행들."""
     ev = sorted(lines, key=lambda e: e[0])
-    plays, msays, mreqs, users, maps = [], [], [], [], []
+    plays, msays, mreqs, users, maps, voice_maps = [], [], [], [], [], []
     last_rt = None
     for t, node, body in ev:
         if node == "vica_tts_node":
@@ -72,6 +73,10 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
             if p and p.group(1) != "ambient":
                 plays.append((t, p.group(2)))
         elif node == "vica_llm_intent_node":
+            vm = _MAP_VOICE.match(body)
+            if vm:
+                voice_maps.append((t, vm.group(1)))
+                continue
             r = _RT.match(body)
             if r:
                 last_rt = (t, r)
@@ -112,7 +117,8 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
         qt, qtext = prev[-1]
         react = next((q for mt, q in mreqs
                       if t + REACTION_WINDOW[0] <= mt <= t + REACTION_WINDOW[1] and q.group(1) == u["intent"]), None)
-        dest_yaml = next((p for mt, p in reversed(maps) if mt <= t), "")
+        dest_yaml = (next((p for mt, p in reversed(voice_maps) if mt <= t), "")
+                     or next((p for mt, p in reversed(maps) if mt <= t), ""))
         stamp = dt.datetime.fromtimestamp(t)
         rows.append({
             "ts": round(t, 3), "date": stamp.strftime("%m-%d"), "time": stamp.strftime("%H:%M:%S"),

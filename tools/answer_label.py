@@ -16,6 +16,7 @@ from typing import Sequence
 
 from src.handle_mode import AFFIRMATIVES, NEGATIVES
 from src.langchain_intent_parser import parse_wait_minutes
+from tools.answer_grade import question_destination_id
 
 WAKE_WORDS = ("비카야", "피카야", "지카야")
 EXTRA_COLUMNS = ["label_answer", "label_value", "label_source", "note"]
@@ -50,6 +51,9 @@ def draft_label(row: dict, destinations: Sequence) -> tuple[str, str, str]:
     dest = _destination_id(text, destinations)
     if row.get("kind") == "open" and not dest and (words[0] in NEGATIVES or all(w in AFFIRMATIVES for w in words)):
         return "unclear", "", "rule"   # 열린 질문에 네/아니요는 답이 아니다 — 되묻기가 맞음
+    if (row.get("kind") in ("confirm", "other") and dest and words[0] not in NEGATIVES
+            and dest == question_destination_id(row.get("question", ""), destinations)):
+        return "yes", "", "rule"       # 확인 질문이 묻는 곳을 다시 말함 = 승낙(채점 answer_of 와 같게)
     if words[0] in NEGATIVES:
         return ("destination", dest, "rule") if dest else ("no", "", "rule")
     if all(w in AFFIRMATIVES for w in words):

@@ -38,6 +38,12 @@ def test_open_question_yes_no_is_unclear(text, dests):
     assert draft_label({"answer_text": text, "kind": "open"}, dests) == ("unclear", "", "rule")
 
 
+def test_answer_naming_the_proposed_place_is_yes(dests):
+    """검토 C2d: '사회복지로 안내해드릴까요?' + '사회복지로 가자.' 의 정답은 yes(채점 쪽과 같게)."""
+    row = {"answer_text": "사회복지로 가자.", "kind": "confirm", "question": "사회복지로 안내해드릴까요?"}
+    assert draft_label(row, dests) == ("yes", "", "rule")
+
+
 def test_draft_label_choice_question_gives_choice(dests):
     assert draft_label({"answer_text": "화장실로 가자", "kind": "choice"}, dests) == ("choice", "d2", "rule")
 

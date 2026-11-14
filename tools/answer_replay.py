@@ -38,6 +38,26 @@ def _quantile(values: list[float], q: float) -> float:
     return s[min(len(s) - 1, int(q * len(s)))]
 
 
+MODELS = {"midm": "midm2-mini", "gpt": "gpt-5.4-mini"}
+
+
+def path_env(path: str, local_rules: bool | None = None) -> dict:
+    """경로별 환경 — 배포와 같은 스위치. midm = ⑬(오프라인, 로컬 규칙 켬), gpt = ⑫ 예비(규칙 끔)."""
+    rules = (path == "midm") if local_rules is None else local_rules
+    env = {"VICA_LLM_FALLBACK_MODEL": "", "VICA_LOCAL_RULES": "1" if rules else "0",
+           "VICA_INTENT_INPUT": "audio" if path == "realtime" else "text"}
+    if path == "midm":
+        env.update(VICA_LLM_PROVIDER="ollama", OLLAMA_HOST="http://localhost:11434", OLLAMA_API_KEY="")
+    elif path == "gpt":
+        env["VICA_LLM_PROVIDER"] = "openai"
+    return env
+
+
+def text_for(row: dict) -> str:
+    """글자 경로의 입력 = 받아쓴 글자(설계 5절). 없으면 로그의 들은 글자."""
+    return (row.get("stt") or "").strip() or (row.get("answer_text") or "").strip()
+
+
 def call_with_retry(fn: Callable, tries: int = 3, wait_s: float = 5.0, retry_on: str = "rate_limit"):
     """요청 한도 초과(오류 글자에 retry_on)만 wait_s 쉬고 다시. 다른 오류는 바로 올린다."""
     for attempt in range(tries):
@@ -99,7 +119,7 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             pred, pv = answer_of(intent, row["kind"], row["question"], dests)
             why = f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
         errors_in_row = 0
-        status = grade(row["label_answer"], row.get("label_value", ""), pred, pv)
+        status = grade(row["label_answer"], row.get("label_value", ""), pred, pv, row.get("kind", ""))
         out_rows.append({**rec, "status": status, "pred": pred, "pred_value": pv, "latency": latency, "why": why})
     by_kind: dict = {}
     for r in out_rows:
@@ -110,17 +130,22 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             "p50": _quantile(lat, 0.5), "p90": _quantile(lat, 0.9), "stopped": stopped}
 
 
-def _report_md(path_name: str, runs: list[dict]) -> str:
-    lines = [f"# 재생 결과 — {path_name} ({dt.datetime.now():%Y-%m-%d %H:%M}, {len(runs)}회)", ""]
+def _report_md(path_name: str, runs: list[dict], setup: str = "") -> str:
+    lines = [f"# 재생 결과 — {path_name} ({dt.datetime.now():%Y-%m-%d %H:%M}, {len(runs)}회)", "",
+             f"설정: {setup}", "",
+             "wrong = 정반대·묻지 않은 동작·조용히 버림(설계 5절). mismatch = 그 밖의 어긋남(따로 셈). "
+             "한계: ros_node 후처리(재청취 기각·quiet_for_mission·identity_answer)와 미션 반응은 재현하지 않는다.", ""]
     for i, run in enumerate(runs, 1):
         c = run["counts"]
         lines.append(f"- {i}회차: ok {c.get('ok', 0)} · reask {c.get('reask', 0)} · **wrong {c.get('wrong', 0)}** · "
+                     f"mismatch {c.get('mismatch', 0)} · "
                      f"skip {c.get('skip', 0)} · error {c.get('error', 0)} · p50 {run['p50']:.2f} s · p90 {run['p90']:.2f} s"
                      + (" · 중단" if run["stopped"] else ""))
     wrong_any = {(r["date"], r["time"], r["answer_text"]) for run in runs for r in run["rows"] if r["status"] == "wrong"}
-    lines += ["", f"한 번이라도 wrong: {len(wrong_any)}행", "", "| kind | ok | reask | wrong | skip | error |", "|---|---|---|---|---|---|"]
+    lines += ["", f"한 번이라도 wrong: {len(wrong_any)}행", "", "| kind | ok | reask | wrong | mismatch | skip | error |", "|---|---|---|---|---|---|---|"]
     for kind, c in sorted(runs[0]["by_kind"].items()):
-        lines.append(f"| {kind} | {c.get('ok', 0)} | {c.get('reask', 0)} | {c.get('wrong', 0)} | {c.get('skip', 0)} | {c.get('error', 0)} |")
+        lines.append(f"| {kind} | {c.get('ok', 0)} | {c.get('reask', 0)} | {c.get('wrong', 0)} | {c.get('mismatch', 0)} | "
+                     f"{c.get('skip', 0)} | {c.get('error', 0)} |")
     lines += ["", "## wrong 행 (1회차)", "", "| 시각 | 질문 | 대답 | 정답 | 예측 | 의도 |", "|---|---|---|---|---|---|"]
     for r in runs[0]["rows"]:
         if r["status"] == "wrong":
@@ -134,18 +159,15 @@ def main() -> None:
     ap.add_argument("--path", choices=("midm", "gpt", "realtime"), required=True)
     ap.add_argument("--labels", required=True)
     ap.add_argument("--rounds", type=int, default=1)
+    ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     args = ap.parse_args()
 
     # src 의 parser 를 부르기 전에 경로를 고정한다 — import 때 .env 를 읽고 설정을 굳힌다(load_dotenv 는 있는 값을 안 덮음).
-    os.environ["VICA_LLM_FALLBACK_MODEL"] = ""
-    os.environ["VICA_INTENT_INPUT"] = "audio" if args.path == "realtime" else "text"
-    model = None
-    if args.path == "midm":
-        os.environ.update(VICA_LLM_PROVIDER="ollama", OLLAMA_HOST="http://localhost:11434", OLLAMA_API_KEY="")
-        model = "midm2-mini"
-    elif args.path == "gpt":
-        os.environ["VICA_LLM_PROVIDER"] = "openai"
-        model = "gpt-5.4-mini"
+    env = path_env(args.path, None if args.local_rules == "auto" else args.local_rules == "on")
+    os.environ.update(env)
+    model = MODELS.get(args.path)
+    setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자)'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -171,7 +193,7 @@ def main() -> None:
     def interpret_text(row: dict):
         dests, history, state = context(row)
         t0 = time.monotonic()
-        intent = parse_intent(row["answer_text"], dests, history=history, robot_state=state, model=model)
+        intent = parse_intent(text_for(row), dests, history=history, robot_state=state, model=model)
         return intent, time.monotonic() - t0
 
     clips = []
@@ -198,6 +220,7 @@ def main() -> None:
         run = replay(rows, interpret, destinations_for)
         c = run["counts"]
         print(f"[{args.path}] {i + 1}회차: ok {c.get('ok', 0)} reask {c.get('reask', 0)} wrong {c.get('wrong', 0)} "
+              f"mismatch {c.get('mismatch', 0)} "
               f"skip {c.get('skip', 0)} error {c.get('error', 0)} p50 {run['p50']:.2f}s p90 {run['p90']:.2f}s", flush=True)
         runs.append(run)
         if run["stopped"]:
@@ -206,7 +229,7 @@ def main() -> None:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
     base = labels_path.parent / f"replay_{args.path}_{stamp}"
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
-    base.with_suffix(".md").write_text(_report_md(args.path, runs), encoding="utf-8")
+    base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")
 
 

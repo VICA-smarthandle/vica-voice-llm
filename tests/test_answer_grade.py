@@ -64,17 +64,41 @@ def test_confirm_question_picks_longest_destination_name():
     assert answer_of(intent, "confirm", "남자 화장실로 안내해드릴까요?", dests) == ("yes", "")
 
 
-@pytest.mark.parametrize("label,lv,pred,pv,out", [
-    ("yes", "", "yes", "", "ok"), ("minutes", "10", "minutes", "10", "ok"),
-    ("minutes", "10", "minutes", "15", "wrong"),
-    ("no", "", "yes", "", "wrong"),                 # 정반대 (11-06 11:32 "아니" → 종료)
-    ("yes", "", "destination", "d1", "wrong"),      # 엉뚱한 출발
-    ("yes", "", "unclear", "", "reask"),
-    ("no", "", "not_for_robot", "", "wrong"),       # 조용히 버림
-    ("not_for_robot", "", "other", "", "wrong"),    # 딴말에 대꾸
-    ("not_for_robot", "", "unclear", "", "reask"),
-    ("repeat", "", "unclear", "", "reask"),
-    ("unclear", "", "unclear", "", "ok"),
+@pytest.mark.parametrize("label,lv,pred,pv,kind,out", [
+    ("yes", "", "yes", "", "", "ok"), ("minutes", "10", "minutes", "10", "", "ok"),
+    ("minutes", "10", "minutes", "15", "", "wrong"),
+    ("no", "", "yes", "", "yesno", "wrong"),          # 정반대 (11-06 11:32 "아니" → 종료)
+    ("yes", "", "no", "", "yesno", "wrong"),          # 정반대
+    ("yes", "", "destination", "d1", "", "wrong"),    # 엉뚱한 출발
+    ("not_for_robot", "", "yes", "", "confirm", "wrong"),   # 딴말에 출발
+    ("yes", "", "unclear", "", "", "reask"),
+    ("no", "", "not_for_robot", "", "", "wrong"),     # 조용히 버림
+    ("not_for_robot", "", "other", "", "", "mismatch"),     # 딴말에 대꾸 — 설계 5절 세 가지 밖
+    ("unclear", "", "yes", "", "open", "mismatch"),   # 열린 질문의 affirm 은 미션이 무시
+    ("destination", "d1", "no", "", "yesno", "mismatch"),
+    ("no", "", "other", "", "yesno", "mismatch"),
+    ("not_for_robot", "", "unclear", "", "", "reask"),
+    ("repeat", "", "unclear", "", "", "reask"),
+    ("unclear", "", "unclear", "", "", "ok"),
 ])
-def test_grade(label, lv, pred, pv, out):
-    assert grade(label, lv, pred, pv) == out
+def test_grade(label, lv, pred, pv, kind, out):
+    assert grade(label, lv, pred, pv, kind) == out
+
+
+def test_change_question_uses_the_new_destination():
+    """검토 C2a: 바꾸기 질문엔 목적지가 둘 — 끝의 '…로 바꿀까요?' 쪽이 질문의 목적지."""
+    dests = [DestinationData(id="s", name="사회 복지창구"), DestinationData(id="w", name="여자 화장실")]
+    intent = VicaIntent(intent="navigate", matched_destination_id="w", need_confirm=False)
+    q = "지금 사회 복지창구로 가는 중인데, 여자 화장실로 바꿀까요?"
+    assert answer_of(intent, "other", q, dests) == ("yes", "")
+
+
+def test_confirm_answer_with_need_confirm_still_yes(dests):
+    """검토 C2b: 확인 중 같은 곳 재제안은 미션이 승낙으로 받는다(mission_logic on_confirm_answer)."""
+    intent = VicaIntent(intent="navigate", matched_destination_id="d1", need_confirm=True)
+    assert answer_of(intent, "confirm", "사회복지로 안내해드릴까요?", dests) == ("yes", "")
+
+
+def test_wait_on_end_question_is_no(dests):
+    """검토 I4: '여기까지 안내를 마칠까요?' + '기다려줘' = 안 마침."""
+    assert answer_of(VicaIntent(intent="wait"), "yesno", "여기까지 안내를 마칠까요?", dests) == ("no", "")
