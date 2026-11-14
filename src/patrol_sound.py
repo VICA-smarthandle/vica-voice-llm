@@ -4,8 +4,13 @@
 (~/vica_data/patrol_tests/2026-11-11_sound/README.txt — 주행 617 s 동안 67 dB·0.5 s 는 0건).
 
   크기(dB) = 20*log10(rms/32768) + VICA_PATROL_DB_OFFSET(기본 107.5 — 폰 소음계 60 dB 에 맞춘 값)
-  patrolling 67 dB · patrol_dwell 은 그 상태가 1.0 s 이어진 뒤 53 dB(그 전에는 67 dB) · 그 밖 상태는 판정 안 함
-  기준 이상이 0.5 s 이어지면 sound 1번, 그 뒤 3 s 쉼 · 로봇이 말하는 동안은 판정하지 않고 이어진 시간도 0
+  기준 65 dB(주행·지점 정지 같은 값) 이상이 0.5 s 이어지면 sound 1번, 그 뒤 3 s 쉼 · 그 밖 상태는 판정 안 함
+  로봇이 말하는 동안은 판정하지 않고 이어진 시간도 0
+
+2026-11-14 실기 뒤 사용자 결정: 종전 "주행 67 dB · 정지 1.0 s 뒤 53 dB · 0.5 s 지속" → "65 dB · 0.5 s 지속".
+주행·정지 기준을 따로 두는 틀(VICA_PATROL_DB_MOVING·VICA_PATROL_DB_STOPPED, 정지는 1.0 s 뒤부터)은 그대로 두고
+기본값만 같게 했다. 지속을 0.3 s 로 줄이는 안은 버렸다 — 11-11 실측 주행 617 s 를 65 dB · 0.3 s 로 다시 돌리면
+sound 가 5건(81.0 · 67.2 · 68.6 · 69.2 · 68.4 dB — 로봇 주행 소음), 0.5 s 면 같은 자료에서 0건이다.
 
 세 군데에서 불린다. 판정 상태(patrolling·patrol_dwell)가 아니면 armed 가 False 라 ①②는 불리지 않는다.
   ① 오디오 콜백(wakeword_monitor.run 의 cb) → push: 원음 채널 제곱 평균 한 번
@@ -42,10 +47,10 @@ STATE_STALE_SEC = 3.0               # 미션 상태(1 Hz)가 이만큼 끊기면
 @dataclass(frozen=True)
 class PatrolSoundConfig:
     db_offset: float = 107.5        # VICA_PATROL_DB_OFFSET
-    db_moving: float = 67.0         # VICA_PATROL_DB_MOVING — patrolling
-    db_stopped: float = 53.0        # VICA_PATROL_DB_STOPPED — patrol_dwell 1.0 s 뒤
-    settle_sec: float = 1.0         # patrol_dwell 이 이만큼 이어진 뒤 낮은 기준
-    hold_sec: float = 0.5           # 기준 이상이 이만큼 이어지면 사건
+    db_moving: float = 65.0         # VICA_PATROL_DB_MOVING — patrolling (11-14 사용자 결정 65, 종전 67)
+    db_stopped: float = 65.0        # VICA_PATROL_DB_STOPPED — patrol_dwell 1.0 s 뒤 (11-14 사용자 결정 65, 종전 53)
+    settle_sec: float = 1.0         # patrol_dwell 이 이만큼 이어진 뒤 정지 기준(지금은 두 기준이 같다)
+    hold_sec: float = 0.5           # 기준 이상이 이만큼 이어지면 사건 (0.3 s 는 주행 소음에 5건 — 11-14 사용자 결정 0.5 유지)
     rest_sec: float = 3.0           # 사건 뒤 쉬는 시간
 
 

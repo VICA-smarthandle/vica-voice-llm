@@ -28,6 +28,8 @@ from src.wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor
 ROOT = Path(__file__).resolve().parents[1]
 DT = 0.08
 OTHER_STATES = ("", "idle", "navigating", "waiting", "approaching", "estopped")
+# 주행·정지 기준이 다른 종전 값(11-14 까지). 두 기준을 가르는 틀은 남아 있어 이 값으로 계속 시험한다.
+OLD = PatrolSoundConfig(db_moving=67.0, db_stopped=53.0, hold_sec=0.5)
 
 
 def feed(det, db, n, t0=0.0, dt=DT):
@@ -41,7 +43,7 @@ def feed(det, db, n, t0=0.0, dt=DT):
 
 
 def moving():
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state("patrolling", 0.0)
     return det
 
@@ -61,8 +63,8 @@ def test_level_matches_the_phone_calibration():
 
 
 def test_half_second_is_seven_blocks_of_80ms():
-    assert PatrolSoundDetector().hold_blocks == 7                 # 6개 = 0.48 s 는 모자란다
-    assert PatrolSoundDetector(block_sec=0.1).hold_blocks == 5    # 실측 자료(0.1 s 블록)
+    assert PatrolSoundDetector(OLD).hold_blocks == 7                 # 6개 = 0.48 s 는 모자란다
+    assert PatrolSoundDetector(OLD, block_sec=0.1).hold_blocks == 5    # 실측 자료(0.1 s 블록)
 
 
 def test_moving_fires_once_after_half_second_over_67():
@@ -89,14 +91,14 @@ def test_a_dip_restarts_the_half_second():
 
 @pytest.mark.parametrize("state", OTHER_STATES + ("patrol_alarm", "patrol_light", "patrol_paused"))
 def test_states_without_judgement_never_fire(state):
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state(state, 0.0)
     assert det.threshold(5.0) is None
     assert feed(det, 100.0, 100)[0] == []
 
 
 def test_dwell_uses_67_for_the_first_second_then_53():
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state("patrol_dwell", 10.0)
     assert det.threshold(10.0) == 67.0 and det.threshold(10.99) == 67.0
     assert det.threshold(11.0) == 53.0
@@ -108,13 +110,13 @@ def test_dwell_uses_67_for_the_first_second_then_53():
 
 
 def test_dwell_below_53_is_quiet():
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state("patrol_dwell", 0.0)
     assert feed(det, 52.9, 100, 2.0)[0] == []
 
 
 def test_loud_sound_across_the_dwell_settle_keeps_counting():
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state("patrol_dwell", 0.0)
     events, t = feed(det, 70.0, 6, 0.76)           # 0.76·0.84·0.92 는 67 기준, 1.00 부터 53 기준
     assert events == []
@@ -122,7 +124,7 @@ def test_loud_sound_across_the_dwell_settle_keeps_counting():
 
 
 def test_repeated_state_message_does_not_restart_the_dwell_clock():
-    det = PatrolSoundDetector()
+    det = PatrolSoundDetector(OLD)
     det.set_state("patrol_dwell", 0.0)
     det.set_state("patrol_dwell", 1.0)             # /vica/robot_state 1 Hz 반복
     det.set_state("patrol_dwell", 2.0)
@@ -172,8 +174,22 @@ def test_config_from_env_reads_three_values_and_ignores_garbage():
     bad = config_from_env({"VICA_PATROL_DB_OFFSET": "", "VICA_PATROL_DB_MOVING": "크게",
                            "VICA_PATROL_DB_STOPPED": "nan"})
     assert bad == PatrolSoundConfig()
+    # 2026-11-14 실기 뒤 사용자 결정: 65 dB(주행·정지 같은 값) · 0.5 s 지속.
     assert (PatrolSoundConfig().db_offset, PatrolSoundConfig().db_moving,
-            PatrolSoundConfig().db_stopped) == (107.5, 67.0, 53.0)
+            PatrolSoundConfig().db_stopped, PatrolSoundConfig().hold_sec) == (107.5, 65.0, 65.0, 0.5)
+
+
+def test_default_rule_is_65db_for_half_a_second_moving_or_stopped():
+    assert PatrolSoundDetector(PatrolSoundConfig()).hold_blocks == 7          # 80 ms × 7 = 0.56 s
+    assert PatrolSoundDetector(PatrolSoundConfig(), block_sec=0.1).hold_blocks == 5
+    for state in ("patrolling", "patrol_dwell"):
+        det = PatrolSoundDetector(PatrolSoundConfig())
+        det.set_state(state, 0.0)
+        assert det.threshold(0.0) == 65.0 and det.threshold(5.0) == 65.0
+        assert feed(det, 64.9, 50, 2.0)[0] == []
+        events, t = feed(det, 65.0, 6, 10.0)
+        assert events == []
+        assert det.feed_db(66.0, t) == (66.0, 65.0)
 
 
 # ---- 2. 연결 ------------------------------------------------------------------------------
@@ -201,7 +217,7 @@ def block(raw_db, ch0=0, ch5=0):
 
 def make_tap(**kwargs):
     out, logs, clock = [], [], Clock()
-    tap = PatrolSoundTap(emit=out.append, cfg=PatrolSoundConfig(), log=logs.append, clock=clock,
+    tap = PatrolSoundTap(emit=out.append, cfg=OLD, log=logs.append, clock=clock,
                          wall=lambda: 1763100000.1234, **kwargs)
     return tap, out, logs, clock
 
@@ -384,7 +400,7 @@ def test_publish_failure_does_not_escape():
     def broken(_data):
         raise RuntimeError("publisher gone")
 
-    tap = PatrolSoundTap(emit=broken, cfg=PatrolSoundConfig(), log=logs.append, clock=clock)
+    tap = PatrolSoundTap(emit=broken, cfg=OLD, log=logs.append, clock=clock)
     tap.set_state("patrolling")
     for _ in range(3):
         push(tap, clock, block(70.0), 7)
@@ -407,7 +423,7 @@ def test_tap_reads_thresholds_from_env_by_default(monkeypatch):
     monkeypatch.delenv("VICA_PATROL_DB_STOPPED", raising=False)
     monkeypatch.delenv("VICA_PATROL_DB_OFFSET", raising=False)
     tap = PatrolSoundTap(emit=lambda s: None)
-    assert (tap.cfg.db_moving, tap.cfg.db_stopped, tap.cfg.db_offset) == (70.0, 53.0, 107.5)
+    assert (tap.cfg.db_moving, tap.cfg.db_stopped, tap.cfg.db_offset) == (70.0, 65.0, 107.5)
 
 
 # ---- 3. 감시 루프 배선 ---------------------------------------------------------------------
@@ -519,7 +535,7 @@ def test_armed_tap_gets_every_block_and_a_poll_per_loop(monkeypatch):
 @pytest.mark.parametrize("state", ["navigating", "patrol_alarm", "patrol_paused"])
 def test_real_tap_outside_judged_states_does_nothing_in_the_loop(monkeypatch, state):
     out = []
-    tap = PatrolSoundTap(emit=out.append, cfg=PatrolSoundConfig())
+    tap = PatrolSoundTap(emit=out.append, cfg=OLD)
     tap.set_state(state)
 
     def forbidden(*_args):
@@ -532,7 +548,7 @@ def test_real_tap_outside_judged_states_does_nothing_in_the_loop(monkeypatch, st
 
 def test_real_tap_in_patrol_reports_a_loud_sound_through_the_loop(monkeypatch):
     out = []
-    tap = PatrolSoundTap(emit=out.append, cfg=PatrolSoundConfig())
+    tap = PatrolSoundTap(emit=out.append, cfg=OLD)
     tap.set_state("patrolling")
     frames = run_monitor(monkeypatch, mic_blocks(8, raw_db=75.0), tap)
     assert len(frames) == 8
@@ -626,7 +642,7 @@ def _load(levels, run):
 
 def _replay(sound, state_at, cfg=None):
     """(시각, 사건) 목록 — 자료가 0.1 s 블록이라 5개 연속이 0.5 s 다."""
-    det = PatrolSoundDetector(cfg or PatrolSoundConfig(), block_sec=0.1)
+    det = PatrolSoundDetector(cfg or OLD, block_sec=0.1)
     events = []
     for t, db in sound:
         det.set_state(state_at(t), t)
@@ -647,13 +663,25 @@ def test_measured_drive_gives_no_event_at_67db_for_half_a_second(levels, run, dr
     assert events == []
 
 
+@pytest.mark.parametrize("levels, run, peaks", [RUNS[0] + ([81.0],), RUNS[1] + ([67.2, 68.6, 69.2, 68.4],)])
+def test_measured_drive_is_quiet_at_65db_for_half_a_second_but_not_for_point_three(levels, run, peaks):
+    """65 dB · 0.5 s(11-14 사용자 결정)는 11-11 주행 617 s 에서 0건. 지속을 0.3 s 로 줄이면 5건 —
+    로봇 주행 소음이다(그래서 0.3 s 안은 버렸다). 기준을 바꿀 때 이 숫자가 어떻게 달라지는지 보라고 고정해 둔다."""
+    sound, track = _load(levels, run)
+    start, end = track[0][0], track[-1][0]
+    state_at = lambda t: "patrolling" if start <= t <= end else "idle"   # noqa: E731
+    assert _replay(sound, state_at, PatrolSoundConfig()) == []
+    events = _replay(sound, state_at, PatrolSoundConfig(hold_sec=0.3))
+    assert [round(event.db, 1) for _, event in events] == peaks
+
+
 @pytest.mark.parametrize("levels, run, peak", [RUNS[0] + (81.0,), RUNS[1] + (69.2,)])
 def test_measured_drive_would_alarm_with_a_shorter_hold(levels, run, peak):
     """지속을 0.3 s 로 줄이면 주행마다 1건(README 의 81.0·69.2 dB) — 0.5 s 가 필요한 근거이자 회귀의 대조군."""
     sound, track = _load(levels, run)
     start, end = track[0][0], track[-1][0]
     events = _replay(sound, lambda t: "patrolling" if start <= t <= end else "idle",
-                     PatrolSoundConfig(hold_sec=0.3))
+                     PatrolSoundConfig(db_moving=67.0, db_stopped=53.0, hold_sec=0.3))
     assert [event for _, event in events] == [(peak, 67.0)]
 
 
