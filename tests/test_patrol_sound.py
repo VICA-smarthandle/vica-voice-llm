@@ -22,7 +22,7 @@ from src import mission_phrases as mp
 from src import patrol_sound as ps
 from src.ment_cache import ASSETS_DIR, MentCache
 from src.patrol_sound import (PatrolSoundConfig, PatrolSoundDetector, PatrolSoundTap, config_from_env,
-                              level_db)
+                              level_db, sound_watched)
 from src.wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -237,6 +237,56 @@ def test_not_armed_in_any_other_state(state):
     tap.set_state("patrolling")
     tap.set_state(state)
     assert tap.armed is False
+
+
+# ---- 감시 항목 '큰 소리' 켜고 끄기(2026-11-14 사용자 요청) ----------------------------
+
+
+def test_watch_message_is_read_as_sound_on_or_off():
+    assert sound_watched('{"off": []}') is True
+    assert sound_watched('{"off": ["light", "intruder"]}') is True
+    assert sound_watched('{"off": ["sound"]}') is False
+    for bad in ("", "nope", "[]", "{}", '{"off": "sound"}', "null"):
+        assert sound_watched(bad) is None
+
+
+@pytest.mark.parametrize("state", ["patrolling", "patrol_dwell"])
+def test_sound_switched_off_is_never_armed(state):
+    tap, out, logs, clock = make_tap()
+    tap.set_watch(False)
+    tap.set_state(state)
+    assert tap.armed is False and logs == []          # 켠 적이 없으니 '끔' 줄도 없다
+    tap.set_state("idle")
+    tap.set_state(state)
+    assert tap.armed is False
+
+
+def test_switching_sound_off_during_a_patrol_disarms_at_once_and_on_rearms():
+    tap, out, logs, clock = make_tap()
+    tap.set_state("patrolling")
+    push(tap, clock, block(75.0), 3)
+    tap.set_watch(False)
+    assert tap.armed is False and logs[-1] == "[경비] 소리 판정 끔"
+    tap.set_watch(True)
+    assert tap.armed is True
+    push(tap, clock, block(75.0), 4)                  # 끄기 전 3블록은 버렸다 — 7블록이 안 된다
+    tap.poll()
+    assert out == []
+    push(tap, clock, block(75.0), 3)
+    tap.poll()
+    assert kinds(out) == ["sound"]
+
+
+def test_the_same_watch_value_again_does_nothing():
+    tap, out, logs, clock = make_tap()
+    tap.set_state("patrolling")
+    push(tap, clock, block(75.0), 3)
+    lines = len(logs)
+    tap.set_watch(True)
+    assert tap.armed is True and len(logs) == lines
+    push(tap, clock, block(75.0), 4)
+    tap.poll()
+    assert kinds(out) == ["sound"]                    # 쌓인 블록을 비우지 않았다
 
 
 def test_sound_event_json_is_the_contract():
@@ -498,7 +548,11 @@ def test_node_connects_the_tap_with_one_new_publisher():
     # 감시 스레드는 run() 에 들어갈 때 tap 을 한 번만 읽는다 — 스레드를 띄우기 전에 붙여야 한다.
     assert src.index("self._monitor.patrol_tap = self._patrol") < src.index("self._thread.start()")
     patrol_lines = [line for line in src.splitlines() if "patrol" in line.lower()]
-    assert not any("create_subscription" in line or "create_timer" in line for line in patrol_lines)
+    assert not any("create_timer" in line for line in patrol_lines)
+    # 순찰로 늘어난 구독은 감시 항목 알림 하나다(마지막 값 보관이라 순찰 사이에는 오지 않는다).
+    assert src.count('"/vica/patrol/watch"') == 1
+    assert 'String, "/vica/patrol/watch", self._on_patrol_watch,' in src
+    assert "durability=DurabilityPolicy.TRANSIENT_LOCAL))" in src.split('"/vica/patrol/watch"')[1][:200]
 
 
 # ---- 문장 2개 -----------------------------------------------------------------------------

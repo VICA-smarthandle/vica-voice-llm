@@ -49,7 +49,7 @@ from vica_interfaces.msg import RobotState as RobotStateMsg
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
-from .patrol_sound import PatrolSoundTap
+from .patrol_sound import PatrolSoundTap, sound_watched
 from .realtime_intent import float32_to_pcm16
 from .speaker_follow import SpeakerFollow, spk_config_from_env
 from .speaker_link import verdict_label
@@ -313,6 +313,10 @@ class WakewordNode(Node):
         self._patrol = PatrolSoundTap(
             emit=lambda data: self._pub_patrol.publish(String(data=data)), log=self.get_logger().info)
         self._monitor.patrol_tap = self._patrol   # 감시 스레드를 띄우기 전에 붙인다
+        # 관리자가 앱에서 '큰 소리'를 꺼 뒀으면 순찰 중에도 재지 않는다(미션이 마지막 값 보관으로 알린다, 못 받으면 켬).
+        self.create_subscription(
+            String, "/vica/patrol/watch", self._on_patrol_watch,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._monitor_error: "BaseException | None" = None
@@ -445,6 +449,11 @@ class WakewordNode(Node):
             f"[화자] {verdict.verdict} 점수 {verdict.score:.2f}/{verdict.joined:.2f} {verdict.unit} "
             f"{verdict.speech_sec:.1f}s 방향 {verdict.doa if verdict.doa is not None else '-'} {verdict.reason}"
             + (" — 버림" if verdict.drop else ""))
+
+    def _on_patrol_watch(self, msg: String) -> None:
+        watched = sound_watched(msg.data)
+        if watched is not None:
+            self._patrol.set_watch(watched)
 
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 '비카야'를 호출로 듣지 않는다(2026-10-09

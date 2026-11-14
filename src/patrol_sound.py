@@ -10,7 +10,9 @@
 세 군데에서 불린다. 판정 상태(patrolling·patrol_dwell)가 아니면 armed 가 False 라 ①②는 불리지 않는다.
   ① 오디오 콜백(wakeword_monitor.run 의 cb) → push: 원음 채널 제곱 평균 한 번
   ② 감시 루프(같은 run) → poll: 판정, sound 발행. 미션 상태가 3 s 끊기면 스스로 끈다
-  ③ ROS 콜백(ros_wakeword_node) → set_state·set_speaking: 값이 바뀔 때만 일한다
+  ③ ROS 콜백(ros_wakeword_node) → set_state·set_speaking·set_watch: 값이 바뀔 때만 일한다
+
+관리자가 앱에서 '큰 소리'를 꺼 두면(/vica/patrol/watch, 2026-11-14) 순찰 중에도 armed 가 False 다 — 재지도 않는다.
 """
 from __future__ import annotations
 
@@ -64,6 +66,15 @@ def config_from_env(env: Optional[Mapping[str, str]] = None) -> PatrolSoundConfi
         db_moving=one("VICA_PATROL_DB_MOVING", base.db_moving),
         db_stopped=one("VICA_PATROL_DB_STOPPED", base.db_stopped),
     )
+
+
+def sound_watched(text: str) -> Optional[bool]:
+    """/vica/patrol/watch 의 JSON({"off": ["sound"]}) → 큰 소리를 보는가. 못 읽으면 None(지금 값을 그대로 둔다)."""
+    try:
+        off = json.loads(text).get("off")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return "sound" not in off if isinstance(off, list) else None
 
 
 def level_db(mean_square: float, offset: float) -> float:
@@ -144,7 +155,8 @@ class PatrolSoundTap:
                  log: Optional[Callable[[str], None]] = None, block_sec: float = BLOCK_SEC,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
         self.cfg = cfg or config_from_env()
-        self.armed = False           # 판정 상태(patrolling·patrol_dwell)인가 — False 면 콜백·감시 루프가 부르지 않는다
+        self.armed = False           # 판정 상태(patrolling·patrol_dwell)이고 큰 소리를 보는가 — False 면 콜백·감시 루프가 부르지 않는다
+        self._watch = True           # 관리자가 '큰 소리'를 켜 뒀나. 미션 알림을 못 받았으면 켬이다
         self._det = PatrolSoundDetector(self.cfg, block_sec)
         self._emit = emit
         self._log = log or (lambda line: None)
@@ -162,14 +174,25 @@ class PatrolSoundTap:
         self._heard_at = now
         if state == self._det.state:
             return
-        armed = state in JUDGED_STATES
+        self._det.set_state(state, now)
+        self._arm()
+
+    def set_watch(self, watched: bool) -> None:
+        """/vica/patrol/watch — 관리자가 '큰 소리'를 꺼 뒀으면 순찰 중에도 재지 않는다. 값이 바뀔 때만 일한다."""
+        watched = bool(watched)
+        if watched == self._watch:
+            return
+        self._watch = watched
+        self._arm()
+
+    def _arm(self) -> None:
+        armed = self._watch and self._det.state in JUDGED_STATES
         if armed and not self.armed:
             self._values.clear()
             self._log(f"[경비] 소리 판정 켬 — 주행 {self.cfg.db_moving:g} dB·정지 {self.cfg.db_stopped:g} dB"
                       f"({self.cfg.settle_sec:g} s 뒤)·{self.cfg.hold_sec:g} s 지속·더할 값 {self.cfg.db_offset:g}")
         elif self.armed and not armed:
             self._log("[경비] 소리 판정 끔")
-        self._det.set_state(state, now)
         self.armed = armed
 
     def set_speaking(self, speaking: bool) -> None:
