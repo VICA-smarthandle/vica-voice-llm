@@ -180,7 +180,7 @@ class TestDialogWords:
         states = {s.value for s in ml.State} | {ml.DIALOG_GRIP_WAIT, ml.DIALOG_PAUSED_HANDLE}
         missing = states - set(DIALOG_KO)
         assert not missing, f"DIALOG_KO 에 없는 미션 상태: {sorted(missing)}"
-        assert len(states) == 20
+        assert len(states) == 25   # 경비(순찰) 상태 5개가 더해졌다(2026-11-14, patrolling·patrol_dwell·patrol_alarm·patrol_light·patrol_paused)
 
 
 class TestBaked:
