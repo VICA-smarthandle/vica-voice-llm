@@ -32,6 +32,10 @@ def test_draft_label(text, kind, expect, dests):
     assert draft_label({"answer_text": text, "kind": kind}, dests) == expect
 
 
+def test_draft_label_choice_question_gives_choice(dests):
+    assert draft_label({"answer_text": "화장실로 가자", "kind": "choice"}, dests) == ("choice", "d2", "rule")
+
+
 def test_draft_label_without_destination_file_skips_destination_rule():
     assert draft_label({"answer_text": "사회복지로 가자", "kind": "open"}, []) == ("", "", "todo")
 

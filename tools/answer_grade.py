@@ -27,7 +27,7 @@ def answer_of(intent, kind: str, question: str, destinations: Sequence) -> tuple
         dest = intent.matched_destination_id or ""
         if kind == "confirm" and not intent.need_confirm and dest and dest == _question_destination_id(question, destinations):
             return "yes", ""
-        return "destination", dest
+        return ("choice", dest) if kind == "choice" else ("destination", dest)
     if i == "wait":
         if kind == "minutes" and (intent.wait_minutes or -1) > 0:
             return "minutes", str(intent.wait_minutes)

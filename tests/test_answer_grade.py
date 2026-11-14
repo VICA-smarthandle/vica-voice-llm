@@ -34,6 +34,11 @@ def test_answer_of(intent, kind, question, expect, dests):
     assert answer_of(intent, kind, question, dests) == expect
 
 
+def test_navigate_on_choice_question_is_choice(dests):
+    intent = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=False)
+    assert answer_of(intent, "choice", "사회복지와 화장실 중 어디로 갈까요?", dests) == ("choice", "d2")
+
+
 def test_wait_without_minutes_on_arrival_question_is_yes(dests):
     assert answer_of(VicaIntent(intent="wait"), "yesno", "여기서 대기할까요?", dests) == ("yes", "")
 

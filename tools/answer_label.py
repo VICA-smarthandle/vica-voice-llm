@@ -57,7 +57,7 @@ def draft_label(row: dict, destinations: Sequence) -> tuple[str, str, str]:
         if minutes:
             return "minutes", str(minutes), "rule"
     if dest:
-        return "destination", dest, "rule"
+        return ("choice" if row.get("kind") == "choice" else "destination"), dest, "rule"
     return "", "", "todo"
 
 
