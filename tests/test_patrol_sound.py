@@ -571,13 +571,17 @@ def test_node_connects_the_tap_with_one_new_publisher():
     assert "durability=DurabilityPolicy.TRANSIENT_LOCAL))" in src.split('"/vica/patrol/watch"')[1][:200]
 
 
-# ---- 문장 2개 -----------------------------------------------------------------------------
+# ---- 문장 4개(경보 2 + 시작·종료 안내 2, 2026-11-16) ---------------------------------------
 
 def test_patrol_sentences_are_the_spec_text():
     assert mp.PATROL_INTRUDER == "침입자 발생"
     assert mp.PATROL_LIGHT == "불 켜짐 감지"
+    assert mp.PATROL_STARTED == "경비 모드를 시작합니다."
+    assert mp.PATROL_ENDED == "경비 모드를 종료합니다."
     assert mp.PATROL_MENTS == {"mission_msg_patrol_intruder": "침입자 발생",
-                               "mission_msg_patrol_light": "불 켜짐 감지"}
+                               "mission_msg_patrol_light": "불 켜짐 감지",
+                               "mission_msg_patrol_started": "경비 모드를 시작합니다.",
+                               "mission_msg_patrol_ended": "경비 모드를 종료합니다."}
 
 
 def test_patrol_sentences_are_in_the_recording_list_with_the_same_text():
@@ -610,11 +614,14 @@ def test_patrol_sentences_match_the_mission_text(mission_pkg):
     path = mission_pkg / "vica_mission_manager" / "mission_logic.py"
     if not path.exists():
         pytest.skip(f"미션 파일 없음: {path}")
-    found = dict(re.findall(r'^(MSG_PATROL_(?:INTRUDER|LIGHT))\s*=\s*"([^"]*)"',
+    found = dict(re.findall(r'^(MSG_PATROL_(?:INTRUDER|LIGHT|STARTED|ENDED))\s*=\s*"([^"]*)"',
                             path.read_text(encoding="utf-8"), flags=re.M))
     if len(found) < 2:
         pytest.skip(f"미션에 MSG_PATROL_INTRUDER·MSG_PATROL_LIGHT 가 아직 없다: {path}")
-    assert found == {"MSG_PATROL_INTRUDER": mp.PATROL_INTRUDER, "MSG_PATROL_LIGHT": mp.PATROL_LIGHT}
+    want = {"MSG_PATROL_INTRUDER": mp.PATROL_INTRUDER, "MSG_PATROL_LIGHT": mp.PATROL_LIGHT,
+            "MSG_PATROL_STARTED": mp.PATROL_STARTED, "MSG_PATROL_ENDED": mp.PATROL_ENDED}
+    # 시작·종료 안내(2026-11-16)가 아직 없는 미션 사본이면 있는 것만 맞춰 본다.
+    assert found == {name: want[name] for name in found}
 
 
 # ---- 4. 11-11 실측 자료 회귀 ---------------------------------------------------------------

@@ -76,12 +76,17 @@ HELP_SENTENCES = (
 # 경비(순찰) 경보(2026-11-14) — 미션 MSG_PATROL_INTRUDER·MSG_PATROL_LIGHT 사본. 확인 전까지 3초·10초마다 되풀이한다.
 PATROL_INTRUDER = "침입자 발생"
 PATROL_LIGHT = "불 켜짐 감지"
+# 관리자가 경비를 시작·종료했을 때 한 번(2026-11-16 사용자 요청) — 미션 MSG_PATROL_STARTED·MSG_PATROL_ENDED 사본.
+PATROL_STARTED = "경비 모드를 시작합니다."
+PATROL_ENDED = "경비 모드를 종료합니다."
 # 녹음 파일 이름(확장자 없음) → 문장. wav 는 assets/baked 에 구워 뒀다(사용자가 고른 남성 목소리).
-# /assets/ 가 gitignore 라 커밋할 때 두 wav 는 git add -f 로 올린다.
+# /assets/ 가 gitignore 라 커밋할 때 wav 는 git add -f 로 올린다.
 # baked_mission_ments 에는 넣지 않는다 — bake_one_cv.py --mission --force 가 여성(F2) 목소리로 덮어쓴다.
 PATROL_MENTS = {
     "mission_msg_patrol_intruder": PATROL_INTRUDER,
     "mission_msg_patrol_light": PATROL_LIGHT,
+    "mission_msg_patrol_started": PATROL_STARTED,
+    "mission_msg_patrol_ended": PATROL_ENDED,
 }
 
 # 숫자로 끝나는 이름을 읽을 때 마지막 숫자의 받침(영·일·삼·육·칠·팔 있음, 이·사·오·구 없음).
