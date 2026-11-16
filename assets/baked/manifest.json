@@ -125,5 +125,7 @@
  "mission_msg_obstacle_stop.wav": "앞에 장애물이 있어 정지합니다.",
  "mission_msg_tipped.wav": "비카가 넘어져 관리자를 호출했습니다. 지나가실 때 주의하세요.",
  "mission_msg_patrol_intruder.wav": "침입자 발생",
- "mission_msg_patrol_light.wav": "불 켜짐 감지"
+ "mission_msg_patrol_light.wav": "불 켜짐 감지",
+ "mission_msg_patrol_started.wav": "경비 모드를 시작합니다.",
+ "mission_msg_patrol_ended.wav": "경비 모드를 종료합니다."
 }
