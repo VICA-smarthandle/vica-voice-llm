@@ -28,11 +28,16 @@ import rclpy
 from langchain_core.messages import AIMessage, HumanMessage
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String, UInt8MultiArray
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
+try:        # 질문 기록(2026-11-17). 옛 vica_interfaces 설치본이면 구독을 건너뛴다
+    from vica_interfaces.msg import VicaQuestion as VicaQuestionMsg
+except ImportError:
+    VicaQuestionMsg = None
 
-from . import local_rules
+from . import local_rules, question_record
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
@@ -145,6 +150,15 @@ class LlmIntentNode(Node):
         self._robot_recent: list = []
         self._last_robot_line = (0.0, "")   # (시각, 대기 알림 뺀 마지막 로봇 말) — 본인 확인 질문 판단용
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
+        # 미션이 낸 질문 기록(설계 2026-11-14 4.1) — 2단계: 발화마다 로그로만 남긴다. 해석에는 쓰지 않는다.
+        self._question = None
+        if VicaQuestionMsg is not None:
+            self.create_subscription(
+                VicaQuestionMsg, "/vica/question", self._on_question,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        else:
+            self.get_logger().info("질문 기록 없음(옛 vica_interfaces) — 구독 안 함")
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
         self.get_logger().info(
             f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
@@ -362,6 +376,11 @@ class LlmIntentNode(Node):
         self._last_text_publish_t = time.time()
         self._last_text_publish_intent = intent.intent
 
+    def _on_question(self, msg) -> None:
+        """미션의 질문 기록. id 가 빈 기록은 열린 질문 없음."""
+        self._question = question_record.from_fields(
+            msg.id, msg.kind, msg.text, msg.option_ids, msg.opened_at.sec + msg.opened_at.nanosec / 1e9)
+
     def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
         """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리).
 
@@ -371,6 +390,7 @@ class LlmIntentNode(Node):
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
         intent = reask_held_resume(intent, self._history.messages)
+        question = self._question          # 미션은 의도를 받자마자 질문을 닫는다 — 내보내기 전에 잡아 둔다
         spk = self._spk_link.take(text, time.time())
         if spk is None and self._audio_spk is not None:
             spk, self._audio_spk = self._audio_spk, None
@@ -446,6 +466,7 @@ class LlmIntentNode(Node):
             f"입력='{text}' -> intent={intent.intent} "
             f"matched={intent.matched_destination_id} safety={intent.safety_flag}"
         )
+        self.get_logger().info(question_record.log_line(question, time.time()))
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
