@@ -132,7 +132,8 @@ class LlmIntentNode(Node):
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         # 질문("~할까요?", 되묻기)을 말할 때 true — 웨이크워드 노드가 그 질문 TTS 가
         # 끝나는 순간 재청취 창을 열어, 사용자가 "비카야" 재호출 없이 "응"으로
-        # 답할 수 있게 한다.
+        # 답할 수 있게 한다. 질문 넘김이 꺼졌을 때(옛 설치본)만 이 노드가 낸다 —
+        # 켜지면 질문을 말하는 미션이 함께 낸다(3-가).
         self._listen_pub = self.create_publisher(Bool, "/vica/listen_request", 10)
         # LLM 해석 중 "생각 중" 배경 운율 스위치 — TTS 노드가 반복 재생한다
         # (2026-09-01 사용자 결정: "확인할게요" 말 대신 운율 루프).
