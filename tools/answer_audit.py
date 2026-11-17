@@ -33,7 +33,7 @@ _MAP = re.compile(r"^목적지 \d+개 로드: (\S+)")                        # �
 _MAP_VOICE = re.compile(r"^목적지 \d+개 로드\(.*?\): (\S+)")          # 음성 노드 — 해석기가 실제로 쓴 목록
 _PREFIX = re.compile(r"^.*?(도착했습니다|있습니다)\.\s*")
 _QVOICE = re.compile(r"^\[질문\] id=(\S+) kind=(\w+) 나이=([\d.]+)s$")            # 음성 노드 — 입력= 줄 바로 뒤
-_QOPEN = re.compile(r"^\[질문\] 열림 id=(\S+) kind=(\w+) 후보=(\d+) 글자=(.*)$")    # 미션
+_QOPEN = re.compile(r"^\[질문\] 열림 id=(\S+) kind=(\w+) 후보=(\d+) 요청=([yn]) 글자=(.*)$")   # 미션
 _QCLOSE = re.compile(r"^\[질문\] 닫힘 id=(\S+) 사유=(\w+) 열린 시간=([\d.]+)s$")   # 미션
 Q_LINE_WINDOW_S = 1.0               # 입력= 줄과 [질문] 줄은 같은 콜백에서 찍힌다
 
@@ -145,15 +145,20 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
 
 
 def question_log_summary(lines: Iterable[tuple[float, str, str]]) -> dict:
-    """미션의 질문 기록 로그 요약 — 연 횟수 · 듣기 요청 횟수 · 닫힌 사유별 횟수 · 가장 오래 열린 시간(s)."""
-    opened = requests = 0
+    """미션의 질문 기록 로그 요약 — 연 횟수(그중 듣기 요청을 같이 낸 것) · 듣기 요청 횟수 · 닫힌 사유별 · 가장 오래 열린 시간(s).
+
+    호출 응답 "네?"는 듣기 요청 없이 열린다. 듣기 요청 수와 같아야 하는 것은 opened_with_request 다.
+    """
+    opened = with_request = requests = 0
     closed: dict = {}
     longest = 0.0
     for _t, node, body in lines:
         if node != "vica_mission_manager":
             continue
-        if _QOPEN.match(body):
+        o = _QOPEN.match(body)
+        if o:
             opened += 1
+            with_request += o.group(4) == "y"
         elif body.startswith("질문 발화 — 재청취 요청 발행"):
             requests += 1
         else:
@@ -161,7 +166,8 @@ def question_log_summary(lines: Iterable[tuple[float, str, str]]) -> dict:
             if c:
                 closed[c.group(2)] = closed.get(c.group(2), 0) + 1
                 longest = max(longest, float(c.group(3)))
-    return {"opened": opened, "listen_requests": requests, "closed": closed, "max_open_s": longest}
+    return {"opened": opened, "opened_with_request": with_request, "listen_requests": requests,
+            "closed": closed, "max_open_s": longest}
 
 
 def _read_logs(log_dir: Path, since: float):
@@ -198,7 +204,8 @@ def main() -> None:
     same = sum(1 for r in have if r["q_kind"] == r["kind"])
     q = question_log_summary(lines)
     print(f"질문 기록 있음 {len(have)} · 종류 같음 {same} · 종류 다름 {len(have) - same} · 기록 없음 {len(rows) - len(have)}")
-    print(f"미션 질문 열림 {q['opened']} · 듣기 요청 {q['listen_requests']} · 닫힘 {q['closed']} · 가장 오래 열린 {q['max_open_s']:.1f} s")
+    print(f"미션 질문 열림 {q['opened']}(듣기 요청과 함께 {q['opened_with_request']}) · 듣기 요청 {q['listen_requests']} · "
+          f"닫힘 {q['closed']} · 가장 오래 열린 {q['max_open_s']:.1f} s")
 
 
 if __name__ == "__main__":

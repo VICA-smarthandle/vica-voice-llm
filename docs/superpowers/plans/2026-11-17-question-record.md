@@ -142,7 +142,7 @@ def test_missing_kind_becomes_open():         # Say.kind == "" → 기록 kind "
 **Interfaces:**
 - Consumes: `VicaQuestion`(Task 1), `QuestionTracker`(Task 3).
 - Produces: 토픽 `/vica/question`(`VicaQuestion`, RELIABLE · TRANSIENT_LOCAL · depth 1). 로그 두 줄(Task 6 이 읽는다, 글자 그대로):
-  - `[질문] 열림 id={id} kind={kind} 후보={n} 글자={text}`
+  - `[질문] 열림 id={id} kind={kind} 후보={n} 요청={y|n} 글자={text}` — `요청` 은 듣기 요청(`expects_reply`)을 같이 냈는지. 호출 응답 "네?"는 `n`.
   - `[질문] 닫힘 id={id} 사유={reason} 열린 시간={sec:.1f}s`
 
 발행 순서: `_on_intent` 는 로직이 낸 동작을 실행하기 **전에** `close("answer")` 를 하고 빈 기록을 낸다. `_run_actions` 는 `expects_reply` 인 `Say` 마다 `open` 하고 새 기록을 낸다. `/vica/listen_state` 콜백(이미 구독 중)은 `on_listen_state(state)` 결과가 있으면 빈 기록을 낸다. 주기 타이머는 `tick(logic.state, now)` 결과가 있으면 빈 기록을 내고, 사유가 `fault` 면 경고 수준으로 남긴다. `kind` 가 빈 `Say` 를 만나면 경고 `[질문] kind 없음 — open 으로 냄: {text}`.
@@ -214,7 +214,7 @@ def test_old_logs_without_question_lines_still_parse():   # 11-14 이전 로그 
 
 | 볼 것 | 기준 |
 |---|---|
-| 미션 로그 `질문 발화 — 재청취 요청 발행` 줄 수 | `[질문] 열림` 줄 수와 같다 |
+| 미션 로그 `질문 발화 — 재청취 요청 발행` 줄 수 | `[질문] 열림 … 요청=y` 줄 수와 같다(호출 응답 "네?"는 `요청=n` 이라 뺀다 — 최종 검토 반영) |
 | 열린 질문마다 닫힘 | `[질문] 닫힘` 이 짝으로 있고 사유가 찍힌다 |
 | 고장 대비로 닫힌 질문(`사유=fault`) | 0건 |
 | 음성 로그 | `입력=` 줄마다 `[질문]` 줄이 따른다 |
