@@ -28,7 +28,7 @@
 2. 옛 `vica_interfaces` 설치본(`VicaQuestion` 없음) — 음성 노드가 죽지 않는다.
 3. 되묻기로 같은 문장을 바로 다시 묻는 경우 — id 가 새로 나오고, 닫힘이 열림보다 먼저 발행된다.
 4. `kind` 없이 `expects_reply=True` 인 `Say` 가 새로 생긴 경우 — 시험이 잡고, 실행 중에는 `open` 으로 내며 경고 로그를 남긴다.
-5. 아무도 대답하지 않고 상태도 안 바뀌는 질문("네?" 뒤 침묵) — 음성이 듣기를 빈손으로 끝냈다는 신호(`/vica/listen_state` 의 `empty…`)로 닫힌다. 신호가 하나도 안 오는 고장 상황에서만 30초 뒤 닫고 경고로 남긴다.
+5. 아무도 대답하지 않고 상태도 안 바뀌는 질문("네?" 뒤 침묵) — 음성이 듣기를 빈손으로 끝냈다는 신호(`/vica/listen_state` 의 `empty…`)로 닫힌다. 음성에서 아무 신호도 안 올 때만 마지막 신호 뒤 45초에 닫고 경고로 남긴다(사유 `no_signal`).
 
 ---
 
@@ -104,15 +104,16 @@ def test_kind_is_one_of_the_six():
 - Consumes: Task 2 의 `Say.kind`·`Say.options`.
 - Produces:
   - `QuestionRecord(id: str, kind: str, text: str, options: tuple[tuple[str, str], ...], step: int, on_silence: str, opened_at: float, state: str)` (frozen dataclass)
-  - `QuestionTracker(prefix: str, fault_close_sec: float = 30.0)` — `current: Optional[QuestionRecord]`
+  - `QuestionTracker(prefix: str, no_signal_close_sec: float = 45.0)` — `current: Optional[QuestionRecord]`
   - `open(say, state: str, now: float) -> tuple[Optional[QuestionRecord], QuestionRecord]` — (닫힌 옛 기록, 새 기록). id 는 `f"{prefix}-{n}"`, n 은 1부터.
-  - `close(reason: str) -> Optional[QuestionRecord]` — 사유 `answer` · `silence` · `state` · `replaced` · `fault`
-  - `on_listen_state(state: str) -> Optional[QuestionRecord]` — 음성의 듣기 결과. `empty` 로 시작하면(말이 없었거나 버려짐) 닫고 사유 `silence`. `open`·`speech`·`closed` 는 그대로 둔다(말을 했으면 의도가 뒤따라 와서 `answer` 로 닫힌다).
-  - `tick(state: str, now: float) -> Optional[tuple[QuestionRecord, str]]` — 상태가 열 때와 달라졌으면 `state`, `fault_close_sec` 지났으면 `fault`.
+  - `close(reason: str) -> Optional[QuestionRecord]` — 사유 `answer` · `silence` · `state` · `replaced` · `no_signal`
+  - `on_listen_state(state: str, now: float) -> Optional[QuestionRecord]` — 음성의 듣기 결과(올 때마다 마지막 신호 시각을 갱신). `empty` 로 시작하면(말이 없었거나 버려짐) 닫고 사유 `silence`. `open`·`speech`·`closed` 는 그대로 둔다(말을 했으면 의도가 뒤따라 와서 `answer` 로 닫힌다).
+  - `tick(state: str, now: float) -> Optional[tuple[QuestionRecord, str]]` — 상태가 열 때와 달라졌으면 `state`, 음성의 마지막 신호(없으면 연 때) 뒤 `no_signal_close_sec` 지났으면 `no_signal`.
 
 닫는 기준에 시간을 쓰지 않는다(11-17 사용자: 40 s 는 근거 없음). 실기 1,660건에서 질문 재생 시작 → 대답은 중앙 7.2 s · 99 % 17.5 s · 최대 23.6 s 이고,
-귀로 확인한 행에서 20 s 뒤에 온 3건은 모두 대답이 아니었다. `fault_close_sec` 30 s 는 음성 노드가 죽어 신호가 안 올 때만 쓰는 값이다
-(질문 재생 6 + `VICA_LISTEN_START_SEC` 6 + `VICA_LISTEN_MAX_SEC` 15 + 처리 3).
+귀로 확인한 행에서 20 s 뒤에 온 3건은 모두 대답이 아니었다. `no_signal_close_sec` 45 s 는 음성에서 아무 신호도 안 올 때만 쓰는 값이다 — 음성의 마지막 신호부터 센다.
+가장 긴 정상 간격이 질문 뒤 듣기 30 s(음성 `CONFIRM_WINDOW_SEC`)라 여유 15 s 를 더했다. 처음에는 연 때부터 30 s 로 셌는데
+(6 + 6 + 15 + 3, "비카야" 뒤 듣기 값으로 잘못 계산) 평소 무응답에서 음성의 `empty` 보다 먼저 터졌다 — 11-17 최종 검토에서 고침.
 
 - [ ] **Step 1: 실패하는 시험 작성**
 
@@ -123,8 +124,8 @@ def test_close_returns_record_once():         # 두 번째 close 는 None
 def test_tick_closes_on_state_change():       # open(state="confirming") → tick("navigating") = (기록, "state")
 def test_empty_listen_state_closes():         # on_listen_state("empty") · ("empty:reject '…'") → 기록, 사유 silence
 def test_speech_listen_state_keeps_open():    # "open" · "speech" · "closed" → None, current 그대로
-def test_fault_close_after_30s():             # tick(같은 상태, now=opened+30.1) = (기록, "fault")
-def test_tick_keeps_open_before_30s():        # 같은 상태·29.9 s → None
+def test_no_signal_close_counts_from_the_question_when_voice_is_silent():   # 신호 없음 · 연 때 + 45.1 s → (기록, "no_signal")
+def test_no_signal_close_counts_from_the_last_voice_signal():             # open 신호 뒤 30 s 듣기 중에는 안 닫힘 → empty 로 닫힘
 def test_missing_kind_becomes_open():         # Say.kind == "" → 기록 kind "open"
 ```
 
@@ -145,7 +146,7 @@ def test_missing_kind_becomes_open():         # Say.kind == "" → 기록 kind "
   - `[질문] 열림 id={id} kind={kind} 후보={n} 요청={y|n} 글자={text}` — `요청` 은 듣기 요청(`expects_reply`)을 같이 냈는지. 호출 응답 "네?"는 `n`.
   - `[질문] 닫힘 id={id} 사유={reason} 열린 시간={sec:.1f}s`
 
-발행 순서: `_on_intent` 는 로직이 낸 동작을 실행하기 **전에** `close("answer")` 를 하고 빈 기록을 낸다. `_run_actions` 는 `expects_reply` 인 `Say` 마다 `open` 하고 새 기록을 낸다. `/vica/listen_state` 콜백(이미 구독 중)은 `on_listen_state(state)` 결과가 있으면 빈 기록을 낸다. 주기 타이머는 `tick(logic.state, now)` 결과가 있으면 빈 기록을 내고, 사유가 `fault` 면 경고 수준으로 남긴다. `kind` 가 빈 `Say` 를 만나면 경고 `[질문] kind 없음 — open 으로 냄: {text}`.
+발행 순서: `_on_intent` 는 로직이 낸 동작을 실행하기 **전에** `close("answer")` 를 하고 빈 기록을 낸다. `_run_actions` 는 `expects_reply` 인 `Say` 마다 `open` 하고 새 기록을 낸다. `/vica/listen_state` 콜백(이미 구독 중)은 `on_listen_state(state)` 결과가 있으면 빈 기록을 낸다. 주기 타이머는 `tick(logic.state, now)` 결과가 있으면 빈 기록을 내고, 사유가 `no_signal` 이면 경고 수준으로 남긴다. `kind` 가 빈 `Say` 를 만나면 경고 `[질문] kind 없음 — open 으로 냄: {text}`.
 
 - [ ] **Step 1: 실패하는 시험 작성** — 기존 노드 소스 검사 방식(`NODE` 문자열)으로: `"/vica/question"` 발행자 있음 · `TRANSIENT_LOCAL` · `_run_actions` 안에 `open(` · `_on_intent` 안에 `close("answer")` · 듣기 결과 콜백 안에 `on_listen_state(` · 두 로그 문구.
 - [ ] **Step 2: 실패 확인**
@@ -216,7 +217,7 @@ def test_old_logs_without_question_lines_still_parse():   # 11-14 이전 로그 
 |---|---|
 | 미션 로그 `질문 발화 — 재청취 요청 발행` 줄 수 | `[질문] 열림 … 요청=y` 줄 수와 같다(호출 응답 "네?"는 `요청=n` 이라 뺀다 — 최종 검토 반영) |
 | 열린 질문마다 닫힘 | `[질문] 닫힘` 이 짝으로 있고 사유가 찍힌다 |
-| 고장 대비로 닫힌 질문(`사유=fault`) | 0건 |
+| 음성 신호 없이 닫힌 질문(`사유=no_signal`) | 0건(나오면 그 장면을 본다) |
 | 음성 로그 | `입력=` 줄마다 `[질문]` 줄이 따른다 |
 | `tools.answer_audit` 요약 | 미션이 물은 질문의 대답은 `질문 기록 있음`, 종류 다름 0 |
 | 로봇의 말과 동작 | 전과 같다(확정 기준 점수의 재생 결과가 변하지 않는다) |

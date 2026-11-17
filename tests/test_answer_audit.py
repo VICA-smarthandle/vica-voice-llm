@@ -137,8 +137,8 @@ def test_question_log_summary_counts_opens_and_close_reasons():
         (111.0, "vica_mission_manager", "[질문] 닫힘 id=q1-2 사유=silence 열린 시간=6.0s"),
         (120.0, "vica_mission_manager", "[질문] 열림 id=q1-3 kind=yesno 후보=0 요청=y 글자=여기서 대기할까요?"),
         (120.0, "vica_mission_manager", "질문 발화 — 재청취 요청 발행"),
-        (151.0, "vica_mission_manager", "[질문] 닫힘 id=q1-3 사유=fault 열린 시간=31.0s"),
+        (167.0, "vica_mission_manager", "[질문] 닫힘 id=q1-3 사유=no_signal 열린 시간=47.0s"),
     ]
     # 호출 응답 "네?"는 듣기 요청 없이 열린다(요청=n) — 듣기 요청 수와 맞춰 볼 것은 요청=y 인 열림이다.
     assert question_log_summary(lines) == {"opened": 3, "opened_with_request": 2, "listen_requests": 2,
-                                           "closed": {"answer": 1, "silence": 1, "fault": 1}, "max_open_s": 31.0}
+                                           "closed": {"answer": 1, "silence": 1, "no_signal": 1}, "max_open_s": 47.0}
