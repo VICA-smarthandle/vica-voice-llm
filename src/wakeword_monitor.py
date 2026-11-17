@@ -477,6 +477,7 @@ class WakewordMonitor:
         transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
         on_frame: Optional[Callable[[dict], None]] = None,
         on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
+        on_wake_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
         listen_band_min: Optional[float] = None,
         log: Optional[Callable[[str], None]] = None,
         speaker=None,
@@ -507,6 +508,9 @@ class WakewordMonitor:
         # 호출 점수 기록 (2026-10-08) — ("fire"|"near"|"self", 최고 점수). 문턱을
         # 숫자로 고르기 위한 재료다. 판정에는 쓰지 않는다.
         self._on_wake_score = on_wake_score or (lambda kind, peak: None)
+        # 호출 소리 저장(2026-11-17 사용자) — 호출 점수가 문턱을 넘을 때 직전 ~2.5 s 소리. 헛호출이 무슨 소리였는지
+        # 다시 듣는 자료다. 판정에는 쓰지 않는다.
+        self._on_wake_clip = on_wake_clip
         # 긴급 모델 '아깝게 놓침' 알림(2026-10-12) — {"peak","frames_over","cooldown","after_fire","audio"}.
         self._on_emergency_score = on_emergency_score or (lambda info: None)
         self._em_episode = False
@@ -857,6 +861,16 @@ class WakewordMonitor:
         # 기록일 뿐이다 — 기록이 실패해도 호출 판정과 마이크 스레드는 계속 간다.
         try:
             self._on_wake_score(kind, peak)
+        except Exception:
+            pass
+        # 문턱을 넘은 소리만 남긴다: 확정(wake) · 넘었지만 확정 안 됨(near) · 로봇 자기 말(self).
+        if self._on_wake_clip is None or not self._ring or peak < self.gate_a.threshold:
+            return
+        try:
+            self._on_wake_clip(np.concatenate([*self._ring]), {
+                "result": {"fire": "wake"}.get(kind, kind), "peak": round(float(peak), 3),
+                "threshold": self.gate_a.threshold, "listening": self._state == "listen",
+                "robot_speaking": bool(self._speaking)})
         except Exception:
             pass
 

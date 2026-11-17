@@ -191,6 +191,12 @@ class WakewordNode(Node):
         # Realtime·받아쓰기가 무엇을 들었는지 다시 듣고 견주는 자료. 긴급 소리 저장처럼 기본 켬, "off" 면 끈다.
         listen_dir = os.environ.get("VICA_LISTEN_CLIP_DIR", "~/vica_data/listen_clips").strip()
         self._listen_clip_dir = None if listen_dir.lower() in ("", "off", "0", "false") else listen_dir
+        # 호출 소리 저장(2026-11-17 사용자) — 호출 점수가 문턱을 넘을 때마다(확정·놓침·자기 말) 직전 ~2.5 s 를 wav 로.
+        # 헛호출이 무슨 소리였는지 다시 듣고 문턱을 자료로 고르려는 것. 기본 켬, "off" 면 끈다.
+        wake_dir = os.environ.get("VICA_WAKE_CLIP_DIR", "~/vica_data/wake_clips").strip()
+        self._wake_clip_dir = None if wake_dir.lower() in ("", "off", "0", "false") else wake_dir
+        self._wake_clip_warned = False
+        self._dialog_state = ""
         self._listen_clip_warned = False
         self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
@@ -225,6 +231,7 @@ class WakewordNode(Node):
             on_wake_doa=self._publish_wake_doa,
             on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
             on_listen_clip=self._save_listen_clip if self._listen_clip_dir else None,
+            on_wake_clip=self._save_wake_clip if self._wake_clip_dir else None,
             # 말소리 대역 관문(2026-10-21) — 바람·기계음이 청취 창을 붙잡지 않게. off 면 옛 동작.
             listen_band_min=listen_band_min_from_env(),
             voice_barge_in=self._voice_barge_in,
@@ -250,7 +257,8 @@ class WakewordNode(Node):
                if self._monitor.approach_min_rms is not None else "")
             + (f"말소리 대역 최소 {self._monitor.listen_band_min:.4f} · "
                if self._monitor.listen_band_min is not None else "말소리 대역 관문 꺼짐 · ")
-            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}")
+            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}"
+            + f" · 호출 소리 저장 {self._wake_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
         try:
@@ -460,6 +468,7 @@ class WakewordNode(Node):
         사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
         self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
         self._monitor.set_dialog_state(msg.dialog_state)   # 화자 판정의 세션 시작·끝(판정기 없으면 무시)
+        self._dialog_state = msg.dialog_state             # 호출 소리 저장 기록용
         self._patrol.set_state(msg.dialog_state)   # 경비 소리 판정 — patrolling·patrol_dwell 일 때만 켜진다
         off = msg.dialog_state == "awaiting_user"
         if off != self._wake_off:
@@ -544,6 +553,15 @@ class WakewordNode(Node):
             if not self._listen_clip_warned:
                 self._listen_clip_warned = True
                 self.get_logger().warn(f"말소리 저장 실패(이후 경고 생략): {exc}")
+
+    def _save_wake_clip(self, audio, info) -> None:
+        # 긴급·말소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
+        try:
+            save_emergency_clip(self._wake_clip_dir, audio, {**info, "dialog_state": self._dialog_state})
+        except Exception as exc:
+            if not self._wake_clip_warned:
+                self._wake_clip_warned = True
+                self.get_logger().warn(f"호출 소리 저장 실패(이후 경고 생략): {exc}")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
