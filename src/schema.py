@@ -90,6 +90,11 @@ class VicaIntent(BaseModel):
     speaker_verdict: str = ""
     speaker_score: float = -1.0
     speaker_joined: float = -1.0
+    # 질문 넘김(설계 2026-11-14 4.4, 3-가) — LLM 이 만들지 않는다. one_voice 가 질문 문장을 reply 에서 옮긴다.
+    # 미션이 이 문장을 말하고 질문 기록을 낸다. 없으면 "" · [].
+    ask_text: str = ""
+    ask_kind: str = ""
+    ask_option_ids: list[str] = Field(default_factory=list)
 
 
 class EmergencyEvent(BaseModel):
