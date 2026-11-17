@@ -56,7 +56,8 @@ from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
-from .ros_convert import intent_to_msg, msg_to_robot_state
+from .one_voice import hand_over_question, held_resume_carrier, voice_may_speak
+from .ros_convert import intent_to_msg, msg_to_robot_state, supports_ask_fields
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
 from .tts_queue import RESPONSE, build_request, request_for_intent
@@ -125,6 +126,9 @@ class LlmIntentNode(Node):
         self._board = SituationBoard()
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
+        # 한 목소리(3-가) — 질문 문장은 말하지 않고 미션에 넘긴다. 옛 vica_interfaces(ask_text 칸 없음)면 지금처럼 직접 말한다.
+        self._hand_over = supports_ask_fields(VicaIntentMsg())
+        self.get_logger().info("질문 넘김: 켬" if self._hand_over else "질문 넘김: 꺼짐(옛 vica_interfaces)")
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         # 질문("~할까요?", 되묻기)을 말할 때 true — 웨이크워드 노드가 그 질문 TTS 가
         # 끝나는 순간 재청취 창을 열어, 사용자가 "비카야" 재호출 없이 "응"으로
@@ -442,25 +446,46 @@ class LlmIntentNode(Node):
         silenced = quieted is not intent
         intent = quieted
 
+        # 2-4) 한 목소리(3-가, 설계 4.4) — 대답을 기다리는 문장은 말하지 않고 미션에 넘긴다. 미션이 말하고
+        #      질문 기록·듣기 요청을 낸다. 목적지 확인 질문은 미션이 confirm_prompt 로 묻는다(결정 A).
+        history_line = intent.reply
+        if self._hand_over:
+            handed = hand_over_question(intent, self._destinations)
+            if handed is not intent:
+                self.get_logger().info(
+                    f"[한목소리] 질문을 미션으로 kind={handed.ask_kind or 'confirm'} 글자='{history_line}'")
+            intent = handed
+
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
         #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
         if should_forward_intent(intent):
             self._intent_pub.publish(intent_to_msg(intent))
             self._board.on_intent(intent)
+        elif intent.ask_text:
+            # 확인 전 resume 은 보류한 채 질문 문장만 실어 보낸다 — 말은 미션이 한다(결정 B).
+            self._intent_pub.publish(intent_to_msg(held_resume_carrier(intent)))
+            self.get_logger().info("resume 확언 대기 — 발행 보류 (질문은 미션이 말함)")
         else:
             self.get_logger().info("resume 확언 대기 — 발행 보류 (질문만 나감)")
 
         # 3-1) 이 노드가 말해야 하는 응답만 TTS 로 보낸다.
         #      navigate 확정 요청은 Mission Manager 가 게이트 판단 뒤에 말한다.
-        request = request_for_intent(intent)
+        #      미션 질문이 열려 있으면 사용자 질문의 답만 말한다(설계 4.4).
+        if not self._hand_over or voice_may_speak(intent, question is not None):
+            request = request_for_intent(intent)
+        else:
+            request = None
+            if intent.reply:
+                self.get_logger().info(f"[한목소리] 질문 열림 — 음성 말 안 함: '{intent.reply}'")
         if request:
             self._tts_pub.publish(String(data=request))
 
         # 3-2) 지금 한 말이 질문이면 답을 들을 준비를 시킨다. 의도 종류만
         #      보면 LLM 이 자유 생성한 질문(unknown 등)을 놓친다 — 문장 꼴
         #      판정(expects_answer)을 함께 쓴다 (2026-08-28).
-        if (intent.need_confirm or intent.intent == "clarify"
-                or expects_answer(intent.reply)):
+        #      질문 넘김이 꺼졌을 때(옛 설치본)만 — 켜지면 듣기 요청은 미션이 질문과 함께 낸다.
+        if not self._hand_over and (intent.need_confirm or intent.intent == "clarify"
+                                    or expects_answer(intent.reply)):
             self._listen_pub.publish(Bool(data=True))
         self.get_logger().info(
             f"입력='{text}' -> intent={intent.intent} "
@@ -476,7 +501,7 @@ class LlmIntentNode(Node):
             # 말로 남아야 다음 "네"가 그 질문의 답이 된다.
             self._history.extend([HumanMessage(text)])
         else:
-            self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+            self._history.extend([HumanMessage(text), AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말
 
     def _on_listen_state_for_resume(self, msg: String) -> None:
         """듣기 창이 빈손으로 닫혔다. 마지막 로봇 말이 음성이 쥔 "다시 출발할까요?"이고 아직
@@ -488,8 +513,13 @@ class LlmIntentNode(Node):
                                               time.time() - last_t):
             return
         self.get_logger().info("다시 출발 확인 — 대답이 없어 한 번 다시 묻는다")
-        self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
-        self._listen_pub.publish(Bool(data=True))
+        if self._hand_over:
+            # 말은 미션이 한다(결정 B) — 보류한 resume 대신 질문 문장만 실어 보낸다.
+            ask = VicaIntent(intent="resume", need_confirm=True, ask_text=RESUME_CONFIRM, ask_kind="yesno")
+            self._intent_pub.publish(intent_to_msg(held_resume_carrier(ask)))
+        else:
+            self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
+            self._listen_pub.publish(Bool(data=True))
         if not self._spoken_history:
             self._history.extend([AIMessage(RESUME_CONFIRM)])
 
