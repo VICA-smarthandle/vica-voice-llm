@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
+from src.langchain_intent_parser import _shortcut_intent
 from src.one_voice import hand_over_question, held_resume_carrier, voice_may_speak
 from src.replies import (APPROACH_ONBOARDING, COMMAND_DECLINED, RESUME_CONFIRM, RETRY_PROMPT, WAKE_GREETING,
                          choose_between)
+from src.question_record import OpenQuestion
 from src.schema import DestinationData, VicaIntent
 
 DESTS = [
@@ -78,9 +81,22 @@ def test_emergency_untouched():
     assert hand_over_question(intent, DESTS) is intent
 
 
+def _open(text: str):
+    return OpenQuestion(id="q1", kind="confirm", text=text, option_ids=(), opened_at=0.0)
+
+
 def test_voice_may_speak_only_answers_while_question_open():
     answer = VicaIntent(intent="question", reply="화장실은 2층에 있어요.")
     failed = VicaIntent(intent="unknown", reply=COMMAND_DECLINED)
     emergency = VicaIntent(intent="unknown", safety_flag="emergency", reply="")
-    assert [voice_may_speak(i, True) for i in (answer, failed, emergency)] == [True, False, True]
-    assert [voice_may_speak(i, False) for i in (answer, failed, emergency)] == [True, True, True]
+    mission_q = _open("화장실로 안내해드릴까요?")
+    assert [voice_may_speak(i, mission_q) for i in (answer, failed, emergency)] == [True, False, True]
+    assert [voice_may_speak(i, None) for i in (answer, failed, emergency)] == [True, True, True]
+
+
+def test_voice_speaks_its_own_resume_answer():
+    """"다시 출발할까요?"는 판단을 음성이 쥔 질문(결정 B) — 그 대답 "아니"의 확인 멘트는 음성이 말한다(검토 I1)."""
+    declined = _shortcut_intent("아니", [HumanMessage("다시 가자"), AIMessage(RESUME_CONFIRM)], DESTS)
+    assert (declined.intent, declined.reply) == ("unknown", COMMAND_DECLINED)
+    assert hand_over_question(declined, DESTS) is declined
+    assert voice_may_speak(declined, _open(RESUME_CONFIRM)) is True

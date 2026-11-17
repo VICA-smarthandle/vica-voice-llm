@@ -8,9 +8,10 @@ ros_node 는 rclpy 없이 시험할 수 없어 판단은 여기 순수 함수로
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Optional, Sequence
 
-from .replies import expects_answer
+from .question_record import OpenQuestion
+from .replies import RESUME_CONFIRM, expects_answer
 from .schema import DestinationData, VicaIntent
 
 # 고르기 질문 끝 — replies.choose_between 의 "… 중 어디로 갈까요?"와 LLM 이 지은 "… 중에 어디로 갈까요?".
@@ -43,9 +44,10 @@ def hand_over_question(intent: VicaIntent, destinations: Sequence[DestinationDat
     return intent
 
 
-def voice_may_speak(intent: VicaIntent, question_open: bool) -> bool:
-    """음성 노드가 이 의도의 reply 를 말해도 되나. 미션 질문이 열려 있으면 사용자 질문의 답만(설계 4.4)."""
-    if intent.safety_flag == "emergency" or not question_open:
+def voice_may_speak(intent: VicaIntent, question: Optional[OpenQuestion]) -> bool:
+    """음성 노드가 이 의도의 reply 를 말해도 되나. 미션 질문이 열려 있으면 사용자 질문의 답만(설계 4.4).
+    "다시 출발할까요?"는 판단을 음성이 쥔 질문이라(결정 B) 그 대답("알겠습니다. 계속 진행할게요.")도 음성이 말한다."""
+    if intent.safety_flag == "emergency" or question is None or question.text == RESUME_CONFIRM:
         return True
     return intent.intent == "question"
 

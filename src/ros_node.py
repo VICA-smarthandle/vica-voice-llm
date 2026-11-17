@@ -471,7 +471,7 @@ class LlmIntentNode(Node):
         # 3-1) 이 노드가 말해야 하는 응답만 TTS 로 보낸다.
         #      navigate 확정 요청은 Mission Manager 가 게이트 판단 뒤에 말한다.
         #      미션 질문이 열려 있으면 사용자 질문의 답만 말한다(설계 4.4).
-        if not self._hand_over or voice_may_speak(intent, question is not None):
+        if not self._hand_over or voice_may_speak(intent, question):
             request = request_for_intent(intent)
         else:
             request = None
