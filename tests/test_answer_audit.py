@@ -93,3 +93,50 @@ def test_no_map_line_leaves_dest_yaml_empty():
     lines = [(110.0, "vica_tts_node", "재생[response]: 네?"),
              (115.0, "vica_llm_intent_node", "입력='화장실' -> intent=navigate matched=x safety=normal")]
     assert extract_rows(lines)[0]["dest_yaml"] == ""
+
+
+# ---- 질문 기록 로그(설계 4.1, 2단계 — 계획 2026-11-17 Task 6) --------------------------------
+from tools.answer_audit import COLUMNS, question_log_summary  # noqa: E402
+
+
+def _qa(extra):
+    return [(110.0, "vica_tts_node", "재생[response]: 화장실로 안내해드릴까요?"),
+            (115.0, "vica_llm_intent_node", "입력='그래' -> intent=affirm matched= safety=normal"), *extra]
+
+
+def test_row_takes_question_id_from_voice_line():
+    [row] = extract_rows(_qa([(115.01, "vica_llm_intent_node", "[질문] id=q1794-2 kind=confirm 나이=3.0s")]))
+    assert (row["q_id"], row["q_kind"], row["q_age_s"]) == ("q1794-2", "confirm", "3.0")
+
+
+def test_row_without_record_has_empty_fields():
+    [row] = extract_rows(_qa([(115.01, "vica_llm_intent_node", "[질문] 없음")]))
+    assert (row["q_id"], row["q_kind"], row["q_age_s"]) == ("", "", "")
+
+
+def test_old_logs_without_question_lines_still_parse():
+    [row] = extract_rows(_qa([]))
+    assert (row["q_id"], row["q_kind"], row["q_age_s"]) == ("", "", "") and row["kind"] == "confirm"
+
+
+def test_question_line_of_a_later_utterance_is_not_borrowed():
+    [row] = extract_rows(_qa([(118.0, "vica_llm_intent_node", "[질문] id=q1794-3 kind=open 나이=0.5s")]))
+    assert row["q_id"] == ""
+
+
+def test_new_columns_go_at_the_end():
+    assert COLUMNS[-3:] == ["q_id", "q_kind", "q_age_s"]
+
+
+def test_question_log_summary_counts_opens_and_close_reasons():
+    lines = [
+        (100.0, "vica_mission_manager", "[질문] 열림 id=q1-1 kind=open 후보=0 글자=네?"),
+        (104.0, "vica_mission_manager", "[질문] 닫힘 id=q1-1 사유=answer 열린 시간=4.0s"),
+        (105.0, "vica_mission_manager", "[질문] 열림 id=q1-2 kind=confirm 후보=1 글자=화장실로 안내해드릴까요?"),
+        (111.0, "vica_mission_manager", "[질문] 닫힘 id=q1-2 사유=silence 열린 시간=6.0s"),
+        (120.0, "vica_mission_manager", "[질문] 열림 id=q1-3 kind=yesno 후보=0 글자=여기서 대기할까요?"),
+        (151.0, "vica_mission_manager", "[질문] 닫힘 id=q1-3 사유=fault 열린 시간=31.0s"),
+        (160.0, "vica_mission_manager", "질문 발화 — 재청취 요청 발행"),
+    ]
+    assert question_log_summary(lines) == {"opened": 3, "listen_requests": 1,
+                                           "closed": {"answer": 1, "silence": 1, "fault": 1}, "max_open_s": 31.0}

@@ -19,7 +19,8 @@ from typing import Iterable, Optional
 QUESTION_WINDOW_S = 40.0
 REACTION_WINDOW = (-0.5, 3.0)       # 대답 줄 기준 미션 반응 줄을 찾는 범위(s)
 COLUMNS = ["ts", "date", "time", "question", "q_by", "kind", "answer_text", "stt", "path", "intent", "dest_id",
-           "nc", "llm_reply", "dialog_state", "mission", "dest_yaml"]
+           "nc", "llm_reply", "dialog_state", "mission", "dest_yaml",
+           "q_id", "q_kind", "q_age_s"]      # 미션 질문 기록(설계 4.1) — 그 말이 들어올 때 열려 있던 질문
 
 _LINE = re.compile(r"^\[(\w+)\] \[(\d+\.\d+)\] \[([\w.]+)\]: (.*)$")
 _PLAY = re.compile(r"^재생\[(\w+)\]: (.*)$")
@@ -31,6 +32,10 @@ _MREQ = re.compile(r"^음성 요청 intent=(\w+) dest=(\S+) confirm=(\w+): (\w+)
 _MAP = re.compile(r"^목적지 \d+개 로드: (\S+)")                        # 미션
 _MAP_VOICE = re.compile(r"^목적지 \d+개 로드\(.*?\): (\S+)")          # 음성 노드 — 해석기가 실제로 쓴 목록
 _PREFIX = re.compile(r"^.*?(도착했습니다|있습니다)\.\s*")
+_QVOICE = re.compile(r"^\[질문\] id=(\S+) kind=(\w+) 나이=([\d.]+)s$")            # 음성 노드 — 입력= 줄 바로 뒤
+_QOPEN = re.compile(r"^\[질문\] 열림 id=(\S+) kind=(\w+) 후보=(\d+) 글자=(.*)$")    # 미션
+_QCLOSE = re.compile(r"^\[질문\] 닫힘 id=(\S+) 사유=(\w+) 열린 시간=([\d.]+)s$")   # 미션
+Q_LINE_WINDOW_S = 1.0               # 입력= 줄과 [질문] 줄은 같은 콜백에서 찍힌다
 
 
 def kind_from_text(question: str) -> str:
@@ -84,7 +89,7 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
             i = _INPUT.match(body)
             if i:
                 u = {"t": t, "text": i.group(1), "intent": i.group(2), "dest": i.group(3), "path": "text",
-                     "nc": "", "llm_reply": "", "stt": ""}
+                     "nc": "", "llm_reply": "", "stt": "", "q_id": "", "q_kind": "", "q_age_s": ""}
                 if last_rt and abs(t - last_rt[0]) < 0.5:
                     u.update(path="audio", nc=last_rt[1].group(4), llm_reply=last_rt[1].group(5))
                 users.append(u)
@@ -92,6 +97,10 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
             a = _AB.match(body)
             if a and users and abs(t - users[-1]["t"]) < 0.5:
                 users[-1]["stt"] = a.group(1)
+                continue
+            qv = _QVOICE.match(body)
+            if qv and users and 0 <= t - users[-1]["t"] < Q_LINE_WINDOW_S:
+                users[-1].update(q_id=qv.group(1), q_kind=qv.group(2), q_age_s=qv.group(3))
         elif node == "vica_mission_manager":
             m = _MAP.match(body)
             if m:
@@ -130,8 +139,29 @@ def extract_rows(lines: Iterable[tuple[float, str, str]]) -> list[dict]:
             "dialog_state": react.group(4) if react else "",
             "mission": f"{react.group(4)}->{react.group(5)} {react.group(6)}" if react else "",
             "dest_yaml": dest_yaml,
+            "q_id": u["q_id"], "q_kind": u["q_kind"], "q_age_s": u["q_age_s"],
         })
     return rows
+
+
+def question_log_summary(lines: Iterable[tuple[float, str, str]]) -> dict:
+    """미션의 질문 기록 로그 요약 — 연 횟수 · 듣기 요청 횟수 · 닫힌 사유별 횟수 · 가장 오래 열린 시간(s)."""
+    opened = requests = 0
+    closed: dict = {}
+    longest = 0.0
+    for _t, node, body in lines:
+        if node != "vica_mission_manager":
+            continue
+        if _QOPEN.match(body):
+            opened += 1
+        elif body.startswith("질문 발화 — 재청취 요청 발행"):
+            requests += 1
+        else:
+            c = _QCLOSE.match(body)
+            if c:
+                closed[c.group(2)] = closed.get(c.group(2), 0) + 1
+                longest = max(longest, float(c.group(3)))
+    return {"opened": opened, "listen_requests": requests, "closed": closed, "max_open_s": longest}
 
 
 def _read_logs(log_dir: Path, since: float):
@@ -152,7 +182,8 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     since = dt.datetime.fromisoformat(args.since).timestamp()
-    rows = extract_rows(_read_logs(Path(args.logs), since))
+    lines = list(_read_logs(Path(args.logs), since))
+    rows = extract_rows(lines)
     out = Path(os.path.expanduser(args.out))
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=COLUMNS)
@@ -163,6 +194,11 @@ def main() -> None:
         kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
     print(f"행 {len(rows)} · kind {dict(sorted(kinds.items(), key=lambda x: -x[1]))} · "
           f"목적지 파일 빈 행 {sum(1 for r in rows if not r['dest_yaml'])} → {out}")
+    have = [r for r in rows if r["q_id"]]
+    same = sum(1 for r in have if r["q_kind"] == r["kind"])
+    q = question_log_summary(lines)
+    print(f"질문 기록 있음 {len(have)} · 종류 같음 {same} · 종류 다름 {len(have) - same} · 기록 없음 {len(rows) - len(have)}")
+    print(f"미션 질문 열림 {q['opened']} · 듣기 요청 {q['listen_requests']} · 닫힘 {q['closed']} · 가장 오래 열린 {q['max_open_s']:.1f} s")
 
 
 if __name__ == "__main__":
