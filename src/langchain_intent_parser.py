@@ -403,7 +403,16 @@ _COMMAND_CONFIRMS = {
 # 긴급어 필터와 같은 원칙 — 결정적 명령의 감지는 룰이 빠르고 확실하다.
 # 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 분류한다.
 _CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
-_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
+_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요", "잠깐", "잠시"}
+# 일시정지 중의 재개 말(3-나-1, 설계 2026-11-18 4.2). 11-18 실기 재생에서 로컬 LLM 은 "다시 가자"류를 0/8 —
+# 목록의 다른 곳(407호 등)으로 가자는 말로 읽었다. 낱말은 그 실기와 미션 안내("다시 출발하려면 말씀해
+# 주세요")에서 뽑았고 통째 일치만 본다. 받아쓰기가 깨진 꼴("다시 가져")은 넣지 않는다 — LLM 몫으로 둔다.
+_RESUME_WORDS = {
+    "다시가자", "다시가", "다시가줘", "다시가요",
+    "다시출발", "다시출발해", "다시출발해줘", "다시출발하자", "다시출발해요", "다시출발해주세요",
+    "출발", "출발해", "출발해줘", "출발하자", "출발해요", "출발해주세요",
+    "계속가자", "계속가", "계속가줘", "계속가요", "계속가주세요",
+}
 # 청취 창 안에서 부른 호출어 — 창이 열린 동안 호출 감지기는 잠들어 있어
 # "비카야"가 발화로 전사돼 들어온다. LLM 을 거치면 1초+ 우회이므로 즉시
 # "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
@@ -757,6 +766,12 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
         return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
     if word in _PAUSE_WORDS:
         return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
+    if dialog_state == "paused" and word in _RESUME_WORDS:
+        # 손 놓침 정지(paused_handle)는 여기 오지 않는다 — 그 재개는 손잡이를 다시 잡는 것이다. 출발은 묻고 한다:
+        # "다시 출발할까요?"가 이미 열려 있을 때만 승낙으로 읽는다(_finalize 의 pending_command 와 같은 동작).
+        if pending_command == "resume":
+            return VicaIntent(intent="resume", confidence=1.0, reply="", need_confirm=False)
+        return VicaIntent(intent="resume", confidence=1.0, reply=RESUME_CONFIRM, need_confirm=True)
 
     # 도착 후 대기·종료(wait/finish)는 지름길을 두지 않는다 — 발화 의도가
     # 맥락에 좌우돼("그만 좀 물어봐" ≠ 종료) 단어 매칭이 위험하다. LLM 이

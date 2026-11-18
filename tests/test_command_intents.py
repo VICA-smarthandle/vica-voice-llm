@@ -4,9 +4,11 @@
 검증하고 ② Mission Manager 가 상태를 판정한 뒤다. 여기서는 ①을 검증한다.
 확인 문구의 자가 트리거 여부는 tests/test_spoken_text.py 가 자동으로 훑는다.
 """
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.langchain_intent_parser import _finalize, _IntentDraft, parse_intent
+from src.langchain_intent_parser import (_finalize, _IntentDraft, _shortcut_intent, is_instant_utterance,
+                                         parse_intent)
 from src.replies import (
     CANCEL_CONFIRM,
     COMMAND_DECLINED,
@@ -145,3 +147,40 @@ class TestResumeConfirmGate:
         assert result.intent == "resume"
         assert result.need_confirm is False
         assert result.reply == ""
+
+
+class TestPauseResumeTextRules:
+    """일시정지·재개 말은 LLM 없이 읽는다(3-나-1, 설계 2026-11-18 4.2). 11-18 실기: 로컬 LLM 이 이 말들을 407호 이동으로 읽었다."""
+
+    @pytest.mark.parametrize("said", ["잠깐", "잠깐.", "잠시", "잠깐만", "잠시만요"])
+    def test_short_pause_words(self, said):
+        result = _shortcut_intent(said, [], [DEST])
+        assert (result.intent, result.need_confirm, result.reply) == ("pause", False, PAUSE_ACK)
+        assert is_instant_utterance(said)
+
+    @pytest.mark.parametrize("said", [
+        "다시 가자.", "다시 가", "다시 가줘", "다시 출발", "다시 출발.", "다시 출발해", "다시 출발해줘", "다시 출발하자",
+        "출발", "출발해", "출발해줘", "출발하자", "계속 가자", "계속 가", "계속 가줘",
+        "다시 가요", "다시 출발해요", "다시 출발해 주세요", "출발해요", "출발해 주세요", "계속 가요", "계속 가 주세요",
+    ])
+    def test_resume_words_ask_before_moving(self, said):
+        result = _shortcut_intent(said, [], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", True, RESUME_CONFIRM)
+
+    @pytest.mark.parametrize("dialog_state", ["", "idle", "navigating", "waiting", "asking_next", "paused_handle"])
+    def test_resume_words_only_while_paused(self, dialog_state):
+        for said in ("다시 가자.", "출발"):
+            assert _shortcut_intent(said, [], [DEST], dialog_state=dialog_state, local=True) is None
+
+    @pytest.mark.parametrize("said", ["다시 가자고 했잖아", "출발지가 어디야", "화장실로 다시 가자", "다시"])
+    def test_longer_sentences_are_left_to_the_llm(self, said):
+        assert _shortcut_intent(said, [], [DEST], dialog_state="paused", local=True) is None
+
+    def test_resume_word_answers_the_open_resume_question(self):
+        # "다시 출발할까요?"에 "다시 가자" — 같은 질문을 또 하지 않는다(_finalize 의 pending_command 와 같은 동작).
+        result = _shortcut_intent("다시 가자", [AIMessage(RESUME_CONFIRM)], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", False, "")
+
+    def test_resume_word_during_cancel_question_asks_anew(self):
+        result = _shortcut_intent("다시 가자", [AIMessage(CANCEL_CONFIRM)], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", True, RESUME_CONFIRM)
