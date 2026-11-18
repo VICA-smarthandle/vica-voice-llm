@@ -57,6 +57,7 @@ from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
 from .one_voice import demote_unasked_confirm, hand_over_question, held_resume_carrier, voice_may_speak
+from .wake_echo import strip_wake_echo
 from .ros_convert import intent_to_msg, msg_to_robot_state, supports_ask_fields
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
@@ -294,9 +295,14 @@ class LlmIntentNode(Node):
 
     def _on_user_text(self, msg: String) -> None:
         """발화를 받아 VicaIntent 를 만들어 발행한다."""
-        text = msg.data.strip()
-        if not text:
+        raw = msg.data.strip()
+        if not raw:
             return
+        # 호출 응답 "네?"가 녹음에 섞여 글자 앞에 붙은 "네"를 뗀다(3-나-1). 아래 규칙·LLM·대화 기록은 뗀 글자를,
+        # 화자 판정 찾기만 원문(raw)을 쓴다 — 호출어 노드가 원문 글자로 판정을 실어 보낸다.
+        text = strip_wake_echo(raw, self._question)
+        if text != raw:
+            self.get_logger().info(f"앞 '네' 뗌: '{raw}' → '{text}'")
         self._reload_destinations_if_changed()
 
         # 0) 한동안 발화가 없었으면 다른 사용자로 보고 이전 맥락을 버린다.
@@ -315,7 +321,7 @@ class LlmIntentNode(Node):
                 self.get_logger().info(f"[멈춤] 소리 경로가 이미 일시정지 발행 — 받아쓰기 '{text}' 생략")
                 return
             self.get_logger().warning(f"[멈춤] '{text}' — 주행 중이라 일시정지 요청")
-            self._publish_intent(pause, text)
+            self._publish_intent(pause, text, link_text=raw)
             self._last_text_publish_t = time.time()
             self._last_text_publish_intent = pause.intent
             return
@@ -375,7 +381,7 @@ class LlmIntentNode(Node):
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
                 if thinking:
                     self._thinking_pub.publish(Bool(data=False))
-        self._publish_intent(intent, text)
+        self._publish_intent(intent, text, link_text=raw)
         # C) 소리 경로 이중 처리 방지 — 텍스트가 방금 이 발화를 발행했다는
         # 표식. _on_user_audio 는 이 시각에서 2초 안이면 소리 경로를 생략한다.
         self._last_text_publish_t = time.time()
@@ -386,17 +392,19 @@ class LlmIntentNode(Node):
         self._question = question_record.from_fields(
             msg.id, msg.kind, msg.text, msg.option_ids, msg.opened_at.sec + msg.opened_at.nanosec / 1e9)
 
-    def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
+    def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False,
+                        link_text: str = "") -> None:
         """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리).
 
         llm_first(소리 모드 모델 전결): 재청취 기각을 하지 않는다 — 대꾸할지 침묵할지
         (reply 가 빈 문자열)는 모델이 정했다.
+        link_text: 화자 판정을 찾을 원문 글자(text 에서 호출 응답 메아리를 뗐을 때). 비면 text 로 찾는다.
         """
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
         intent = reask_held_resume(intent, self._history.messages)
         question = self._question          # 미션은 의도를 받자마자 질문을 닫는다 — 내보내기 전에 잡아 둔다
-        spk = self._spk_link.take(text, time.time())
+        spk = self._spk_link.take(link_text or text, time.time())
         if spk is None and self._audio_spk is not None:
             spk, self._audio_spk = self._audio_spk, None
         if spk is not None:
