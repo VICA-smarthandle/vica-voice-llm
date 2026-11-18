@@ -423,6 +423,13 @@ def _angle_diff(a: float, b: float) -> float:
 GATE_B_SPEAKING = 0.35
 
 
+def _queue_item(block: np.ndarray, with_ref: bool) -> np.ndarray:
+    """콜백이 큐에 넣을 조각 — 에코 제거가 꺼져 있으면 ch0 만(지금과 같음), 켜져 있으면 (ch0, ch5) 두 열."""
+    if with_ref:
+        return block[:, (0, 5)].copy()
+    return block[:, 0].copy()
+
+
 def capture_stats(audio: np.ndarray) -> dict:
     """청취 창 수음 품질 요약 — "수음이 나쁘다"를 감이 아니라 숫자로 만든다.
 
@@ -648,6 +655,8 @@ class WakewordMonitor:
         self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
         # 경비(순찰) 큰 소리 판정 연결(2026-11-14, patrol_sound.PatrolSoundTap). 노드가 붙인다 — None 이면 지금 그대로.
         self.patrol_tap = None
+        # 소프트웨어 에코 제거(2026-11-18, echo_cancel.EchoStage). 노드가 붙인다 — None 이면 지금 그대로.
+        self.echo_stage = None
 
     @property
     def state(self) -> str:
@@ -1611,6 +1620,15 @@ class WakewordMonitor:
             self._transcribe_listen = _transcribe_listen
             self._transcribe_confirm = _transcribe_confirm
 
+    def _frame_from_queue(self, item: np.ndarray) -> np.ndarray:
+        """큐 조각 → process_frame 에 줄 1차원 프레임. 2열이면 에코 제거를 거친다(감시 루프 스레드에서만 부른다)."""
+        if item.ndim == 1:
+            return item
+        ch0 = np.ascontiguousarray(item[:, 0])
+        if self.echo_stage is None:
+            return ch0
+        return self.echo_stage.feed(ch0, item[:, 1])
+
     def run(self) -> None:
         """reSpeaker ch0 상시 감시 루프 (blocking). Ctrl+C 로 종료."""
         import queue
@@ -1642,6 +1660,7 @@ class WakewordMonitor:
         # 끊김 기록(2026-11-11 사용자) — 콜백은 상태 문자열만 넣고, 로그는 감시 스레드가 쓴다.
         status_q: queue.SimpleQueue[str] = queue.SimpleQueue()
         watch = FrameWatch()
+        with_ref = self.echo_stage is not None   # 스트림을 열기 전에 한 번만 정한다
         tap = self.patrol_tap   # 판정 상태(tap.armed — patrolling·patrol_dwell)일 때만 아래 두 곳에서 불린다
 
         def cb(indata, frames, t, status):  # noqa: ANN001
@@ -1650,7 +1669,7 @@ class WakewordMonitor:
             block = np.frombuffer(indata, dtype=np.int16).reshape(-1, channels)
             if tap is not None and tap.armed:
                 tap.push(block)   # 원음 ch1~4 제곱 평균 한 번 — 판정·발행은 감시 루프(poll)에서
-            q.put(block[:, 0].copy())
+            q.put(_queue_item(block, with_ref))
 
         def note(line: Optional[str]) -> None:
             if line:
@@ -1666,7 +1685,7 @@ class WakewordMonitor:
                 while not status_q.empty():
                     note(watch.on_status(status_q.get(), time.monotonic()))
                 try:
-                    frame = q.get(timeout=0.5)
+                    frame = self._frame_from_queue(q.get(timeout=0.5))
                 except queue.Empty:
                     note(watch.on_idle(time.monotonic()))
                     continue
