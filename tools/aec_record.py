@@ -13,6 +13,7 @@ import argparse
 import functools
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -87,10 +88,20 @@ def session_dict(started: str, wav_name: str, chip: dict, ments: list, items: li
 
 
 def out_dir_problem(out_dir: Path) -> Optional[str]:
-    """저장 폴더에 이미 set.wav 가 있으면 덮어쓰지 않도록 이유를 돌려준다. 문제 없으면 None."""
-    if (Path(out_dir) / "set.wav").exists():
-        return f"{out_dir} 에 set.wav 가 이미 있습니다. 다른 --out 을 쓰거나 지운 뒤 다시 실행하세요."
+    """저장 폴더에 이전 묶음(set.wav·set.json·set.npy)이 하나라도 있으면 덮어쓰지 않도록 이유를 돌려준다. 문제 없으면 None."""
+    for name in ("set.wav", "set.json", "set.npy"):
+        if (Path(out_dir) / name).exists():
+            return f"{out_dir} 에 {name} 가 이미 있습니다. 다른 --out 을 쓰거나 지운 뒤 다시 실행하세요."
     return None
+
+
+def _ignore_exit_signals() -> None:
+    """저장 중 두 번째 종료 신호(SIGHUP 연달아 등)가 저장을 끊지 않도록 무시한다. 못 바꿔도 저장은 계속한다."""
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        try:
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+        except Exception:
+            pass
 
 
 def close_robot_item(items: list, first: Optional[float], last_end: float) -> None:
@@ -255,6 +266,7 @@ def record(out_dir: Path, countdown: float) -> int:
         reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         raise
     finally:
+        _ignore_exit_signals()                     # 저장이 끝나면 프로세스도 끝나므로 되돌리지 않는다
         saved = _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
                               robot_first, robot_last_end, overflows=overflows[0])
     return 0 if saved else 1
@@ -290,6 +302,10 @@ def _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, comp
             sf.write(out_dir / "set.wav", data, RATE, subtype="PCM_16")
         except Exception as exc:
             ok = False
+            try:
+                (out_dir / "set.wav").unlink(missing_ok=True)    # 잘린 wav 를 완전한 것으로 오인하지 않게
+            except Exception:
+                pass
             try:
                 np.save(out_dir / "set.npy", data)
                 lines.append(f"set.wav 저장 실패({type(exc).__name__}: {exc}) — 소리는 set.npy(int16 {CHANNELS}채널 배열)로 남겼습니다.")

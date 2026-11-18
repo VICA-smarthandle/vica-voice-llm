@@ -53,6 +53,18 @@ def test_out_dir_problem_refuses_existing_set_wav(tmp_path):
     assert "set.wav" in out_dir_problem(tmp_path)
 
 
+@pytest.mark.parametrize("name", ["set.wav", "set.json", "set.npy"])
+def test_out_dir_problem_refuses_any_leftover_of_a_previous_set(tmp_path, name):
+    from tools.aec_record import out_dir_problem
+    (tmp_path / name).write_bytes(b"")
+    assert name in out_dir_problem(tmp_path)
+
+
+def test_out_dir_problem_allows_empty_or_missing_folder(tmp_path):
+    from tools.aec_record import out_dir_problem
+    assert out_dir_problem(tmp_path) is None and out_dir_problem(tmp_path / "없는폴더") is None
+
+
 def test_close_robot_item_is_idempotent_and_needs_a_ment():
     from tools.aec_record import close_robot_item
     items = []
@@ -112,6 +124,43 @@ def test_save_writes_json_first_and_keeps_audio_as_npy_when_wav_fails(tmp_path, 
     assert np.array_equal(np.load(tmp_path / "set.npy"), data)
     assert json.loads((tmp_path / "set.json").read_text(encoding="utf-8"))["complete"] is True
     assert "set.npy" in capsys.readouterr().out
+
+
+def test_failed_wav_write_leaves_no_truncated_wav_but_keeps_npy(tmp_path, monkeypatch):
+    import soundfile
+
+    def partial_write(path, data, *a, **k):
+        Path(path).write_bytes(b"RIFF-partial")
+        raise OSError("쓰기 중 끊김")
+    monkeypatch.setattr(soundfile, "write", partial_write)
+    data = np.arange(12, dtype=np.int16).reshape(2, 6)
+    assert _save(tmp_path, [data]) is False
+    assert not (tmp_path / "set.wav").exists()
+    assert np.array_equal(np.load(tmp_path / "set.npy"), data)
+
+
+def test_finally_ignores_exit_signals_before_saving():
+    tree = ast.parse((ROOT / "tools" / "aec_record.py").read_text(encoding="utf-8"))
+    rec = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "record")
+    fin = next(n for n in ast.walk(rec) if isinstance(n, ast.Try) and n.finalbody).finalbody
+    assert ast.unparse(fin[0]) == "_ignore_exit_signals()"
+    assert any("_save_session" in ast.unparse(st) for st in fin[1:])
+    helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_ignore_exit_signals")
+    text = ast.unparse(helper)
+    assert all(x in text for x in ("SIGINT", "SIGTERM", "SIGHUP", "signal.SIG_IGN"))
+
+
+def test_ignore_exit_signals_survives_a_second_hangup():
+    code = textwrap.dedent('''
+        import os, signal
+        import tools.aec_record as t
+        t._ignore_exit_signals()
+        for s in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            os.kill(os.getpid(), s)
+        print("survived", flush=True)
+    ''')
+    p = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert "survived" in p.stdout, p.stdout + p.stderr
 
 
 def test_save_json_failure_still_writes_wav_and_reports_failure(tmp_path):
