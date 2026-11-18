@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>비카 STT 비교</title>
+<style>
+/* 점검기(mic_check_page.html)와 같은 색·모양. 외부 글꼴·라이브러리 없음 */
+:root {
+  --bg: #E9EDF0; --panel: #FFFFFF; --ink: #16212B; --muted: #5B6975; --line: #D3DAE0; --track: #E3E8EC;
+  --turbo: #2C63C9; --qwen: #12807F; --pass: #1D8650; --warn: #B98100; --fail: #C23C2A;
+  --btn: #16212B; --on-btn: #FFFFFF; --rec: #C23C2A;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0D1318; --panel: #151E25; --ink: #E3E9ED; --muted: #93A1AC; --line: #26313A; --track: #222C34;
+    --turbo: #7DA6F2; --qwen: #47C4C2; --pass: #4CC98A; --warn: #F0BE4A; --fail: #F0745F;
+    --btn: #E3E9ED; --on-btn: #10171D; --rec: #F0745F;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+main { max-width: 440px; margin: 0 auto; padding: 12px 16px calc(24px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 12px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: grid; gap: 10px; min-width: 0; }
+h2 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+button { font: inherit; }
+.row1 { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.row1 b { color: var(--ink); }
+.prep { font-size: 13px; color: var(--warn); }
+.say { font-size: 30px; font-weight: 700; line-height: 1.25; text-align: center; padding: 6px 0; }
+.hint { font-size: 13px; color: var(--muted); text-align: center; }
+.cat { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 99px; padding: 1px 9px; border: 1px solid currentColor; color: var(--muted); }
+.hold { width: 100%; height: 132px; border-radius: 18px; border: 0; background: var(--btn); color: var(--on-btn); font-size: 20px; font-weight: 700; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: pointer; }
+.hold.on { background: var(--rec); color: #fff; }
+.hold:disabled { opacity: .45; }
+.live { min-height: 26px; font-size: 17px; text-align: center; color: var(--qwen); font-weight: 600; }
+.btns { display: flex; gap: 8px; }
+.ghost { flex: 1; font-weight: 600; font-size: 14px; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.ghost.robot { border-color: var(--warn); color: var(--warn); }
+.ghost.robot.playing { background: var(--warn); color: var(--on-btn); }
+.ghost.on { border-color: var(--ink); }
+.res { display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 8px; align-items: baseline; font-size: 15px; }
+.res .m { font-size: 12px; font-weight: 700; }
+.res .m.turbo { color: var(--turbo); } .res .m.qwen { color: var(--qwen); }
+.res .t { min-width: 0; overflow-wrap: anywhere; }
+.res .t.empty { color: var(--muted); font-style: italic; }
+.res .s { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ok { color: var(--pass); font-weight: 700; } .bad { color: var(--fail); font-weight: 700; } .na { color: var(--muted); }
+.meta { font-size: 12px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { padding: 4px 2px; text-align: right; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.hist { display: grid; gap: 6px; font-size: 13px; }
+.hist div { border-top: 1px solid var(--line); padding-top: 6px; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+.toast.show { opacity: 1; }
+.conn { font-size: 12px; color: var(--fail); text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <div id="conn" class="conn" hidden>젯슨과 연결이 끊겼습니다 — 다시 잇는 중…</div>
+  <div id="prep" class="prep" hidden></div>
+
+  <section>
+    <div class="row1"><span><span id="cat" class="cat">—</span></span><span id="pos">—</span></div>
+    <div id="say" class="say">—</div>
+    <div id="hint" class="hint"></div>
+    <button id="robot" class="ghost robot">로봇 말하기</button>
+    <button id="hold" class="hold" disabled>누르고 말하기</button>
+    <div id="live" class="live"></div>
+    <div class="btns">
+      <button id="prev" class="ghost">이전</button>
+      <button id="free" class="ghost">자유</button>
+      <button id="next" class="ghost">다음</button>
+    </div>
+  </section>
+
+  <section id="resbox" hidden>
+    <h2>방금 말 <span id="resmeta" class="meta"></span></h2>
+    <div class="res">
+      <span class="m turbo">turbo</span><span id="tt" class="t"></span><span id="tok"></span><span id="ts" class="s"></span>
+      <span class="m qwen">Qwen</span><span id="nt" class="t"></span><span id="nok"></span><span id="ns" class="s"></span>
+    </div>
+    <div class="meta">시간 = 버튼을 뗀 뒤 글자가 나오기까지</div>
+  </section>
+
+  <section>
+    <h2>지금까지 (문항마다 마지막 것)</h2>
+    <table>
+      <thead><tr><th>묶음</th><th>turbo</th><th>Qwen</th></tr></thead>
+      <tbody id="sum"></tbody>
+    </table>
+    <div id="secs" class="meta"></div>
+  </section>
+
+  <section>
+    <h2>기록</h2>
+    <div id="hist" class="hist"></div>
+    <button id="finish" class="ghost">끝내기</button>
+  </section>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let ws = null, recOn = false, holding = false, item = null;
+
+  function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove("show"), 2600); }
+  function send(o) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; } toast("젯슨과 연결이 안 돼 있습니다"); return false; }
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => { $("conn").hidden = true; };
+    ws.onclose = () => { $("conn").hidden = false; $("hold").disabled = true; setTimeout(connect, 1500); };
+    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onMessage(m); };
+  }
+
+  function mark(ok) { return ok === true ? ["✅", "ok"] : ok === false ? ["❌", "bad"] : ["—", "na"]; }
+  function setText(el, t) { el.textContent = t ? t : "(빈칸)"; el.classList.toggle("empty", !t); }
+
+  function onMessage(m) {
+    if (m.type === "prep") { $("prep").hidden = !m.text; $("prep").textContent = m.text || ""; return; }
+    if (m.type === "item") {
+      item = m;
+      $("cat").textContent = m.cat_ko;
+      $("pos").textContent = m.free ? "자유" : `${m.pos} / ${m.total}`;
+      $("say").textContent = m.say;
+      $("hint").textContent = m.hint || "";
+      $("free").classList.toggle("on", m.free);
+      $("free").textContent = m.free ? "문제로" : "자유";
+      $("hold").disabled = false;
+      $("live").textContent = "";
+      return;
+    }
+    if (m.type === "rec") { recOn = m.on; $("hold").classList.toggle("on", m.on); $("hold").textContent = m.on ? "듣는 중… 떼면 받아쓰기" : "누르고 말하기"; if (m.on) $("live").textContent = ""; return; }
+    if (m.type === "partial") { $("live").textContent = m.text; return; }
+    if (m.type === "robot") { $("robot").classList.toggle("playing", m.playing); $("robot").textContent = m.playing ? "로봇 말하는 중… (누르면 멈춤)" : "로봇 말하기"; return; }
+    if (m.type === "toast") { toast(m.text); return; }
+    if (m.type === "result") {
+      $("resbox").hidden = false;
+      $("resmeta").textContent = `· ${m.say} · ${m.dur}s${m.robot_clip ? " · 로봇 말하는 중" : ""}`;
+      setText($("tt"), m.turbo.text); setText($("nt"), m.qwen.text);
+      const [ta, tc] = mark(m.turbo.ok), [na, nc] = mark(m.qwen.ok);
+      $("tok").textContent = ta; $("tok").className = tc; $("nok").textContent = na; $("nok").className = nc;
+      $("ts").textContent = m.turbo.sec.toFixed(2) + "s"; $("ns").textContent = m.qwen.sec.toFixed(2) + "s";
+      $("live").textContent = "";
+      const d = document.createElement("div");
+      d.innerHTML = `<b>${m.n}. ${esc(m.say)}</b> <span class="meta">${esc(m.cat === "free" ? "자유" : "")}</span><br>` +
+        `<span class="${tc}">${ta}</span> turbo: ${esc(m.turbo.text || "(빈칸)")}<br>` +
+        `<span class="${nc}">${na}</span> Qwen: ${esc(m.qwen.text || "(빈칸)")}`;
+      $("hist").prepend(d);
+      return;
+    }
+    if (m.type === "summary") {
+      const tb = $("sum"); tb.innerHTML = "";
+      for (const c of Object.values(m.by_cat)) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${esc(c.name)}</td><td>${c.n ? c.turbo + "/" + c.n : "—"}</td><td>${c.n ? c.qwen + "/" + c.n : "—"}</td>`;
+        tb.appendChild(tr);
+      }
+      const s = m.sec;
+      $("secs").textContent = `글자까지 중앙값 — turbo ${s.turbo ?? "—"}s · Qwen ${s.qwen ?? "—"}s`;
+      return;
+    }
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // 누르는 동안만 듣는다. 손가락을 잡아 두므로(setPointerCapture) 버튼 밖에서 떼도 뗀 것으로 본다.
+  const hold = $("hold");
+  function down(e) { e.preventDefault(); if (hold.disabled || holding) return; holding = true; send({ cmd: "start" }); try { hold.setPointerCapture(e.pointerId); } catch (_) {} }
+  function up(e) { if (!holding) return; holding = false; send({ cmd: "stop" }); }
+  hold.addEventListener("pointerdown", down);
+  hold.addEventListener("pointerup", up);
+  hold.addEventListener("pointercancel", up);
+  hold.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  $("next").onclick = () => send({ cmd: "next" });
+  $("prev").onclick = () => send({ cmd: "prev" });
+  $("free").onclick = () => send({ cmd: "free" });
+  $("robot").onclick = () => send({ cmd: $("robot").classList.contains("playing") ? "robot_stop" : "robot" });
+  $("finish").onclick = () => { if (confirm("비교를 끝낼까요? 기록은 젯슨에 남습니다.") && send({ cmd: "finish" })) toast("끝냈습니다. 젯슨 터미널에 결과가 나옵니다."); };
+  connect();
+})();
+</script>
+</body>
+</html>

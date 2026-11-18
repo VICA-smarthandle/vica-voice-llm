@@ -8,17 +8,22 @@ ros_node 는 rclpy 없이 시험할 수 없어 판단은 여기 순수 함수로
 """
 from __future__ import annotations
 
-from typing import Sequence
+import re
+from typing import Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage
 
+from .handle_mode import AFFIRMATIVES, NEGATIVES
 from .local_rules import ANSWER_WAIT_STATES
-from .mission_phrases import WAIT_FINISH_ASK, WAIT_NEED_ASK
+from .mission_phrases import (HELP_CANCEL_CONFIRM, HELP_CONFIRM, SPK_IDENTITY, SPK_REASK, WAIT_FINISH_ASK,
+                              WAIT_NEED_ASK)
 from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING, expects_answer
 from .schema import VicaIntent
 
-# 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다.
-MISSION_QUESTIONS = frozenset({WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM})
+# 대기 중·주행 중에도 미션이 묻는 질문 — dialog_state 만으로는 질문 중인지 모른다. 도움 요청의 확인
+# 질문(주행 중)·취소 질문(일시정지)도 그렇다(관리자 호출 2026-10-16 검토).
+MISSION_QUESTIONS = frozenset({WAIT_FINISH_ASK, WAIT_NEED_ASK, CANCEL_CONFIRM,
+                               HELP_CONFIRM, HELP_CANCEL_CONFIRM})
 # 그 질문의 답을 기다리는 시간 — 음성 질문 뒤 문맥 창(ros_node.FOLLOWUP_CONTEXT_SEC)과 같다.
 ASK_FRESH_SEC = 40.0
 # 미션이 수락 뒤 직접 목적지를 묻는 단계 — LLM 의 확인 질문은 겹친다.
@@ -57,12 +62,68 @@ def confirming_same_place(intent, dialog_state: str, last_robot_text: str,
     return outer == [name]
 
 
+SPK_WAIT_STATES = ("waiting", "waiting_release")
+SPK_GATED_KINDS = ("navigate", "cancel", "finish", "resume", "wait")
+SPK_GATE_FRESH_SEC = 20.0   # 미션 되묻기·본인 질문 창 15 s + 대답의 STT·LLM 지연
+_IDENTITY_HEAD, _IDENTITY_TAIL = SPK_IDENTITY.split("{dest}")
+
+
+def spk_gate_question(last_robot_text: str, age_sec: float, dialog_state: str, spk_on: bool) -> str:
+    """대기 중 본인 확인 질문이 열려 있으면 "reask"·"identity", 아니면 "". 마지막 로봇 말로 판단한다."""
+    if not spk_on or dialog_state not in SPK_WAIT_STATES or age_sec > SPK_GATE_FRESH_SEC:
+        return ""
+    text = (last_robot_text or "").strip()
+    if text == SPK_REASK:
+        return "reask"
+    if text.startswith(_IDENTITY_HEAD) and text.endswith(_IDENTITY_TAIL):
+        return "identity"
+    return ""
+
+
+def _yes_no(text: str) -> Optional[str]:
+    """첫 낱말이 부정이면 deny, 낱말이 모두 긍정이면 affirm. '음' 같은 망설임은 긍정으로 안 본다."""
+    words = re.findall(r"[0-9A-Za-z가-힣]+", text or "")
+    if not words:
+        return None
+    if words[0] in NEGATIVES:
+        return "deny"
+    if all(w in AFFIRMATIVES for w in words):
+        return "affirm"
+    return None
+
+
+def identity_answer(intent, text: str, gate: str):
+    """본인 질문의 짧은 네/아니요는 글자로 정한다.
+
+    11-11 실기: 질문 속 장소 이름 때문에 LLM 이 "네"·"아니요"·"그래 맞아"를 navigate 로 읽었고,
+    미션은 본인 질문 대답으로 affirm·deny 만 받아 버렸다(4번 중 3번).
+    """
+    if gate != "identity" or getattr(intent, "safety_flag", "") == "emergency":
+        return intent
+    kind = _yes_no(text)
+    if kind is None:
+        return intent
+    return intent.model_copy(update={"intent": kind, "destination_candidate": None,
+                                     "matched_destination_id": None, "need_confirm": False, "reply": ""})
+
+
 def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
-                      last_robot_age_sec: float, place_names: Sequence[str] = ()):
+                      last_robot_age_sec: float, place_names: Sequence[str] = (),
+                      spk_on: bool = False, spk_gate: str = ""):
     """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다.
     주행 중 "다시 가자"는 확인 질문도 뺀다 — 미션이 가는 곳을 말한다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
         return intent
+    if spk_on and dialog_state in SPK_WAIT_STATES and intent.intent in SPK_GATED_KINDS:
+        # 대기 중 본인 확인(2026-11-11 설계 B5) — 확인 질문·되묻기·본인 질문은 미션이 말한다. 음성까지
+        # 말하면 두 목소리이고, 다른 사람에게도 확인 질문이 나간다.
+        if intent.intent == "resume":
+            # 확인 전 resume 은 음성이 보류한다 — 말도 미션 전달도 없게 된다. 확정으로 보내 미션이 어디로 갈지 묻는다(검토 I2).
+            return intent.model_copy(update={"reply": "", "need_confirm": False})
+        return intent.model_copy(update={"reply": ""})
+    if spk_on and dialog_state in SPK_WAIT_STATES and spk_gate:
+        # 되묻기·본인 질문의 대답 차례 — 다음 말은 미션이 한다(11-11 21:25·21:32 두 목소리).
+        return intent.model_copy(update={"reply": ""})
     if dialog_state == "awaiting_user" and intent.intent != "question":
         # 접근 질문('안내를 받으시겠어요?') 중에는 질문에만 소리 내어 답한다. 되묻기·"네?"·확인 질문은
         # 지우고 다시 묻기는 미션이 한다(2026-10-09 사용자 결정 — run82 17:19 LLM 이 "어느 곳으로 안내를
@@ -78,6 +139,9 @@ def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
     if intent.intent == "pause":
         # "잠깐"은 미션이 모든 상태에서 답한다(일시정지·"네?"·"지금은 안내 중이 아닙니다").
         # 음성까지 "네, 잠시 설게요."면 두 목소리다(2026-10-09 최종 검토 I-2).
+        return intent.model_copy(update={"reply": ""})
+    if intent.intent == "help":
+        # 도움 요청은 미션이 묻고 답한다(관리자 호출 설계 2026-10-15) — 음성까지 말하면 두 목소리다.
         return intent.model_copy(update={"reply": ""})
     if intent.intent == "cancel":
         # 취소도 미션이 모든 상태에서 답한다(주행·일시정지 "안내를 취소할까요?", 대기 "안내가 필요 없으신가요?",

@@ -60,6 +60,9 @@ VicaIntentType = Literal[
     # 목적지 도착 후 대화 (2026-08-30, arrival-dialog-flow). wait 는 시간을
     # wait_minutes 에 담고, finish 는 홈 복귀 신호다. 둘 다 reply="".
     "wait", "finish",
+    # 관리자 호출(도움 요청, 2026-10-15 설계). 직원·관리자의 도움을 원함 — 판단은 LLM 만 한다
+    # (키워드 규칙 없음). 확인 질문·안내는 미션이 하므로 reply="". VicaIntent.msg 는 문자열이라 그대로.
+    "help",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
@@ -82,6 +85,11 @@ class VicaIntent(BaseModel):
     safety_flag: SafetyFlag = "normal"
     # wait 의 요청 시간(분). 없거나 무관하면 -1. 상한 강제는 Mission 몫.
     wait_minutes: int = -1
+    # 화자 판정(2026-11-11 설계 speaker-follow) — LLM 이 만들지 않는다. 의도 노드가 호출 노드의
+    # /vica/user_speaker 판정을 발행 직전에 싣는다. 없으면 "" · −1.
+    speaker_verdict: str = ""
+    speaker_score: float = -1.0
+    speaker_joined: float = -1.0
 
 
 class EmergencyEvent(BaseModel):

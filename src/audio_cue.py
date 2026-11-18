@@ -98,3 +98,48 @@ def approach_chime() -> np.ndarray:
     wave[gap:] += second
     peak = float(np.max(np.abs(wave)))
     return (wave / peak).astype(np.float32) if peak > 0 else wave.astype(np.float32)
+
+
+# 위치 비프 (2026-10-23 사용자 결정 — 시청 페이지 C3M21). 손잡이 잡기 요청 멘트 뒤와
+# 비상정지를 알린 멘트 뒤에 4초 울려 시각장애인이 로봇 위치를 소리로 찾게 한다(울릴 때는
+# locator_beep). 0.25→0.75 kHz 로 올라가는 음을 0.375 s 마다 0.21 s 씩 11번 — 1차의 1 kHz
+# 비프는 멘트보다 크고 높게 들려 내렸다. 올라가는 음은 접근 차임 '딩—동↗'과 같은 결이고,
+# 펄스마다 시작하는 3 ms 딸깍(넓은 대역)이 방향 단서가 된다.
+LOCATOR_SWEEP_HZ = (250.0, 750.0)
+LOCATOR_ON_SEC = 0.21
+LOCATOR_PERIOD_SEC = 0.375
+LOCATOR_COUNT = 11                     # 마지막 펄스 3.75~3.96 s
+LOCATOR_TOTAL_SEC = 4.0
+LOCATOR_THIRD_GAIN = 3 ** -1.3         # 3배음 세기(기음 대비)
+LOCATOR_CLICK_SEC = 0.003
+LOCATOR_CLICK_GAIN = 0.15              # 딸깍 세기(펄스 최고점 대비)
+# 최고점. 이때 RMS 가 멘트(최고점 -3 dBFS, RMS 약 -20 dBFS)와 거의 같다 — 같은 최고점이면
+# 비프가 멘트보다 13~16 dB 크게 들렸다(10-23 청취).
+LOCATOR_DBFS = -15.0
+
+
+def _locator_pulse() -> np.ndarray:
+    n = int(LOCATOR_ON_SEC * SAMPLE_RATE)
+    t = np.arange(n) / SAMPLE_RATE
+    f0, f1 = LOCATOR_SWEEP_HZ
+    k = np.log(f1 / f0) / LOCATOR_ON_SEC
+    phase = 2 * np.pi * f0 * (np.exp(k * t) - 1) / k     # 지수 상승 — 귀에는 고르게 오른다
+    wave = np.sin(phase) + LOCATOR_THIRD_GAIN * np.sin(3 * phase)
+    attack, release = int(0.003 * SAMPLE_RATE), int(0.015 * SAMPLE_RATE)
+    wave[:attack] *= 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, attack))
+    wave[-release:] *= 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, release))
+    nc = int(LOCATOR_CLICK_SEC * SAMPLE_RATE)
+    click = np.diff(np.random.default_rng(0).standard_normal(nc + 1)) * np.hanning(nc)
+    wave[:nc] += LOCATOR_CLICK_GAIN * click / np.max(np.abs(click)) * np.max(np.abs(wave))
+    return wave
+
+
+def locator_beep() -> np.ndarray:
+    """위치 비프 한 묶음(4초). 재생 크기는 부르는 쪽이 정한다(LOCATOR_DBFS)."""
+    pulse = _locator_pulse()
+    total = int(LOCATOR_TOTAL_SEC * SAMPLE_RATE)
+    wave = np.zeros(total, dtype=np.float64)
+    for i in range(LOCATOR_COUNT):
+        start = int(round(i * LOCATOR_PERIOD_SEC * SAMPLE_RATE))
+        wave[start:start + len(pulse)] += pulse[: total - start]
+    return (wave / np.max(np.abs(wave))).astype(np.float32)

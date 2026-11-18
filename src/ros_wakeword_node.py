@@ -6,6 +6,7 @@ ros_emergency_node(whisper 상시)와 push-to-talk STT 를 함께 대체하는 �
       /vica/user_text (std_msgs/String)                 ← 호출 후 발화 (기존 계약)
       /vica/tts_stop  (std_msgs/Empty)                  ← barge-in: 재생 즉시 중단 요청
       /vica/wake      (std_msgs/String)                 ← "wake" 호출 / "rescue" 창 안 구제
+      /vica/patrol/event (std_msgs/String)              ← 경비 순찰 중 큰 소리 sound JSON (2026-11-14)
 구독: /vica/tts_state (std_msgs/Bool)                   ← TTS 재생 경계 (뮤트 또는 AEC 모드)
       /vica/tts_now (std_msgs/String)                   ← 지금 재생하는 문장 (자기 목소리 호출 무시)
       /vica/listen_request (std_msgs/Bool)              ← 질문 후 재청취 예약 (true=예약)
@@ -28,6 +29,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 
 # .env 를 다른 어떤 모듈보다 먼저 로드한다 (2026-09-01). 예전엔 stt.py 의
@@ -45,15 +47,22 @@ from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
 from .destination_loader import build_place_hint, load_destinations
-from .dsp_state import (agc_desired_from_env, apply_agc_desired_level,
-                        apply_echo_tuning, echo_tuning_from_env)
+from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
+                        apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
+from .patrol_sound import PatrolSoundTap, sound_watched
 from .realtime_intent import float32_to_pcm16
+from .speaker_follow import SpeakerFollow, spk_config_from_env
+from .speaker_link import verdict_label
+from .spk_embed import load_embedder
 from .replies import WAKE_GREETING
 from .stt_guard import strip_robot_echo
+from .stt_qwen import QwenUnavailable, ear_stt_engines
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
-from .wakeword_monitor import LISTEN_START_SEC, WakewordMonitor
+from .wakeword_monitor import (
+    LISTEN_START_SEC, WakewordMonitor, describe_emergency_check, describe_emergency_near,
+    ear_stt_model_names, listen_band_min_from_env, save_emergency_clip)
 
 # 첫 호출 인사("네?")를 미리 합성해 둔 파일. 있으면 TTS 큐를 거치지 않고 즉시 난다.
 # 호출 응답은 빠를수록 좋다 — 사용자가 "들었나?" 하고 기다리는 순간이다.
@@ -174,7 +183,35 @@ class WakewordNode(Node):
         # 소리→의도 직행(audio 모드, 2026-09-20 실험): 청취 클립을 LLM 노드로 보낸다.
         # text 모드(기본)에서는 아무것도 발행하지 않는다 — 지금과 동일.
         self._intent_input = os.environ.get("VICA_INTENT_INPUT", "text").strip().lower()
+        # 긴급 관문 소리 저장(2026-10-12 사용자 결정) — 확정·기각·아깝게 놓침 때 들은 ~2.5 s 를 wav 로.
+        # 빠른 확인용 STT 를 현장 소리로 견주고 놓침을 다시 듣는 자료. "off" 면 끈다.
+        clip_dir = os.environ.get("VICA_ESTOP_CLIP_DIR", "~/vica_data/estop_clips").strip()
+        self._estop_clip_dir = None if clip_dir.lower() in ("", "off", "0", "false") else clip_dir
+        # 말소리 저장(2026-10-21 사용자 요청) — 청취 창에서 말소리가 있던 소리를 통과·기각 모두 wav 로.
+        # Realtime·받아쓰기가 무엇을 들었는지 다시 듣고 견주는 자료. 긴급 소리 저장처럼 기본 켬, "off" 면 끈다.
+        listen_dir = os.environ.get("VICA_LISTEN_CLIP_DIR", "~/vica_data/listen_clips").strip()
+        self._listen_clip_dir = None if listen_dir.lower() in ("", "off", "0", "false") else listen_dir
+        self._listen_clip_warned = False
+        self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
+        # 세션 주인 목소리 판정(2026-11-11 설계 speaker-follow). off 면 판정기를 만들지 않는다 — 지금 그대로.
+        self._spk_cfg = spk_config_from_env(os.environ)
+        self._speaker = None
+        if self._spk_cfg.mode != "off":
+            try:
+                embed = load_embedder(os.path.expanduser(self._spk_cfg.model_path))
+                embed((np.random.default_rng(0).standard_normal(16000) * 0.01).astype(np.float32))  # 예열(검토 I4)
+                self._speaker = SpeakerFollow(self._spk_cfg, embed, log=self.get_logger().info)
+            except Exception as exc:  # noqa: BLE001 — 모델을 못 올려도 듣기는 멈추지 않는다
+                self.get_logger().fatal(f"[화자] 모델을 못 올림 — 화자 판정 끔: {exc!r}")
+        self._spk_pending = None   # (시각, Verdict) — 다음 글자 발행 때 /vica/user_speaker 로 함께 낸다
+        self._pub_speaker = self.create_publisher(String, "/vica/user_speaker", 10)
+        # 모드를 미션에 알린다 — on 이면 미션이 대기 중 본인 확인을 켠다(마지막 값 보관, 늦게 뜬 미션도 받음).
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        self._pub_spk_mode = self.create_publisher(
+            String, "/vica/speaker_mode",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._pub_spk_mode.publish(String(data=self._spk_cfg.mode if self._speaker is not None else "off"))
 
         self._monitor = WakewordMonitor(
             listen_hint=listen_hint,
@@ -187,16 +224,52 @@ class WakewordNode(Node):
             on_listen_state=self._on_listen_state,
             on_wake_doa=self._publish_wake_doa,
             on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
+            on_listen_clip=self._save_listen_clip if self._listen_clip_dir else None,
+            # 말소리 대역 관문(2026-10-21) — 바람·기계음이 청취 창을 붙잡지 않게. off 면 옛 동작.
+            listen_band_min=listen_band_min_from_env(),
             voice_barge_in=self._voice_barge_in,
             user_doa_center=self._user_doa_center,
             doa_gate=self._doa_gate,
             user_doa_width=self._user_doa_width,
             wake_gate=self._wake_by_mission,
             on_wake_score=self._on_wake_score,
+            on_emergency_score=self._on_emergency_score,
+            log=self.get_logger().info,
+            speaker=self._speaker,
+            on_speaker_verdict=self._on_speaker_verdict if self._speaker is not None else None,
         )
         self.get_logger().info(
+            f"[화자] {self._spk_cfg.mode if self._speaker is not None else 'off'} · 문턱 비카야+발화 "
+            f"{self._spk_cfg.th_wake:.2f}·발화 {self._spk_cfg.th:.2f}·짧은 말 {self._spk_cfg.short_sec:.1f}s")
+        self.get_logger().info(
             f"호출 문턱 {self._monitor.gate_a.threshold:.2f} · "
-            f"말 시작 기다림 {LISTEN_START_SEC:.1f}s")
+            f"말 시작 기다림 {LISTEN_START_SEC:.1f}s · "
+            f"수음 최소 {self._monitor.listen_min_rms:.4f} · "
+            f"짧은 답 최소 {self._monitor.short_answer_min_rms:.4f} · "
+            + (f"접근 대답 최소 {self._monitor.approach_min_rms:.4f} · "
+               if self._monitor.approach_min_rms is not None else "")
+            + (f"말소리 대역 최소 {self._monitor.listen_band_min:.4f} · "
+               if self._monitor.listen_band_min is not None else "말소리 대역 관문 꺼짐 · ")
+            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}")
+        single = self._monitor.gate_b.single
+        listen_stt, verify_stt = ear_stt_model_names()
+        try:
+            listen_engine, verify_engine = ear_stt_engines()
+        except QwenUnavailable as exc:
+            # 잘못 적은 값 — 감시 스레드가 같은 오류로 멈추고 아래 감시 타이머가 노드를 끝낸다.
+            listen_engine = verify_engine = f"설정 오류({exc})"
+        qwen_name = Path(os.environ.get("VICA_QWEN_MODEL") or "").stem or "모델 경로 없음"
+
+        def _stt_label(engine: str, whisper_name: str) -> str:
+            if engine == "qwen":
+                return f"qwen({qwen_name})"
+            return whisper_name if engine == "whisper" else engine
+
+        self.get_logger().info(
+            f"긴급 관문 {self._monitor.gate_b.threshold:.2f} 2연속"
+            + (f" 또는 한 조각 {single:.2f}" if single is not None else " (한 조각 규칙 꺼짐)")
+            + f" · 긴급 확인 STT {_stt_label(verify_engine, verify_stt)}"
+            + f" · 대화 STT {_stt_label(listen_engine, listen_stt)}")
         # AGC 목표 레벨 굳히기 — 칩은 전원 재투입마다 초기값(0.005)으로
         # 돌아간다. 반드시 마이크 스트림을 열기 전에 (스트림과 겹치면 제어
         # 전송 거부). D7 동결의 승인된 유일한 예외 (dsp_state 모듈 주석).
@@ -208,6 +281,16 @@ class WakewordNode(Node):
             else:
                 self.get_logger().warning(
                     f"AGC 목표 레벨 설정 실패({desired}) — 공장 기본으로 감시 계속")
+
+        # AGC 최대 증폭 한도 (2026-10-15 사용자 결정 ×2 — D7 동결의 세 번째 예외, 근거는 dsp_state 주석).
+        # 공장값 ×31.6 은 2~3 m 옆사람 잡담을 사용자만큼 키웠다. 줄이 없으면 쓰지 않는다(공장값 그대로).
+        max_gain = agc_max_gain_from_env(os.environ.get("VICA_MIC_AGC_MAX_GAIN", ""))
+        if max_gain is not None:
+            if apply_agc_max_gain(max_gain):
+                self.get_logger().info(f"AGC 최대 증폭 한도 설정: ×{max_gain:g}")
+            else:
+                self.get_logger().warning(
+                    f"AGC 최대 증폭 한도 설정 실패(×{max_gain:g}) — 공장값(×31.6)으로 감시 계속")
 
         # 에코 억제 나사 (2026-09-04 촬영 현장 결정). AGC 와 같은 자리에서,
         # 같은 이유로 매 기동 쓴다 — 칩은 전원 재투입마다 공장값으로 돌아간다.
@@ -225,9 +308,23 @@ class WakewordNode(Node):
                 self.get_logger().warning(
                     "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
+        # 경비(순찰) 큰 소리 판정(2026-11-14) — patrolling·patrol_dwell 에서만 계산·발행한다. 로직은 patrol_sound.py.
+        self._pub_patrol = self.create_publisher(String, "/vica/patrol/event", 10)
+        self._patrol = PatrolSoundTap(
+            emit=lambda data: self._pub_patrol.publish(String(data=data)), log=self.get_logger().info)
+        self._monitor.patrol_tap = self._patrol   # 감시 스레드를 띄우기 전에 붙인다
+        # 관리자가 앱에서 '큰 소리'를 꺼 뒀으면 순찰 중에도 재지 않는다(미션이 마지막 값 보관으로 알린다, 못 받으면 켬).
+        self.create_subscription(
+            String, "/vica/patrol/watch", self._on_patrol_watch,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
-        self._thread = threading.Thread(target=self._monitor.run, daemon=True)
+        self._monitor_error: "BaseException | None" = None
+        self._thread = threading.Thread(target=self._run_monitor, daemon=True)
         self._thread.start()
+        # 귀 감시 스레드가 죽으면(모델 적재 실패·Qwen 오류 잇따름 등) 노드를 끝낸다 — 노드만 살아 '비카야'·'멈춰'를
+        # 못 듣는 조용한 고장을 막는다(2026-10-15). 주행은 막지 않는다 — 개발 중 음성 없이도 주행한다(사용자 결정).
+        self.create_timer(1.0, self._check_monitor)
         mode = "뮤트" if self._mute_during_tts else "감시 유지(AEC)"
         barge = "켜짐" if self._voice_barge_in else "꺼짐"
         gate = (f"켜짐 center={self._user_doa_center}±{self._user_doa_width}"
@@ -244,7 +341,9 @@ class WakewordNode(Node):
         self._stop_pub.publish(Empty())
         self._pub_emergency.publish(emergency_to_msg(event))
         self.get_logger().warn(
-            f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})")
+            f"🚨 긴급 '{event.keyword}' 확정 -> /vica/emergency (인식: {event.source_text!r})"
+            + describe_emergency_check(self._monitor.last_emergency_check))
+        self._save_estop_clip(self._monitor.last_emergency_audio, self._monitor.last_emergency_check)
 
     def _on_tts_done_text(self, msg: String) -> None:
         now = time.time()
@@ -264,6 +363,12 @@ class WakewordNode(Node):
                 return
             self.get_logger().info(f"에코 제거: {text!r} -> {cleaned!r}")
             text = cleaned
+        pending, self._spk_pending = self._spk_pending, None
+        if pending is not None and now - pending[0] <= 15.0:
+            # 판정은 글자 바로 앞에 — 의도 노드가 같은 글자로 짝을 찾는다(에코 제거 뒤 글자로 맞춘다).
+            verdict = pending[1]
+            verdict.text = text
+            self._pub_speaker.publish(String(data=verdict.to_json()))
         msg = String()
         msg.data = text
         self._pub_text.publish(msg)
@@ -337,10 +442,25 @@ class WakewordNode(Node):
         self._pub_wake.publish(msg)
         self.get_logger().info("🙋 비카야 호출 — 청취 창 열림")
 
+    def _on_speaker_verdict(self, verdict) -> None:  # noqa: ANN001
+        """감시 스레드에서 온 판정 — 기록하고, 다음 글자와 함께 낼 때까지 둔다."""
+        self._spk_pending = (time.time(), verdict)
+        self.get_logger().info(
+            f"[화자] {verdict.verdict} 점수 {verdict.score:.2f}/{verdict.joined:.2f} {verdict.unit} "
+            f"{verdict.speech_sec:.1f}s 방향 {verdict.doa if verdict.doa is not None else '-'} {verdict.reason}"
+            + (" — 버림" if verdict.drop else ""))
+
+    def _on_patrol_watch(self, msg: String) -> None:
+        watched = sound_watched(msg.data)
+        if watched is not None:
+            self._patrol.set_watch(watched)
+
     def _on_robot_state(self, msg: RobotStateMsg) -> None:
         """접근 질문('안내를 받으시겠어요?')의 답을 기다리는 동안 '비카야'를 호출로 듣지 않는다(2026-10-09
         사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
         self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
+        self._monitor.set_dialog_state(msg.dialog_state)   # 화자 판정의 세션 시작·끝(판정기 없으면 무시)
+        self._patrol.set_state(msg.dialog_state)   # 경비 소리 판정 — patrolling·patrol_dwell 일 때만 켜진다
         off = msg.dialog_state == "awaiting_user"
         if off != self._wake_off:
             self._wake_off = off
@@ -375,6 +495,10 @@ class WakewordNode(Node):
         msg = UInt8MultiArray()
         # size 는 표본 수(샘플), stride 는 바이트 수(pcm16 이라 표본당 2 바이트) — 단위가 다르다.
         msg.layout.dim.append(MultiArrayDimension(label="pcm16_mono_16000", size=len(pcm) // 2, stride=len(pcm)))
+        pending = self._spk_pending
+        if pending is not None and time.time() - pending[0] <= 15.0:
+            # 화자 판정은 소리와 한 메시지로 — 의도 노드가 소리 의도에 그대로 싣는다(검토 C2).
+            msg.layout.dim.append(MultiArrayDimension(label=verdict_label(pending[1].to_json()), size=0, stride=0))
         msg.data = array.array('B', pcm)
         self._pub_audio.publish(msg)
         self.get_logger().info(f"🎧 발화 소리 -> /vica/user_audio ({len(pcm)/2/16000:.2f}s)")
@@ -389,8 +513,37 @@ class WakewordNode(Node):
 
         반드시 남긴다 — "멈춰"가 씹혔을 때 관문을 못 넘은 것인지, 넘고
         기각된 것인지 이 로그 없이는 사후에 가릴 수 없다 (2026-08-24 실기).
+        청취 창 안 오발동·질문 답 대기 중 오발동도 여기로 온다(2026-10-12) — 꼬리에 어디서였는지와
+        관문 점수·STT 시간을 붙인다.
         """
-        self.get_logger().warn(f"긴급 관문 발동 → STT 기각 (전사: {text!r})")
+        self.get_logger().warn(f"긴급 관문 발동 → STT 기각 (전사: {text!r})"
+                               + describe_emergency_check(self._monitor.last_emergency_check))
+        self._save_estop_clip(self._monitor.last_emergency_audio, self._monitor.last_emergency_check)
+
+    def _on_emergency_score(self, info: dict) -> None:
+        """긴급 모델이 반응했지만 발동하지 않은 소리 — 점수 미달·한 조각만·쉬는 시간(2026-10-12)."""
+        self.get_logger().info(describe_emergency_near(info, self._monitor.gate_b.threshold))
+        self._save_estop_clip(info.get("audio"), info)
+
+    def _save_estop_clip(self, audio, info) -> None:
+        # 기록일 뿐이다 — 저장이 실패해도 긴급 판정과 마이크 스레드는 계속 간다. 경고는 한 번만.
+        if self._estop_clip_dir is None or audio is None or not info or len(audio) == 0:
+            return
+        try:
+            save_emergency_clip(self._estop_clip_dir, audio, info)
+        except Exception as exc:
+            if not self._estop_clip_warned:
+                self._estop_clip_warned = True
+                self.get_logger().warn(f"긴급 소리 저장 실패(이후 경고 생략): {exc}")
+
+    def _save_listen_clip(self, audio, info) -> None:
+        # 긴급 소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
+        try:
+            save_emergency_clip(self._listen_clip_dir, audio, info)
+        except Exception as exc:
+            if not self._listen_clip_warned:
+                self._listen_clip_warned = True
+                self.get_logger().warn(f"말소리 저장 실패(이후 경고 생략): {exc}")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""
@@ -423,10 +576,25 @@ class WakewordNode(Node):
 
     def _on_tts_state(self, msg: Bool) -> None:
         self._tts_speaking = bool(msg.data)
+        self._patrol.set_speaking(self._tts_speaking)   # 로봇이 말하는 동안 경비 소리 판정을 쉰다
         if self._mute_during_tts:
             self._monitor.set_muted(bool(msg.data))
         else:
             self._monitor.set_speaking(bool(msg.data))
+
+
+    def _run_monitor(self) -> None:
+        try:
+            self._monitor.run()
+        except BaseException as exc:  # noqa: BLE001 — 원인을 남긴다. 감시 타이머가 노드를 끝낸다
+            self._monitor_error = exc
+            raise
+
+    def _check_monitor(self) -> None:
+        if self._thread.is_alive():
+            return
+        self.get_logger().fatal(f"귀 감시가 멈췄습니다 — 노드를 끝냅니다: {self._monitor_error!r}")
+        raise SystemExit(1)
 
 
 def main(args=None) -> None:

@@ -37,16 +37,17 @@ from .building_directory import directory_path, format_directory_block, load_dir
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
 from .history import ConversationHistory
+from .speaker_link import SpeakerLink, verdict_from_labels
 from .langchain_intent_parser import (
-    get_backend_manager, is_instant_utterance, is_scripted_intent, is_scripted_reply,
+    get_backend_manager, is_instant_utterance, is_relisten_noise, is_scripted_reply,
     parse_intent, parse_intent_audio)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
-from .mission_question import (quiet_for_mission, reask_held_resume,
-                               should_reask_resume_on_silence)
+from .mission_question import (identity_answer, quiet_for_mission, reask_held_resume,
+                               should_reask_resume_on_silence, spk_gate_question)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import (ab_shadow_enabled, audio_turn_applies, get_realtime_client,
-                              pcm16_from_audio_msg)
+from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_turn_applies,
+                              get_realtime_client, pcm16_from_audio_msg)
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
@@ -142,12 +143,19 @@ class LlmIntentNode(Node):
         self._last_text_publish_intent = ""   # 그때 낸 intent — 멈춤 중복 발행 방지용
         # 에코 대조용 최근 로봇 발화(웨이크워드 노드와 같은 방어, stt_guard.strip_robot_echo).
         self._robot_recent: list = []
+        self._last_robot_line = (0.0, "")   # (시각, 대기 알림 뺀 마지막 로봇 말) — 본인 확인 질문 판단용
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
         self.get_logger().info(
             f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
             f" | 비교 기록(GPT): {'켬' if self._ab_shadow else '꺼짐'}")
 
+        # 화자 판정(2026-11-11 설계 speaker-follow) — 같은 글자의 의도에 싣는다. 글자보다 먼저 구독한다.
+        self._spk_link = SpeakerLink()
+        self._audio_spk = None   # 지금 처리 중인 소리 발화에 실려 온 판정(소리 의도 경로, 검토 C2)
+        self._spk_on = os.environ.get("VICA_SPK_FOLLOW", "off").strip().lower() == "on"
+        self.create_subscription(String, "/vica/user_speaker",
+                                 lambda m: self._spk_link.put(m.data, time.time()), 10)
         self.create_subscription(String, "/vica/user_text", self._on_user_text, 10)
         self.create_subscription(RobotStateMsg, "/vica/robot_state", self._on_robot_state, 10)
         # 재청취 창 문맥 추적 (2026-09-01): 질문 뒤 자동으로 열린 창에서 온
@@ -203,10 +211,10 @@ class LlmIntentNode(Node):
                 f"LLM 워밍업 완료 ({time.monotonic() - started:.1f}초)")
         except Exception as exc:
             self.get_logger().warning(f"LLM 워밍업 실패(무시 가능): {exc}")
-        # 워밍업 중 클라우드가 실패했으면 관리자는 이미 LOCAL 이다. 그 경우 로컬
-        # 모델을 지금 미리 올려 첫 발화가 적재 7초를 기다리지 않게 한다.
-        if self._backend.state is BackendState.LOCAL:
-            self._backend.warm_local_async()
+        # 로컬 모델(VICA_LLM_FALLBACK_MODEL)은 클라우드가 살아 있어도 지금 올려 둔다(2026-10-24 사용자) —
+        # Realtime 연결 오류 때 첫 답이 적재를 기다리지 않게(10-24 실측: 처음 10.8 s → 2 s, 상주 약 2.2 GB).
+        # 예전에는 워밍업 중 클라우드가 실패해 LOCAL 일 때만 올렸다. 로컬이 없으면 아무것도 안 한다.
+        self._backend.warm_local_async()
         # audio 모드는 Realtime 접속도 미리 맺는다(항목 E) — 첫 발화가 연결까지
         # 기다리지 않게 한다. 실패해도(네트워크 없음 등) 노드는 그대로 간다.
         if self._intent_input == "audio":
@@ -363,6 +371,19 @@ class LlmIntentNode(Node):
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
         intent = reask_held_resume(intent, self._history.messages)
+        spk = self._spk_link.take(text, time.time())
+        if spk is None and self._audio_spk is not None:
+            spk, self._audio_spk = self._audio_spk, None
+        if spk is not None:
+            intent = intent.model_copy(update={
+                "speaker_verdict": str(spk.get("verdict", "")),
+                "speaker_score": float(spk.get("score", -1.0)),
+                "speaker_joined": float(spk.get("joined", -1.0))})
+        # 2-0b) 대기 중 본인 확인 질문이 열려 있나. 본인 질문의 네/아니요는 글자로 정한다(11-11 실기).
+        gate_t, gate_text = self._last_robot_line
+        spk_gate = spk_gate_question(gate_text, time.time() - gate_t,
+                                     self._robot_state.dialog_state, self._spk_on)
+        intent = identity_answer(intent, text, spk_gate)
         # 2-1) 재청취 창의 무의미 발화는 침묵으로 버린다 — 대꾸도, 기록도
         #      하지 않는다 (멘트 최소주의: 실패·경계는 로그. 못 들은 질문의
         #      재질문은 미션이 유일한 목소리다). 히스토리에 안 남기는 것이
@@ -373,14 +394,13 @@ class LlmIntentNode(Node):
         #      무응답이 됐다(실기). 판별은 SHORTCUT_REPLIES 로 한다 — LLM 이
         #      지어낸 잡담 대꾸는 이 목록에 없으므로 종전대로 버려진다.
         #      '음' 단독의 확인 재질문(2026-09-28)도 같은 까닭으로 통과한다 —
-        #      판별은 is_scripted_reply(호출 응답 + 목적지 확인 문구).
+        #      판별은 is_scripted_reply(호출 응답 + 목적지 확인 문구 + 고르기 질문, 2026-10-24).
         #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
-        if (not llm_first
-                and time.time() < self._followup_until
-                and intent.intent in ("unknown", "clarify")
-                and not intent.need_confirm
-                and not is_scripted_intent(intent, self._destinations)
-                and intent.safety_flag != "emergency"):
+        #      로봇의 마지막 말이 호출 응답 "네?"면 호출 창이라 기각하지 않는다(2026-10-24, is_relisten_noise).
+        last_spoken = self._robot_recent[-1][1] if self._robot_recent else ""
+        if not llm_first and is_relisten_noise(intent, self._destinations,
+                                               in_window=time.time() < self._followup_until,
+                                               last_robot_text=last_spoken):
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")
             return
@@ -397,7 +417,8 @@ class LlmIntentNode(Node):
         #      (2026-10-08 미션 요청 반응표). 판단은 순수 함수(mission_question)가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
-                                    time.time() - last_t, [d.name for d in self._destinations])
+                                    time.time() - last_t, [d.name for d in self._destinations],
+                                    spk_on=self._spk_on, spk_gate=spk_gate)
         silenced = quieted is not intent
         intent = quieted
 
@@ -481,6 +502,8 @@ class LlmIntentNode(Node):
             (t, s) for t, s in self._robot_recent if now - t < ROBOT_ECHO_TTL_SEC]
         self._robot_recent.append((now, msg.data))
         text = (msg.data or "").strip()
+        if text and text != WAIT_BEACON:
+            self._last_robot_line = (now, text)
         # 대기 중 10초 알림(M3)은 기록에 넣지 않는다(2026-10-07 검토) — 30분 대기면 180번이라
         # 16줄 기록이 3분이면 그것으로 가득 차, 돌아온 사용자의 말에 앞 대화를 잃는다.
         if self._spoken_history and text and text != WAIT_BEACON:
@@ -506,6 +529,7 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[A/B] Realtime 최근 실패 — {REALTIME_RETRY_AFTER_SEC:.0f}초간 소리 경로 생략, 텍스트 경로가 처리")
             return
+        self._audio_spk = verdict_from_labels([d.label for d in msg.layout.dim])
         try:
             label = msg.layout.dim[0].label if msg.layout.dim else ""
             pcm = pcm16_from_audio_msg(msg.data, label)
@@ -538,9 +562,19 @@ class LlmIntentNode(Node):
                 directory_block=format_directory_block(
                     self._directory, self._robot_state.current_building, self._robot_state.current_floor))
         except Exception as exc:
+            # 연결 오류(접속 실패·끊김)면 이 발화부터 글자 경로를 바로 로컬 LLM 으로 — 클라우드 글자 LLM 도
+            # 같은 인터넷이라 VICA_LLM_CLOUD_TIMEOUT 기다려 실패할 뿐이다(2026-10-24 사용자). 응답 지연·그 밖의
+            # 실패는 글자 경로가 클라우드(VICA_LLM_PROVIDER=openai 면 gpt-5.4-mini)부터 부른다.
+            to_local = isinstance(exc, RealtimeConnectionError) and self._backend.go_local("Realtime 연결 오류")
+            if isinstance(exc, RealtimeConnectionError) and not self._backend.has_local:
+                where = "로컬 LLM 없음(VICA_LLM_FALLBACK_MODEL 비어 있음) — 클라우드 글자 경로"
+            elif self._backend.state is BackendState.LOCAL:
+                where = "로컬 LLM" + (" 으로 바로 전환" if to_local else "")
+            else:
+                where = "클라우드 글자 LLM"
             self.get_logger().warning(
                 f"[A/B] 소리 경로 실패({type(exc).__name__}: {exc}) "
-                f"dt={time.monotonic() - call_started:.2f}s — 텍스트 경로가 처리")
+                f"dt={time.monotonic() - call_started:.2f}s — 텍스트 경로가 처리({where})")
             return
         finally:
             self._thinking_pub.publish(Bool(data=False))

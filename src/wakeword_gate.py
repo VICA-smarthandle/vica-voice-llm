@@ -65,20 +65,29 @@ class FrameGate:
     시각(now)을 인자로 받는 순수 로직이라 시계 없이 단위 테스트할 수 있다.
     """
 
-    def __init__(self, threshold: float, persist: int = 2, cooldown_sec: float = 2.0):
+    def __init__(self, threshold: float, persist: int = 2, cooldown_sec: float = 2.0,
+                 single: Optional[float] = None):
         self.threshold = threshold
         self.persist = persist
         self.cooldown_sec = cooldown_sec
+        # 한 조각 문턱(2026-10-12 사용자 결정, 긴급 관문만): 이 점수 이상이면 한 조각으로도 발동한다.
+        # 실측 — 놓친 진짜 "멈춰" 5번이 0.63~0.85 한 조각뿐이었다. None 이면 옛 동작(persist 연속만).
+        self.single = single
         self._streak = 0
         self._last_fire = float("-inf")
+        # 이번 프레임에 지속 조건은 채웠는데 쿨다운이라 발동하지 않았나 — 기록용(2026-10-12).
+        self.cooldown_blocked = False
 
     def feed(self, score: float, now: float) -> bool:
         """프레임 점수 하나를 넣고, 이번 프레임에 발동해야 하면 True."""
         self._streak = self._streak + 1 if score >= self.threshold else 0
-        if self._streak >= self.persist and now - self._last_fire >= self.cooldown_sec:
-            self._last_fire = now
-            self._streak = 0
-            return True
+        self.cooldown_blocked = False
+        if self._streak >= self.persist or (self.single is not None and score >= self.single):
+            if now - self._last_fire >= self.cooldown_sec:
+                self._last_fire = now
+                self._streak = 0
+                return True
+            self.cooldown_blocked = True
         return False
 
     def reset(self) -> None:

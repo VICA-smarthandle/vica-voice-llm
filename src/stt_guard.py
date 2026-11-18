@@ -143,8 +143,12 @@ def _norm_echo(text: str) -> str:
 def strip_robot_echo(text: str, robot_texts) -> str:
     """전사에서 로봇 자신의 최근 발화(에코)를 걷어내고 나머지를 돌려준다.
 
-    문장별 판정 — ① 문장이 로봇 발화의 조각이면 버린다(부분 전사:
-    '다시 말씀해주세요' ← '잘 듣지 못했습니다. 다시 말씀해 주세요.').
+    문장별 판정 — ① 문장이 로봇 발화(또는 그 안의 한 문장)의 끝부분이면
+    버린다(부분 전사: '다시 말씀해주세요' ← '잘 듣지 못했습니다. 다시 말씀해 주세요.').
+    끝부분만 보는 이유: 귀는 로봇이 말을 마친 뒤 열리므로 새어 드는 것은
+    끝자락이다. 질문 속 장소 이름을 따라 한 대답('남자 화장실' ← '남자 화장실과
+    여자 화장실 중 어디로…')은 앞·가운데라 살린다(2026-10-16 실기 두 번 버림,
+    같은 날 메아리 시험 질문 뒤 창 0/30).
     ② 문장 안에 로봇 발화가 통째로 들어 있으면 그 부분만 떼고 남는
     말('어')을 살린다 — 정규화형이지만 짧은 답은 그대로 통한다.
     전부 에코면 빈 문자열. 순수 함수 — 장치 없이 시험된다.
@@ -154,13 +158,16 @@ def strip_robot_echo(text: str, robot_texts) -> str:
               if len(n) >= _ECHO_MIN_CHARS]
     if not robots:
         return text.strip()
+    tails = robots + [n for n in (_norm_echo(s) for r in robot_texts if r
+                                  for s in re.split(r"(?<=[.?!])\s*", r))
+                      if len(n) >= _ECHO_MIN_CHARS]
     kept: list[str] = []
     for sent in re.split(r"(?<=[.?!])\s*", text):
         s = sent.strip()
         if not s:
             continue
         n = _norm_echo(s)
-        if len(n) >= _ECHO_MIN_CHARS and any(n in r for r in robots):
+        if len(n) >= _ECHO_MIN_CHARS and any(r.endswith(n) for r in tails):
             continue
         hit = next((r for r in robots if r in n), None)
         if hit is not None:

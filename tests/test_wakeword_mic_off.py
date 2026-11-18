@@ -75,7 +75,7 @@ def test_mic_opens_again_when_that_speech_ends():
     assert fake.scores and events == []
     m.set_speaking(False, now=2.4)                 # 재생 끝(꼬리 0.4초 포함)
     run_frames(m, 2, t0=2.5)                       # 다시 열림 — 조용한 두 장
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, t0=2.7)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, t0=2.7)
     assert results[-1] == "emergency" and events[0].keyword == "멈춰"
 
 
@@ -85,7 +85,7 @@ def test_other_robot_speech_keeps_the_mic_open():
     events = []
     m = make(fake, events)
     start_speaking(m, OBSTACLE_SLOW, now=0.0)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, t0=0.1)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, t0=0.1)
     assert results[-1] == "emergency" and len(events) == 1
 
 

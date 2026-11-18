@@ -25,18 +25,25 @@ CLI 데모:
 """
 from __future__ import annotations
 
+import json
 import os
 import time
+import wave
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
+from .emergency_filter import detect_stop_request
+from .frame_watch import FrameWatch
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from .mission_phrases import OBSTACLE_STOP
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
+from .stt_qwen import ear_stt_engines, qwen_from_env
 from .wakeword_gate import FrameGate, match_emergency_transcript
 
 SAMPLE_RATE = 16000
@@ -81,6 +88,76 @@ LISTEN_MIN_RMS = 0.008          # 수음 최소 크기
 # (긍/부정)로만 제한해 유령 전사의 부활을 막는다. 자유 창(호출 직후)은
 # 목적지 같은 긴 말을 기다리는 자리라 기존 문턱 그대로다 (사용자 결정).
 SHORT_ANSWER_MIN_RMS = 0.02
+
+
+def listen_thresholds_from_env() -> tuple[float, float]:
+    """(수음 최소, 짧은 답 최소) — VICA_LISTEN_MIN_RMS·VICA_SHORT_ANSWER_MIN_RMS (2026-10-12 마이크 점검기).
+
+    줄이 없거나 이상한 값(숫자 아님·0 이하·1 이상)이면 위의 코드 기본값이다 — 그래서 `.env` 에 줄이
+    없는 지금은 동작이 그대로다. 점검기가 시연장에서 값을 고쳐 저장하면 이 줄이 생긴다.
+    """
+    def one(name: str, default: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        return value if 0.0 < value < 1.0 else default
+
+    return (one("VICA_LISTEN_MIN_RMS", LISTEN_MIN_RMS),
+            one("VICA_SHORT_ANSWER_MIN_RMS", SHORT_ANSWER_MIN_RMS))
+
+
+def approach_min_rms_from_env() -> Optional[float]:
+    """접근 질문('안내를 받으시겠어요?')의 대답을 기다리는 동안의 수음 최소 — VICA_APPROACH_MIN_RMS.
+
+    2026-10-15 사용자 결정 ②: 접근 단계 사용자는 로봇 앞 1 m 넘게 떨어져 대답해, 칩 증폭 ×4·수음 최소 0.012
+    에서 '아니' 3번이 rms 0.0070·0.0093·0.0104 로 버려졌다. 칩 증폭을 그때만 올리는 것과 같은 효과를 칩을
+    건드리지 않고 낸다. 줄이 없거나 이상한 값이면 None — 평소 수음 최소를 그대로 쓴다(지금까지와 같다).
+    """
+    raw = os.environ.get("VICA_APPROACH_MIN_RMS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
+
+
+# 말소리 대역 관문 (2026-10-21 실기·사용자 승인) — 청취 창의 말 시작·말끝은 칩 말소리 감지(SPEECHDETECTED)로 재는데,
+# 칩이 바람·기계음(150~400 Hz)도 말로 봐 "네" 한마디 뒤 창이 4.7초 동안 안 닫혔다. 칩이 말이라 해도 이 대역의
+# 크기가 문턱 아래면 침묵으로 친다. 10-21 저장 소리 54개: 꼬리 소리 95 %가 0.0035 아래, 실제 말 99 %가 0.0058 위
+# (칩 증폭 ×4 기준 — 증폭을 바꾸면 다시 잰다). 소리 크기만 보던 옛 말끝(약한 어미를 자름)과 달리 칩 판정은 그대로 둔다.
+LISTEN_BAND_HZ = (400.0, 3000.0)
+LISTEN_BAND_MIN_DEFAULT = 0.004
+_BAND_WINDOW = np.hanning(FRAME).astype(np.float32)
+
+
+def speech_band_rms(frame: np.ndarray) -> float:
+    """int16 프레임의 말소리 대역(400~3000 Hz) 크기 — 그 대역만 남긴 소리의 rms 와 같은 눈금(-1~1)."""
+    x = np.asarray(frame, dtype=np.float32).reshape(-1) / 32768.0
+    if x.size == 0:
+        return 0.0
+    window = _BAND_WINDOW if x.size == FRAME else np.hanning(x.size).astype(np.float32)
+    freqs = np.fft.rfftfreq(x.size, 1.0 / SAMPLE_RATE)
+    mask = (freqs >= LISTEN_BAND_HZ[0]) & (freqs < LISTEN_BAND_HZ[1])
+    power = np.abs(np.fft.rfft(x * window)[mask]) ** 2
+    return float(np.sqrt(2.0 * power.sum() / (x.size * float(np.sum(window ** 2)))))
+
+
+def listen_band_min_from_env() -> Optional[float]:
+    """VICA_LISTEN_BAND_MIN — 줄이 없거나 이상한 값이면 기본 0.004, "off"·0 이면 None(관문 끔, 옛 동작)."""
+    raw = os.environ.get("VICA_LISTEN_BAND_MIN", "").strip().lower()
+    if raw in ("off", "false", "none"):
+        return None
+    if not raw:
+        return LISTEN_BAND_MIN_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return LISTEN_BAND_MIN_DEFAULT
+    if value == 0.0:
+        return None
+    return value if 0.0 < value < 1.0 else LISTEN_BAND_MIN_DEFAULT
 
 # 창 안 호출 구제 (2026-09-02) — 창이 열린 동안의 "비카야"는 음향 모델이
 # 꺼져 있어 **오직 STT 전사로만** 판별된다. 그런데 whisper 는 사전에 없는
@@ -159,6 +236,36 @@ def wake_threshold_from_env() -> float:
 WAKE_THRESHOLD = wake_threshold_from_env()
 # 이 점수를 넘은 소리 덩어리는 확정되지 않아도 '아깝게 놓침'으로 최고 점수를 알린다.
 WAKE_NEAR_MISS_FLOOR = 0.4
+# 긴급("멈춰") 모델도 같다(2026-10-12 사용자 결정): 이 점수를 넘은 소리 덩어리가 발동 없이 끝나면 최고 점수·
+# 문턱 넘은 조각 수·쿨다운 여부를 알린다 — 외쳤는데 무시당한 것이 점수 미달인지 쉬는 시간인지 가른다.
+EMERGENCY_NEAR_MISS_FLOOR = 0.3
+# 긴급 관문의 한 조각 문턱(2026-10-12 사용자 결정) — 이 점수 이상이면 한 조각(80 ms)으로도 STT 확인에 넘긴다.
+# 실측 11:50~12:02: 놓친 진짜 "멈춰" 5번이 0.63~0.85 한 조각뿐이었고(2연속 규칙에 걸림), 저장 소리를 STT 에
+# 넣으면 5번 다 "멈춰"였다. 헛반응은 정확 매칭이 막는다. VICA_EMERGENCY_SINGLE_FRAME=off 면 옛 동작.
+EMERGENCY_SINGLE_FRAME_DEFAULT = 0.5
+
+
+def emergency_single_frame_from_env() -> Optional[float]:
+    """VICA_EMERGENCY_SINGLE_FRAME — 없으면 0.5, off 면 None(2연속 규칙만), 이상한 값이면 0.5."""
+    raw = os.environ.get("VICA_EMERGENCY_SINGLE_FRAME", "").strip().lower()
+    if raw in ("off", "none", "false", "no"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return EMERGENCY_SINGLE_FRAME_DEFAULT
+    return value if 0.0 < value < 1.0 else EMERGENCY_SINGLE_FRAME_DEFAULT
+
+
+def ear_stt_model_names() -> tuple[str, str]:
+    """귀가 띄우는 whisper 두 개의 이름 — (대화 받아쓰기, 긴급 확인).
+
+    2026-10-12 사용자 결정: 긴급 확인은 VICA_VERIFY_STT_MODEL(small)로 따로 띄워 1.5 s → 0.5 s. 대화는
+    VICA_STT_MODEL(LLM 노드와 같은 이름)을 따른다 — 예전엔 둘 다 VICA_VERIFY_STT_MODEL 하나를 썼다(.env 에서
+    두 이름 모두 turbo 였다). 이름이 같으면 하나만 띄운다.
+    """
+    return (os.environ.get("VICA_STT_MODEL", "medium"),
+            os.environ.get("VICA_VERIFY_STT_MODEL", "medium"))
 # 로봇이 '비카야'가 든 문장을 말하는 동안과 끝난 뒤 이만큼은 호출을 확정하지 않는다
 # (2026-10-08). 로그상 "'비카야'라고 말씀해 주세요" 재생 직후 호출이 37회 중 4회였다.
 # 꼬리는 스피커→마이크 지연과 방 울림 몫이다. 긴급어는 막지 않는다.
@@ -183,6 +290,73 @@ MIC_OFF_PHRASES = frozenset({OBSTACLE_STOP})
 def mic_off_while_saying(text: str) -> bool:
     """이 로봇 말을 하는 동안 마이크를 닫는가."""
     return (text or "").strip() in MIC_OFF_PHRASES
+
+
+# 긴급 관문 기록에 붙일 결과 이름(2026-10-12). "reject"·"emergency" 는 원래 로그 문구가 이미 말한다.
+_CHECK_RESULT_KO = {
+    "listen_resumed": "청취 창 안 — 긴급 아님, 듣기 이어감",
+    "followup_answer": "긴급 아님 — 질문 답으로 넘김",
+}
+
+
+def describe_emergency_check(check: Optional[dict]) -> str:
+    """긴급 관문 한 번의 기록 꼬리 — " · 관문 0.87 · 관문→판정 1.93 s (STT 1.61 s)".
+
+    비상정지 점검용(2026-10-12 사용자 결정): 말 끝 → 정지 중 어디가 긴지(모델·말끝 0.32 s·STT)를
+    로그만으로 가른다. 관문→판정 = 발동 프레임에서 STT 시작까지 + STT 걸린 시간.
+    """
+    if not check:
+        return ""
+    parts = []
+    if check.get("score") is not None:
+        parts.append(f"관문 {check['score']:.2f}")
+    stt = check.get("stt")
+    if stt is not None:
+        post = check.get("postroll")
+        if post is not None:
+            parts.append(f"관문→판정 {post + stt:.2f} s (STT {stt:.2f} s)")
+        else:
+            parts.append(f"STT {stt:.2f} s")
+    note = _CHECK_RESULT_KO.get(check.get("result", ""))
+    if note:
+        parts.append(note)
+    return "".join(f" · {x}" for x in parts)
+
+
+def describe_emergency_near(info: dict, threshold: float) -> str:
+    """긴급 모델이 문턱 근처까지 반응했지만 발동하지 않은 소리 한 덩어리의 기록 한 줄."""
+    line = f"🎯 긴급 점수 놓침: {info['peak']:.2f} (문턱 {threshold:.2f})"
+    if info.get("cooldown"):
+        after = info.get("after_fire")
+        line += " · 쉬는 시간 중 무시" + (f"(앞 반응 {after:.2f} s 뒤)" if after is not None else "")
+    elif info.get("frames_over"):
+        line += f" · 문턱 넘은 조각 {info['frames_over']}개(2개 연속 필요)"
+    return line
+
+
+def save_emergency_clip(directory, audio: np.ndarray, info: dict, wall_time: Optional[float] = None) -> Path:
+    """긴급 관문에서 들은 소리를 wav 로, 그 판정을 directory/clips.jsonl 한 줄로 남긴다(2026-10-12 사용자 결정).
+
+    STT 확인에 쓴 직전 ~2.5 s(확정·기각) 또는 아깝게 놓친 소리 덩어리 직후의 ~2.5 s. 빠른 확인용 STT 모델을
+    현장 소리로 견주고, "멈춰가" 같은 놓침을 다시 들으려는 자료다. 판정에는 쓰지 않는다.
+    """
+    directory = Path(directory).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.fromtimestamp(time.time() if wall_time is None else wall_time)
+    score = info.get("score", info.get("peak"))
+    name = (f"{stamp:%Y%m%d_%H%M%S}_{stamp.microsecond // 1000:03d}_{info.get('result', 'clip')}"
+            + (f"_{score:.2f}" if score is not None else "") + ".wav")
+    path = directory / name
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(np.asarray(audio, dtype=np.int16).tobytes())
+    row = {"time": stamp.isoformat(timespec="milliseconds"), "file": name}
+    row.update({k: v for k, v in info.items() if k != "audio"})
+    with open(directory / "clips.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
 
 
 def _frame_rms(frame) -> float:
@@ -282,6 +456,7 @@ class WakewordMonitor:
         on_wake_doa: Optional[Callable[[float], None]] = None,
         on_user_audio: Optional[Callable[[np.ndarray], None]] = None,
         on_wake_score: Optional[Callable[[str, float], None]] = None,
+        on_emergency_score: Optional[Callable[[dict], None]] = None,
         voice_barge_in: bool = True,
         doa_gate: bool = True,
         user_doa_center: Optional[float] = None,
@@ -294,6 +469,18 @@ class WakewordMonitor:
         gate_b: float = 0.5,
         cooldown_a: float = 1.5,
         cooldown_b: float = 2.0,
+        single_b: object = "env",
+        listen_min_rms: Optional[float] = None,
+        short_answer_min_rms: Optional[float] = None,
+        approach_min_rms: Optional[float] = None,
+        transcribe_listen: Optional[Callable[[np.ndarray], str]] = None,
+        transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
+        on_frame: Optional[Callable[[dict], None]] = None,
+        on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
+        listen_band_min: Optional[float] = None,
+        log: Optional[Callable[[str], None]] = None,
+        speaker=None,
+        on_speaker_verdict: Optional[Callable[[object], None]] = None,
     ):
         self._on_emergency = on_emergency
         self._on_user_text = on_user_text
@@ -320,6 +507,14 @@ class WakewordMonitor:
         # 호출 점수 기록 (2026-10-08) — ("fire"|"near"|"self", 최고 점수). 문턱을
         # 숫자로 고르기 위한 재료다. 판정에는 쓰지 않는다.
         self._on_wake_score = on_wake_score or (lambda kind, peak: None)
+        # 긴급 모델 '아깝게 놓침' 알림(2026-10-12) — {"peak","frames_over","cooldown","after_fire","audio"}.
+        self._on_emergency_score = on_emergency_score or (lambda info: None)
+        self._em_episode = False
+        self._em_peak = 0.0
+        self._em_over = 0
+        self._em_blocked = False
+        self._em_fired = False
+        self._em_started_at = 0.0
         self._voice_barge_in = voice_barge_in
         # 방향 관문 스위치. 꺼지면 barge-in 은 방향을 안 보고 칩 VAD 만 본다
         # (2026-08-30 사용자 결정 — 장착 상태 DOA 실측이 아직 없어 해제.
@@ -345,18 +540,43 @@ class WakewordMonitor:
         # 대화 청취용 전사 — 신뢰도 필터(stt_guard)가 걸린 판. 긴급 검증에는
         # 필터를 걸지 않는다: 작은 외침의 조각을 지울 위험이 실측됐고(외침 10회
         # 프로토콜에서 빈 전사 기각 1건), 유령은 정확 매칭이 이미 막는다.
-        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = None
+        self._transcribe_listen: Optional[Callable[[np.ndarray], str]] = transcribe_listen
         # 질문 답변(followup) 창 전용 — 정답 후보를 귀띔(initial_prompt)한 판.
         # "그래"→'굿에이' 같은 짧은 답 오전사 대책 (2026-08-28 실측).
-        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None
+        self._transcribe_confirm: Optional[Callable[[np.ndarray], str]] = transcribe_confirm
+        # Qwen3-ASR 감싸개(2026-10-15) — 어느 역할이든 qwen 이면 _load_real 이 채운다(노드 로그가 이름을 본다).
+        self.qwen = None
 
         self.gate_a = FrameGate(gate_a, persist=2, cooldown_sec=cooldown_a)
-        self.gate_b = FrameGate(gate_b, persist=2, cooldown_sec=cooldown_b)
+        self.gate_b = FrameGate(
+            gate_b, persist=2, cooldown_sec=cooldown_b,
+            single=emergency_single_frame_from_env() if single_b == "env" else single_b)
         # 창 안 호출 관찰용 — 같은 문턱·지속을 쓰되 **별도 객체**다. gate_a 를
         # 그대로 먹이면 쿨다운이 소모돼 창이 닫힌 직후의 진짜 호출이 막힌다.
         # 쿨다운 0: 여기서는 발동이 아니라 사실 기록만 하므로 중복이 무해하다.
         self.gate_a_listen = FrameGate(gate_a, persist=2, cooldown_sec=0.0)
         self._gate_b_base = gate_b   # set_speaking 이 재생 중 완화/복원한다
+        # 청취 판정의 두 소리 문턱(2026-10-12 마이크 점검기) — 인자 > .env > 코드 기본. 점검기가 실행 중
+        # set_thresholds 로 바꾸고, ⑫ 노드는 .env 에서 읽는다(줄이 없으면 0.008·0.02 그대로).
+        env_listen, env_short = listen_thresholds_from_env()
+        self.listen_min_rms = env_listen if listen_min_rms is None else float(listen_min_rms)
+        self.short_answer_min_rms = env_short if short_answer_min_rms is None else float(short_answer_min_rms)
+        # 접근 질문 대답만의 수음 최소(2026-10-15) — 인자 > .env. None 이면 위 수음 최소를 그대로 쓴다.
+        self.approach_min_rms = (approach_min_rms_from_env() if approach_min_rms is None
+                                 else float(approach_min_rms))
+        # 조각마다 점수 알림(점검기 화면용). 없으면 아무것도 하지 않는다 — ⑫ 노드는 주지 않는다.
+        self._on_frame = on_frame
+        # 말소리가 있던 청취 창의 소리와 판정(통과·기각) — 받아쓰기·Realtime 을 다시 듣고 견주는 자료
+        # (2026-10-20 STT 시험, 10-21 운영 귀에도). 없으면 아무 일 없음.
+        self._on_listen_clip = on_listen_clip
+        # 말소리 대역 관문 문턱 — None 이면 끔(칩 판정만, 옛 동작). 노드가 listen_band_min_from_env() 로 켠다.
+        self.listen_band_min = None if listen_band_min is None else float(listen_band_min)
+        # Qwen 감싸개 로그가 갈 곳 — 노드는 ROS 로거를 넘겨 시각이 찍히게 한다.
+        self._log = log or print
+        # 세션 주인 목소리 판정(2026-11-11 설계 speaker-follow). None 이면 지금 동작 그대로.
+        self._speaker = speaker
+        self._on_speaker_verdict = on_speaker_verdict
+        self._listen_doas: list = []   # 청취 창에서 말소리 조각의 DOA(도)
         # 호출 점수 덩어리 추적 — WAKE_NEAR_MISS_FLOOR 를 넘은 연속 구간 하나.
         self._wake_peak = 0.0
         self._wake_episode = False
@@ -382,6 +602,7 @@ class WakewordMonitor:
         self._listen_voiced_sec = 0.0
         self._listen_is_followup = False       # 이 청취 창이 재청취로 열렸는가
         self._listen_heard_wake = False        # 이 창 안에서 호출 소리를 들었는가
+        self._listen_wake_rearmed = False      # 창을 연 호출의 여운이 지나갔는가(재호출을 셀 수 있나)
         self._listen_opened_at = 0.0
         self._muted_until = 0.0
         self._muted = False
@@ -403,6 +624,12 @@ class WakewordMonitor:
         # 청취+STT 묶음 6.1초의 내역을 몰랐던 것이 도입 계기).
         self.last_listen_timing: Optional[dict] = None
         self._listen_speech_started_at = 0.0
+        # 마지막 긴급 관문 한 번의 기록 — 발동 점수·발동→STT 시작·STT 걸린 시간·어디서·결과
+        # (2026-10-12 사용자 결정, 비상정지 점검). 노드가 확정·기각 로그 끝에 붙인다.
+        self.last_emergency_check: Optional[dict] = None
+        self.last_emergency_audio: Optional[np.ndarray] = None
+        self._gate_fired_at: Optional[float] = None
+        self._gate_score: Optional[float] = None
         # 호출 판정 관문 (2026-10-07, 호출 반응표). 켜져 있으면 "비카야" 자유 창의 말은
         # 미션의 판정을 받아야 나간다 — 창은 지금처럼 호출 즉시 열어 "비카야 화장실 가자"
         # 한 호흡을 살리고, 판정 전에 나온 말은 쥐고 있다가 listen 이면 내보내고 ignore·
@@ -415,6 +642,45 @@ class WakewordMonitor:
         self._verdict_inbox: Optional[tuple[str, Optional[int]]] = None
         self._held: list[tuple[str, object]] = []    # 판정 전에 나온 ("audio"|"text", 값)
         self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
+        # 경비(순찰) 큰 소리 판정 연결(2026-11-14, patrol_sound.PatrolSoundTap). 노드가 붙인다 — None 이면 지금 그대로.
+        self.patrol_tap = None
+
+    @property
+    def state(self) -> str:
+        """idle / postroll / listen — 점검기·재채점이 칩 사람 말 표시를 넣을지 정할 때 쓴다(run() 과 같은 규칙)."""
+        return self._state
+
+    def set_thresholds(self, *, wake: Optional[float] = None, emergency_single: Optional[float] = None,
+                       listen_min_rms: Optional[float] = None,
+                       short_answer_min_rms: Optional[float] = None) -> None:
+        """실행 중 문턱 바꾸기(2026-10-12 마이크 점검기). None 인 것은 그대로 둔다. ⑫ 노드는 부르지 않는다.
+
+        호출 문턱은 창 밖 관문과 창 안 관찰 관문에 함께 쓴다. 긴급은 한 조각 문턱만 바꾼다 — 두 조각 연속
+        문턱(0.5, 로봇이 말하는 동안 0.35)은 그대로다.
+        """
+        if wake is not None:
+            self.gate_a.threshold = float(wake)
+            self.gate_a_listen.threshold = float(wake)
+        if emergency_single is not None:
+            self.gate_b.single = float(emergency_single)
+        if listen_min_rms is not None:
+            self.listen_min_rms = float(listen_min_rms)
+        if short_answer_min_rms is not None:
+            self.short_answer_min_rms = float(short_answer_min_rms)
+
+    def _notify_frame(self, frame: np.ndarray, now: float, scores: Optional[dict]) -> None:
+        if self._on_frame is None:
+            return
+        try:
+            self._on_frame({
+                "rms": _frame_rms(frame),
+                "a": 0.0 if scores is None else float(scores["a"]),
+                "b": 0.0 if scores is None else float(scores["b"]),
+                "state": self._state, "speaking": self._speaking,
+                "muted": scores is None, "t": now,
+            })
+        except Exception:
+            pass   # 화면 알림이 실패해도 감시는 계속 간다
 
     # ---------------------------------------------------------------- 호출 판정
     @property
@@ -701,10 +967,12 @@ class WakewordMonitor:
         if self._is_muted(now):
             self.gate_a.reset()
             self.gate_b.reset()
+            self._notify_frame(frame, now, None)
             return None
 
         scores = self._predict(frame)
-        fire_b = self.gate_b.feed(float(scores["b"]), now)
+        self._notify_frame(frame, now, scores)
+        fire_b = self._feed_emergency(float(scores["b"]), now)
 
         if self._state == "postroll":
             self._collect.append(frame)
@@ -715,20 +983,27 @@ class WakewordMonitor:
         if self._state == "listen":
             # 청취 중에도 긴급이 절대 우선 (명세 11절)
             if fire_b:
+                self._note_gate(now, float(scores["b"]))
                 self._enter_postroll(from_listen=True)
                 return None
             # 창 안 호출 관찰: **창을 새로 열지 않는다.** 열면 이어지는 말이
             # 통째로 날아간다("비카야 화장실로 가자"). 들었다는 사실만 남기고
             # 판정은 전사가 나온 뒤에 한다 (LISTEN_WAKE_RESCUE_* 참조).
             # 로봇이 '비카야'를 말하는 중이면 관찰도 하지 않는다(자기 목소리 무시).
-            if self._self_guarded(now):
+            # 창을 연 호출의 여운도 세지 않는다 — 세면 뒤에 온 짧은 말('407호'·'화장실 가자')이
+            # 전부 "비카야"로 바뀌었다(실로그 자유 창 689번 중 약 57번, 2026-10-13).
+            if not self._listen_wake_rearmed:
+                self._listen_wake_rearmed = float(scores["a"]) < WAKE_NEAR_MISS_FLOOR
+                self.gate_a_listen.reset()
+            elif self._self_guarded(now):
                 self.gate_a_listen.reset()
             elif self.gate_a_listen.feed(float(scores["a"]), now):
                 self._listen_heard_wake = True
-            return self._listen_step(frame, now, vad)
+            return self._listen_step(frame, now, vad, doa)
 
         # idle
         if fire_b:
+            self._note_gate(now, float(scores["b"]))
             self._enter_postroll()
             return None
         if self._feed_wake(float(scores["a"]), now):
@@ -749,6 +1024,9 @@ class WakewordMonitor:
                 self._held = []
                 self._verdict_inbox = None
             self._on_wake()
+            if self._speaker is not None:
+                # "비카야" 소리는 링에만 있다 — 호출 창 판정에 붙이려고 지금 복사한다.
+                self._speaker.note_wake_audio(np.concatenate(list(self._ring)), now)
             self._open_listen(followup=False, now=now)
             return "wake"
 
@@ -847,6 +1125,10 @@ class WakewordMonitor:
         self._listen_opened_at = now
         self._listen_speech_started_at = 0.0
         self._listen_heard_wake = False
+        self._listen_doas = []
+        # 자유 창은 그 창을 연 "비카야"의 여운(모델이 직전 2초를 기억)이 몇 조각 남는다 — 점수가 한 번
+        # 내려가기 전에는 재호출로 세지 않는다(2026-10-13). 질문 창은 호출로 열지 않아 처음부터 센다.
+        self._listen_wake_rearmed = followup
         self.gate_a_listen.reset()
         self._reset_wake_episode()
         self.last_listen_timing = None
@@ -888,10 +1170,57 @@ class WakewordMonitor:
         self._reset_wake_episode()   # 긴급 소리 뒤에 '놓침' 기록이 따라 찍히지 않게
         self._postroll_from_listen = from_listen
 
+    def _feed_emergency(self, score: float, now: float) -> bool:
+        """긴급 관문에 점수를 넣고 발동이면 True — 판정은 gate_b 그대로다.
+
+        EMERGENCY_NEAR_MISS_FLOOR 를 넘은 소리 덩어리를 하나로 묶어, 발동 없이 끝나면 최고 점수·문턱 넘은 조각 수·
+        쿨다운으로 막혔는지를 알린다(기록일 뿐, 실패해도 감시는 계속 간다).
+        """
+        fired = self.gate_b.feed(score, now)
+        if score >= EMERGENCY_NEAR_MISS_FLOOR or fired:
+            if not self._em_episode:
+                self._em_episode, self._em_started_at = True, now
+                self._em_peak, self._em_over, self._em_blocked, self._em_fired = 0.0, 0, False, False
+            self._em_peak = max(self._em_peak, score)
+            self._em_over += score >= self.gate_b.threshold
+            self._em_blocked = self._em_blocked or self.gate_b.cooldown_blocked
+            self._em_fired = self._em_fired or fired
+        elif self._em_episode:
+            self._em_episode = False
+            if not self._em_fired:
+                info = {
+                    "result": "near", "peak": self._em_peak, "frames_over": self._em_over,
+                    "cooldown": self._em_blocked,
+                    "after_fire": (None if self._gate_fired_at is None
+                                   else self._em_started_at - self._gate_fired_at),
+                    "audio": np.concatenate([*self._ring]) if self._ring else np.zeros(0, np.int16),
+                }
+                try:
+                    self._on_emergency_score(info)
+                except Exception:
+                    pass
+        return fired
+
+    def _note_gate(self, now: float, score: float) -> None:
+        """긴급 관문이 발동한 프레임 시각·점수를 적어 둔다(기록용, 판정과 무관)."""
+        self._gate_fired_at = now
+        self._gate_score = score
+
     def _verify_emergency(self, now: float) -> str:
         audio = np.concatenate([*self._ring])   # 직전 ~2.5초 + 말끝
+        self.last_emergency_audio = audio       # 노드가 판정 기록과 함께 파일로 남긴다(2026-10-12)
+        stt_started = time.monotonic()
         text = self._transcribe(audio)
+        stt_sec = time.monotonic() - stt_started
         from_listen = self._postroll_from_listen
+        self.last_emergency_check = {
+            "score": self._gate_score,
+            "postroll": None if self._gate_fired_at is None else now - self._gate_fired_at,
+            "stt": stt_sec,
+            "where": "listen" if from_listen else "idle",
+            "text": text,
+            "result": "",
+        }
         self._postroll_from_listen = False
         self._state = "idle"
         self._collect = []
@@ -906,6 +1235,9 @@ class WakewordMonitor:
                 self._collect = (self._saved_listen or []) + self._collect
                 self._saved_listen = None
                 self._state = "listen"
+                # 예전엔 기록 없이 이어 들었다 — "잠깐 멈춰" 무정지를 가릴 수 없었다(2026-10-12).
+                self.last_emergency_check["result"] = "listen_resumed"
+                self._on_reject(text)
                 return "listen_resumed"
             text = text.strip()
             # 창 밖 오발동이라도 질문의 답을 기다리는 중(followup 예약)이면
@@ -916,21 +1248,25 @@ class WakewordMonitor:
                     and now - self._followup_armed_at
                     <= FOLLOWUP_ARM_TIMEOUT_SEC):
                 self._followup_armed = False
+                self.last_emergency_check["result"] = "followup_answer"
+                self._on_reject(text)
                 self.last_listen_stats = capture_stats(audio)
                 self._on_listen_state("closed")
                 self._on_user_text(text)
                 return "user_text"
+            self.last_emergency_check["result"] = "reject"
             self._on_reject(text)
             return "reject"
         if from_listen:
             self._saved_listen = None
             self._on_listen_state("empty")   # 청취는 긴급에 선점돼 폐기됐다
         event = EmergencyEvent(keyword=keyword, source_text=text, detected_at=now)
+        self.last_emergency_check["result"] = "emergency"
         self._on_emergency(event)
         return "emergency"
 
     def _listen_step(self, frame: np.ndarray, now: float,
-                     vad: Optional[bool]) -> Optional[str]:
+                     vad: Optional[bool], doa: Optional[float] = None) -> Optional[str]:
         """청취 창 한 프레임. 발화 시작·끝은 칩의 발화 판정(vad)으로 잰다.
 
         소리 크기(RMS) 판정은 폐기했다 — 약한 어미("...주세요")를 침묵으로
@@ -939,15 +1275,21 @@ class WakewordMonitor:
         증거 없음 (장치가 없으면 애초에 기동이 실패한다 — 폴백 없음).
         """
         self._collect.append(frame)
+        if vad and doa is not None:
+            self._listen_doas.append(float(doa))
         loud = _frame_rms(frame) >= SPEECH_RMS
-        if vad:
+        # 말소리 대역 관문: 칩이 말이라 해도, 소리가 커도 말소리 대역이 조용하면(바람·기계음) 말로 치지 않는다 —
+        # 말 시작·말끝·소리 크기 보강 세 갈래 모두. 관문이 꺼져 있으면(None) 옛 동작 그대로다.
+        band_ok = (self.listen_band_min is None or not (vad or loud)
+                   or speech_band_rms(frame) >= self.listen_band_min)
+        if vad and band_ok:
             if not self._listen_started_speech:
                 self._listen_speech_started_at = now
                 self._on_listen_state("speech")
             self._listen_started_speech = True
             self._listen_silence = 0.0
             self._listen_voiced_sec += FRAME / SAMPLE_RATE
-        elif vad is None and loud:
+        elif vad is None and loud and band_ok:
             # 칩 판정 부재 (2026-09-01): 제어 읽기가 죽으면 vad 가 None 으로
             # 오는데, 예전엔 그 동안의 진짜 말이 트림으로 통째 증발하거나
             # 침묵으로 세져 조기 마감됐다 — 실기 유령 "소리 큼 + 발화
@@ -958,7 +1300,7 @@ class WakewordMonitor:
             self._listen_started_speech = True
             self._listen_silence = 0.0
             self._listen_voiced_sec += FRAME / SAMPLE_RATE
-        elif not self._listen_started_speech and loud:
+        elif not self._listen_started_speech and loud and band_ok:
             # 칩은 살아 있는데(False) 시작을 놓친 경우 — 시작만 소리로
             # 보강한다. 말끝은 기존대로 칩 기준: RMS 말끝은 약한 어미를
             # 자르고 배경 소음에 안 닫히던 전력으로 폐기됐다.
@@ -1023,30 +1365,36 @@ class WakewordMonitor:
         # 질문 창의 짧고 또렷한 소리는 버리지 않고 STT 재판을 받는다 —
         # 단 통과는 정답 어휘로만 (아래 short_rescue 판정).
         short_rescue = (short and self._listen_is_followup
-                        and rms >= SHORT_ANSWER_MIN_RMS)
-        if rms < LISTEN_MIN_RMS or (short and not short_rescue):
+                        and rms >= self.short_answer_min_rms)
+        # 접근 질문의 대답을 기다리는 동안(미션 dialog_state=awaiting_user)은 따로 둔 낮은 문턱 — 사용자가
+        # 로봇 앞 1 m 넘게 떨어져 대답한다(2026-10-15 사용자 결정 ②).
+        min_rms = (self.approach_min_rms if self._wake_suppressed and self.approach_min_rms is not None
+                   else self.listen_min_rms)
+        if rms < min_rms or (short and not short_rescue):
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(
                 f"empty:ghost speech={speech_sec:.2f}s "
                 f"rms={rms:.4f}")
+            self._report_clip(audio, "ghost", rms=rms, speech=speech_sec)
             return "wake_silent"
         if self._listen_is_followup and self._transcribe_confirm is not None:
             transcribe = self._transcribe_confirm
         else:
             transcribe = self._transcribe_listen or self._transcribe
+        spk = None
+        audio_sent = False
         if self._on_user_audio is not None:
             # 소리→의도 직행(audio 모드): whisper 보다 먼저 클립을 넘긴다. 실패해도 전사는 계속.
-            # 자유 창이면 미션 판정을 거친다(호출 반응표).
-            if self._listen_is_followup:
-                try:
-                    self._on_user_audio(audio)
-                except Exception:
-                    pass
-            else:
-                self._emit_free("audio", audio)
+            # 화자 판정은 소리를 보내기 **전에** 한다 — 버릴 말이면 소리도 보내지 않는다(검토 C2).
+            if self._speaker is not None:
+                spk = self._speaker_check(audio, speech_sec, now, "")
+            if spk is None or not spk.drop:
+                self._send_user_audio(audio)
+                audio_sent = True
         stt_started = time.monotonic()
         text = transcribe(audio).strip()
+        stt_text = text   # 구제가 "비카야"로 바꾸기 전 원문 — 말소리 저장 기록용
         self.last_listen_timing = {
             "wait": self._listen_speech_started_at - self._listen_opened_at,
             "speech": speech_end - self._listen_speech_started_at,
@@ -1073,11 +1421,30 @@ class WakewordMonitor:
             if not self._listen_is_followup:
                 self._on_listen_empty()
             self._on_listen_state(f"empty:reject {text[:30]!r}")
+            self._report_clip(audio, "reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
             return "wake_silent"
         if short_rescue and normalize_short_reply(text) not in _SHORT_ANSWER_WORDS:
             # 구제 재판의 판정 제한: 짧은 소리의 전사가 정답 어휘가 아니면
             # 유령으로 본다 — 잡음 딸깍이 '방2' 같은 장소로 둔갑하는 것 방지.
             self._on_listen_state(f"empty:short-reject {text[:30]!r}")
+            self._report_clip(audio, "short-reject", text, rms=rms, speech=speech_sec, stt_text=stt_text)
+            return "wake_silent"
+        if spk is None:
+            spk = self._speaker_check(audio, speech_sec, now, text)
+        if spk is not None and spk.drop and detect_stop_request(text):
+            # 다른 사람 말이라도 멈춤 말이면 버리지 않는다 — 글자 경로의 2차 정지(D12, 검토 C1).
+            spk.drop = False
+            spk.reason += " · 멈춤 말이라 넘김"
+        if spk is not None and not spk.drop and self._on_user_audio is not None and not audio_sent:
+            self._send_user_audio(audio)
+        spk_extra = {} if spk is None else {"spk_verdict": spk.verdict, "spk_score": spk.score,
+                                            "spk_joined": spk.joined, "spk_reason": spk.reason}
+        if spk is not None and spk.drop:
+            # 세션 주인이 아닌 사람의 긴 말 — 조용히 버린다(설계 4.3). 기록은 남긴다.
+            if not self._listen_is_followup:
+                self._on_listen_empty()
+            self._on_listen_state(f"empty:speaker {spk.reason} {text[:30]!r}")
+            self._report_clip(audio, "spk-drop", text, rms=rms, speech=speech_sec, stt_text=stt_text, **spk_extra)
             return "wake_silent"
         if self._listen_is_followup:
             self._on_listen_state("closed")   # 발화가 STT 를 통과 — LLM 처리 예정
@@ -1085,7 +1452,53 @@ class WakewordMonitor:
         else:
             # 자유 창("비카야" 뒤) — 미션이 대답하기로 한 호출만 LLM 으로 간다.
             self._emit_free("text", text)
+        # 저장은 글자를 넘긴 뒤에 — 디스크가 바빠도 대답 길이 늦지 않게(10-20 검토).
+        self._report_clip(audio, "text", text, rms=rms, speech=speech_sec,
+                          stt=self.last_listen_timing["stt"], stt_text=stt_text, **spk_extra)
         return "user_text"
+
+    def _send_user_audio(self, audio: np.ndarray) -> None:
+        """소리→의도 직행 — 질문 창은 바로, 자유 창은 미션 판정을 거친다(호출 반응표)."""
+        if self._listen_is_followup:
+            try:
+                self._on_user_audio(audio)
+            except Exception:
+                pass
+        else:
+            self._emit_free("audio", audio)
+
+    def _speaker_check(self, audio: np.ndarray, speech_sec: float, now: float, text: str):
+        """판정기가 있으면 이번 발화를 판정하고, 글자보다 먼저 판정을 넘긴다. 실패해도 귀는 계속 간다."""
+        if self._speaker is None:
+            return None
+        doa = float(np.median(self._listen_doas)) if self._listen_doas else None
+        try:
+            verdict = self._speaker.check(audio, not self._listen_is_followup, doa, speech_sec, now, text)
+        except Exception as exc:  # noqa: BLE001 — 판정 오류로 듣기를 멈추지 않는다
+            self._log(f"[화자] 판정 오류 — 거르지 않고 넘김: {exc!r}")
+            return None
+        if self._on_speaker_verdict is not None:
+            try:
+                self._on_speaker_verdict(verdict)
+            except Exception:
+                pass
+        return verdict
+
+    def set_dialog_state(self, state: str, now: Optional[float] = None) -> None:
+        """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다)."""
+        if self._speaker is not None:
+            self._speaker.on_dialog_state(state, time.time() if now is None else now)
+
+    def _report_clip(self, audio: np.ndarray, result: str, text: str = "", **extra) -> None:
+        """청취 창 소리와 판정을 넘긴다. 기록일 뿐이라 실패해도 귀는 계속 간다."""
+        if self._on_listen_clip is None:
+            return
+        info = {"result": result, "text": text, "followup": self._listen_is_followup,
+                **{k: round(v, 4) if isinstance(v, float) else v for k, v in extra.items()}}
+        try:
+            self._on_listen_clip(audio, info)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- 실행 (실기)
     def _load_real(self) -> None:
@@ -1109,51 +1522,78 @@ class WakewordMonitor:
             self._predict = _predict
         if self._transcribe is None:
             # stt 모듈을 먼저 거친다 — import 부수효과 두 가지가 필요하다:
-            # .env 로드(VICA_STT_* 반영)와 Jetson CUDA libctranslate2 선적재.
-            # 이것 없이 faster_whisper 를 직접 import 하면 Jetson 에서
-            # so 미발견·int8 거부로 감시 스레드가 죽는다 (2026-08-16 실기).
+            # .env 로드(VICA_STT_* 반영 — 아래 엔진 선택도 .env 를 따른다. 점검기·재생 도구는 .env 를
+            # 따로 읽지 않는다)와 Jetson CUDA libctranslate2 선적재. 이것 없이 faster_whisper 를
+            # 직접 import 하면 Jetson 에서 so 미발견·int8 거부로 감시 스레드가 죽는다 (2026-08-16 실기).
             from . import stt  # noqa: F401
-            from faster_whisper import WhisperModel
 
-            size = os.environ.get("VICA_VERIFY_STT_MODEL", "medium")
-            device = os.environ.get("VICA_STT_DEVICE", "cpu")
-            compute = os.environ.get("VICA_STT_COMPUTE",
-                                     "float16" if device == "cuda" else "int8")
-            wm = WhisperModel(size, device=device, compute_type=compute)
+            # 역할별 엔진(2026-10-15) — 대화 창·긴급 확인을 각각 whisper/qwen 으로 고른다(기본 whisper).
+            # qwen 을 골랐는데 못 올리면 QwenUnavailable 로 멈춘다 — whisper 로 몰래 되돌아가지 않는다.
+            listen_engine, verify_engine = ear_stt_engines()
+            if "qwen" in (listen_engine, verify_engine):
+                self.qwen = qwen_from_env(log=lambda m: self._log(m))
+            if "whisper" in (listen_engine, verify_engine):
+                self._load_whisper(listen=listen_engine == "whisper", verify=verify_engine == "whisper")
+            if listen_engine == "qwen":
+                # 귀띔(장소·CONFIRM_HINT)은 주지 않는다 — Qwen 은 침묵에 귀띔 목록을 그대로 적는다(10-15 실측).
+                self._transcribe_listen = self.qwen.listen
+                self._transcribe_confirm = self.qwen.listen
+            if verify_engine == "qwen":
+                qwen = self.qwen
+                self._transcribe = lambda audio: qwen.verify(
+                    audio, lambda text: match_emergency_transcript(text) is not None)
 
-            def _transcribe(audio: np.ndarray) -> str:
-                # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
-                # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5)
-                return "".join(s.text for s in segs).strip()
+    def _load_whisper(self, *, listen: bool, verify: bool) -> None:
+        """whisper 를 맡은 역할만 올린다. _load_real 이 stt 모듈(CUDA libctranslate2 선적재)을 먼저 거친 뒤에 부른다."""
+        from faster_whisper import WhisperModel
 
-            # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를
-            # 올려 아무 말이나 시도"하는 기본 사다리를 끈다. condition_...=False
-            # 는 앞 조각의 오류가 뒤 조각으로 번지는 것을 끊는다. 긴급 검증
-            # 전사(_transcribe)에는 걸지 않는다 — 그쪽은 실기 검증된 안전 축.
-            def _transcribe_listen(audio: np.ndarray) -> str:
-                # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
-                # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=self._listen_hint,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        listen_name, verify_name = ear_stt_model_names()
+        device = os.environ.get("VICA_STT_DEVICE", "cpu")
+        compute = os.environ.get("VICA_STT_COMPUTE",
+                                 "float16" if device == "cuda" else "int8")
+        wm = WhisperModel(listen_name, device=device, compute_type=compute) if listen else None
+        # 긴급 확인 전용(2026-10-12) — 실측 small 0.49 s vs turbo 1.50 s, 저장된 "멈춰" 18/18 같음,
+        # 현장 대화 182개 헛 긴급 0. 대화 받아쓰기는 turbo 그대로(small 은 대화 글자가 40 %만 같았다).
+        wm_verify = None
+        if verify:
+            wm_verify = (wm if wm is not None and verify_name == listen_name
+                         else WhisperModel(verify_name, device=device, compute_type=compute))
 
-            def _transcribe_confirm(audio: np.ndarray) -> str:
-                # 질문 답변 창 전용 — 나올 답의 후보를 귀띔해 짧은 답 인식을
-                # 살린다. 귀띔은 기울이기일 뿐 강제(화이트리스트)가 아니므로
-                # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
-                segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
-                                        language="ko", beam_size=5,
-                                        initial_prompt=CONFIRM_HINT,
-                                        temperature=0.0,
-                                        condition_on_previous_text=False)
-                return accept_segments(segs)
+        def _transcribe(audio: np.ndarray) -> str:
+            # 긴급 검증용 — 필터 없음. 작은 외침을 지우지 않는 것이 우선이고
+            # (빈 전사 기각 실측), 유령은 정확 매칭이 막는다.
+            segs, _ = wm_verify.transcribe(audio.astype(np.float32) / 32768.0,
+                                           language="ko", beam_size=5)
+            return "".join(s.text for s in segs).strip()
 
+        # 환각 억제 2종 (2026-08-28): temperature=0 은 "확신 없으면 온도를
+        # 올려 아무 말이나 시도"하는 기본 사다리를 끈다. condition_...=False
+        # 는 앞 조각의 오류가 뒤 조각으로 번지는 것을 끊는다. 긴급 검증
+        # 전사(_transcribe)에는 걸지 않는다 — 그쪽은 실기 검증된 안전 축.
+        def _transcribe_listen(audio: np.ndarray) -> str:
+            # 대화 청취용 — 신뢰도 필터(stt_guard 2겹)로 유령 전사를 버린다.
+            # 장소 귀띔(initial_prompt)으로 목적지 오전사를 줄인다.
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=self._listen_hint,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
+
+        def _transcribe_confirm(audio: np.ndarray) -> str:
+            # 질문 답변 창 전용 — 나올 답의 후보를 귀띔해 짧은 답 인식을
+            # 살린다. 귀띔은 기울이기일 뿐 강제(화이트리스트)가 아니므로
+            # 자유 발화도 나올 수 있고, 신뢰도 필터는 동일하게 건다.
+            segs, _ = wm.transcribe(audio.astype(np.float32) / 32768.0,
+                                    language="ko", beam_size=5,
+                                    initial_prompt=CONFIRM_HINT,
+                                    temperature=0.0,
+                                    condition_on_previous_text=False)
+            return accept_segments(segs)
+
+        if verify:
             self._transcribe = _transcribe
+        if listen:
             self._transcribe_listen = _transcribe_listen
             self._transcribe_confirm = _transcribe_confirm
 
@@ -1185,22 +1625,45 @@ class WakewordMonitor:
         channels = 6
 
         q: queue.Queue[np.ndarray] = queue.Queue()
+        # 끊김 기록(2026-11-11 사용자) — 콜백은 상태 문자열만 넣고, 로그는 감시 스레드가 쓴다.
+        status_q: queue.SimpleQueue[str] = queue.SimpleQueue()
+        watch = FrameWatch()
+        tap = self.patrol_tap   # 판정 상태(tap.armed — patrolling·patrol_dwell)일 때만 아래 두 곳에서 불린다
 
         def cb(indata, frames, t, status):  # noqa: ANN001
+            if status:
+                status_q.put(str(status))
             block = np.frombuffer(indata, dtype=np.int16).reshape(-1, channels)
+            if tap is not None and tap.armed:
+                tap.push(block)   # 원음 ch1~4 제곱 평균 한 번 — 판정·발행은 감시 루프(poll)에서
             q.put(block[:, 0].copy())
+
+        def note(line: Optional[str]) -> None:
+            if line:
+                self._log(line)
 
         print(f"웨이크워드 상시 감시 시작 (장치 {device}, {channels}ch — Ctrl+C 종료)")
         with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME,
                                channels=channels, dtype="int16",
                                device=device, callback=cb):
             while True:
-                frame = q.get()
+                if tap is not None and tap.armed:
+                    tap.poll()
+                while not status_q.empty():
+                    note(watch.on_status(status_q.get(), time.monotonic()))
+                try:
+                    frame = q.get(timeout=0.5)
+                except queue.Empty:
+                    note(watch.on_idle(time.monotonic()))
+                    continue
+                note(watch.on_frame(time.monotonic()))
                 vad = doa = vad2 = None
                 if self._state == "listen":
                     # 청취 중: 발화 시작/끝 판정용 (여기서는 AND 를 쓰지
                     # 않는다 — 짧은 답이 말머리·말끝에서 잘린다)
                     vad = dsp.speech_detected()
+                    if vad and self._speaker is not None:
+                        doa = dsp.doa_angle()   # 화자 판정의 손잡이 방향 근거(설계 6절)
                 elif (self._voice_barge_in and self._speaking
                         and self._followup_armed):
                     # 질문 재생 중: barge-in 판정용 (+방향)

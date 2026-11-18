@@ -53,7 +53,7 @@ def test_emergency_confirmed():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춰!")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
     assert len(events) == 1
     assert events[0].keyword == "멈춰"
@@ -66,14 +66,24 @@ def test_emergency_rejected_by_stt():
     fake = Fake(scores=[(0, 0.9), (0, 0.9)] + [(0, 0)] * 10, text="멈춤")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "reject"
     assert events == []
 
 
-def test_single_spike_no_stt_call():
-    # 1프레임 스파이크는 발동하지 않고 whisper 도 부르지 않는다
+def test_single_spike_goes_to_verify():
+    # 2026-10-12 사용자 결정: 한 조각이라도 0.5 이상이면 STT 확인으로 넘긴다(실측 — 놓친 진짜 "멈춰" 5번이
+    # 0.63~0.85 한 조각뿐이었다). 헛반응은 정확 매칭이 막는다.
     fake = Fake(scores=[(0, 0.9)] + [(0, 0)] * 10, text="멈춰")
+    events, texts, wakes = [], [], []
+    m = make(fake, events, texts, wakes)
+    run_frames(m, 1 + POST_ROLL_FRAMES, LOUD)
+    assert fake.stt_calls == 1 and len(events) == 1
+
+
+def test_single_spike_below_half_no_stt_call():
+    # 0.5 미만 한 조각은 예전처럼 발동하지 않고 whisper 도 부르지 않는다
+    fake = Fake(scores=[(0, 0.45)] + [(0, 0)] * 10, text="멈춰")
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 8, LOUD)
@@ -116,7 +126,7 @@ def test_emergency_preempts_listen():
     events, texts, wakes = [], [], []
     m = make(fake, events, texts, wakes)
     run_frames(m, 2, LOUD)                        # wake → listen
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=1.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=1.0)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
     assert events[0].keyword == "정지"
     assert texts == []                            # 청취는 폐기됐다
@@ -130,7 +140,7 @@ def test_muted_suppresses_and_failsafe_unmutes():
     run_frames(m, 10, LOUD, t0=0.0)               # 억제 중 — 발동 없음
     assert events == []
     # fail-safe: 10초 뒤엔 해제 신호를 놓쳐도 자동 해제
-    results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD, t0=11.0)
+    results = run_frames(m, 1 + POST_ROLL_FRAMES, LOUD, t0=11.0)  # 한 조각 규칙(10-12): 첫 0.9 조각에서 발동
     assert results[-1] == "emergency"
 
 
@@ -327,6 +337,28 @@ def test_near_silence_never_reaches_stt():
     assert fake.stt_calls == 0                    # whisper 를 부르지도 않는다
 
 
+class TestAgcMaxGainFromEnv:
+    """AGC 최대 증폭 한도(2026-10-15 사용자 결정 ×2) 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
+
+    def test_number_parses(self):
+        from src.dsp_state import agc_max_gain_from_env
+        assert agc_max_gain_from_env("2") == 2.0
+        assert agc_max_gain_from_env(" 4.0 ") == 4.0
+
+    def test_off_values_skip_write(self):
+        """줄이 없거나 꺼 두면 칩 공장값(×31.6) 그대로 — 지금까지와 같은 동작."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("", "0", "off", "none"):
+            assert agc_max_gain_from_env(raw) is None
+
+    def test_out_of_range_or_garbage_skip_write(self):
+        """칩 범위는 ×1~×1000(0~60 dB). 1 보다 작으면 소리를 줄이는 값이라 받지 않는다."""
+        from src.dsp_state import agc_max_gain_from_env
+        for raw in ("0.5", "-2", "1001", "abc"):
+            assert agc_max_gain_from_env(raw) is None
+        assert agc_max_gain_from_env("1") == 1.0 and agc_max_gain_from_env("1000") == 1000.0
+
+
 class TestAgcDesiredFromEnv:
     """AGC 목표 레벨 환경변수 해석 — 칩 쓰기는 장치 시험(자동화 제외)."""
 
@@ -421,3 +453,152 @@ def test_out_of_window_speech_still_rejected_without_followup():
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
     assert "reject" in results
     assert texts == []
+
+
+# --- 세션 주인 목소리 판정 연결(2026-11-11 설계 speaker-follow, 계획 작업 4) ------------------------------------
+
+from src.speaker_follow import Verdict  # noqa: E402
+
+
+class FakeSpeaker:
+    """정해 둔 판정을 돌려주고 호출을 기록한다."""
+
+    def __init__(self, verdict: Verdict):
+        self.verdict = verdict
+        self.wake_lens = []
+        self.checks = []
+        self.states = []
+
+    def note_wake_audio(self, audio, now):
+        self.wake_lens.append(len(audio))
+
+    def check(self, audio, is_wake_window, doa, speech_sec, now, text=""):
+        self.checks.append({"is_wake_window": is_wake_window, "doa": doa, "text": text})
+        return self.verdict
+
+    def on_dialog_state(self, state, now):
+        self.states.append(state)
+
+
+def _verdict(drop: bool) -> Verdict:
+    return Verdict("fail" if drop else "pass", 0.3, -1.0, "wake+utt", 0.4, None, drop, "시험")
+
+
+def make_spk(fake: Fake, speaker, order: list, clips: list, states: list):
+    return WakewordMonitor(
+        on_emergency=lambda e: order.append(("emergency", e)),
+        on_user_text=lambda t: order.append(("text", t)),
+        on_listen_state=states.append,
+        on_listen_clip=lambda a, d: clips.append(d),
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+        speaker=speaker,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+
+
+def _wake_and_speak(m, doas=None):
+    run_frames(m, 2, LOUD)                                     # 호출 확정
+    for i in range(5):                                         # 발화(칩 판정)
+        d = None if doas is None else doas[i % len(doas)]
+        m.process_frame(LOUD, now=1.0 + i * 0.08, vad=True, doa=d)
+    return run_frames(m, 12, QUIET, t0=2.0)                    # 침묵 → 닫힘
+
+
+def test_wake_audio_copied_on_wake():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    assert run_frames(m, 2, LOUD)[-1] == "wake"
+    assert spk.wake_lens == [2 * 1280]                         # 그때 링에 있던 조각 전부
+
+
+def test_drop_verdict_suppresses_text():
+    spk = FakeSpeaker(_verdict(True))
+    order, clips, states = [], [], []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, clips, states)
+    results = _wake_and_speak(m)
+    assert "user_text" not in results
+    assert [k for k, _ in order] == ["verdict"]
+    assert clips[-1]["result"] == "spk-drop" and clips[-1]["spk_verdict"] == "fail"
+    assert any(s.startswith("empty:speaker") for s in states)
+
+
+def test_verdict_callback_before_text():
+    spk = FakeSpeaker(_verdict(False))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, [], [])
+    _wake_and_speak(m)
+    assert order == [("verdict", "pass"), ("text", "화장실 가자")]
+    assert spk.checks[0]["is_wake_window"] is True and spk.checks[0]["text"] == "화장실 가자"
+
+
+def test_doa_median_passed():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    _wake_and_speak(m, doas=[170.0, 182.0, 190.0])
+    assert spk.checks[0]["doa"] == 182.0
+
+
+def test_set_dialog_state_forwarded():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[]), spk, [], [], [])
+    m.set_dialog_state("confirming")
+    assert spk.states == ["confirming"]
+
+
+def test_no_speaker_unchanged():
+    order = []
+    m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=lambda t: order.append(t),
+                        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자").predict,
+                        transcribe=lambda a: "화장실 가자")
+    _wake_and_speak(m)
+    m.set_dialog_state("confirming")                           # 판정기가 없으면 아무 일도 없다
+    assert order == ["화장실 가자"]
+
+
+# --- 최종 검토 수정(C1·C2) -------------------------------------------------------------------------------------
+
+def test_drop_keeps_stop_words_in_text_path():
+    """C1: 다른 사람 말이라도 멈춤 말이 들었으면 버리지 않는다(글자 경로의 2차 정지, D12)."""
+    spk = FakeSpeaker(_verdict(True))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="멈춰 멈춰 앞에 사람 있어요"),
+                 spk, order, [], [])
+    _wake_and_speak(m)
+    assert ("text", "멈춰 멈춰 앞에 사람 있어요") in order
+
+
+def _audio_monitor(verdict, text):
+    spk = FakeSpeaker(verdict)
+    order = []
+    m = WakewordMonitor(
+        on_emergency=lambda e: None, on_user_text=lambda t: order.append(("text", t)),
+        on_user_audio=lambda a: order.append(("audio", len(a))),
+        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40).predict,
+        transcribe=lambda a: text, speaker=spk,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+    return m, order
+
+
+def test_audio_mode_drop_sends_no_audio():
+    """C2: 소리 의도 모드 — 판정을 소리 발송 앞에서 하고, 버리면 소리도 보내지 않는다."""
+    m, order = _audio_monitor(_verdict(True), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order] == ["verdict"]
+
+
+def test_audio_mode_verdict_before_audio():
+    m, order = _audio_monitor(_verdict(False), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order][:2] == ["verdict", "audio"]
+
+
+def test_audio_mode_drop_but_stop_word_still_sends_audio():
+    m, order = _audio_monitor(_verdict(True), "멈춰 멈춰")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    kinds = [o[0] for o in order]
+    assert "audio" in kinds and ("text", "멈춰 멈춰") in order

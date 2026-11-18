@@ -37,6 +37,9 @@ WAIT_SPOT_BLOCKED = "대기 자리가 막혀 입구 앞에서 기다리겠습니
 WAIT_EXPIRED = "대기 시간이 종료되어 제자리로 돌아갑니다."         # M7
 # 대기 중 돌아와 "다 됐어" — 다음 목적지를 묻는다(2026-10-07 사용자 결정).
 WAIT_FINISH_ASK = "네, 어디로 모실까요?"
+# 대기 중 본인 확인(2026-11-11) — 되묻기·본인 질문. 음성은 이 둘로 질문이 열린 줄 안다.
+SPK_REASK = "확인을 위해 한 번 더 말씀해 주세요"
+SPK_IDENTITY = "아까 {dest}에 가자고 하신 사용자님이신가요?"
 # 비상 정지 중 "비카야" — "네?" 없이 이 한 마디만(호출 반응표).
 ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
 # 주행 중 장애물 안내(2026-10-09 미션에 넣음). 미션 MSG_OBSTACLE_* 와 같은 글자. 2026-10-10 사용자 결정으로
@@ -58,6 +61,33 @@ CONFIRM_SWITCH = "네, {prompt}"
 # 대기 장소가 없는 목적지로 돌아가 기다릴 때(홈 가는 중 "기다려", 결정 1)의 장소 말 — 미션
 # WAIT_PLACE_AT_DESTINATION. 대기 장소가 막혔을 때(M6 뒤) 상황판의 말과 같다.
 WAIT_PLACE_AT_DESTINATION = "입구 앞"
+# 관리자 호출(도움 요청, 2026-10-15 설계·10-16 사용자 확정 문장) — 미션 MSG_HELP_* 사본. 띄어쓰기·
+# 마침표 유무까지 사용자가 정한 그대로다. 확인 질문·보냈음·오는 중·취소 질문·취소함·받을 수 없음.
+HELP_CONFIRM = "직원의 도움이 필요하신가요?"
+HELP_CANCEL_CONFIRM = "도움 요청을 취소할까요?"
+HELP_SENTENCES = (
+    HELP_CONFIRM,
+    "지금 도움 요청을 보냈습니다",
+    "관리자가 오고있습니다. 잠시만 기다려주세요",
+    HELP_CANCEL_CONFIRM,
+    "도움 요청을 취소했습니다.",
+    "지금은 도움 요청을 보낼 수 없습니다",
+)
+# 경비(순찰) 경보(2026-11-14) — 미션 MSG_PATROL_INTRUDER·MSG_PATROL_LIGHT 사본. 확인 전까지 3초·10초마다 되풀이한다.
+PATROL_INTRUDER = "침입자 발생"
+PATROL_LIGHT = "불 켜짐 감지"
+# 관리자가 경비를 시작·종료했을 때 한 번(2026-11-16 사용자 요청) — 미션 MSG_PATROL_STARTED·MSG_PATROL_ENDED 사본.
+PATROL_STARTED = "경비 모드를 시작합니다."
+PATROL_ENDED = "경비 모드를 종료합니다."
+# 녹음 파일 이름(확장자 없음) → 문장. wav 는 assets/baked 에 구워 뒀다(사용자가 고른 남성 목소리).
+# /assets/ 가 gitignore 라 커밋할 때 wav 는 git add -f 로 올린다.
+# baked_mission_ments 에는 넣지 않는다 — bake_one_cv.py --mission --force 가 여성(F2) 목소리로 덮어쓴다.
+PATROL_MENTS = {
+    "mission_msg_patrol_intruder": PATROL_INTRUDER,
+    "mission_msg_patrol_light": PATROL_LIGHT,
+    "mission_msg_patrol_started": PATROL_STARTED,
+    "mission_msg_patrol_ended": PATROL_ENDED,
+}
 
 # 숫자로 끝나는 이름을 읽을 때 마지막 숫자의 받침(영·일·삼·육·칠·팔 있음, 이·사·오·구 없음).
 _DIGIT_HAS_BATCHIM = {
@@ -147,10 +177,11 @@ def _unique(phrases: Iterable[str]) -> list[str]:
 
 def standalone_prewarm(destinations: Iterable) -> list[str]:
     """혼자 말해지는 문장 — 목적지 확인 질문과, 확인 질문 중 다른 목적지로 다시 묻는 "네, …"
-    (2026-10-08 결정 4). 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
+    (2026-10-08 결정 4), 관리자 호출 문장(2026-10-16). 통문장이 구워져 있으면 미리 합성할 필요가 없다."""
     dests = list(destinations)
     phrases = [d.confirm_prompt for d in dests]
     phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
+    phrases += list(HELP_SENTENCES)
     return _unique(phrases)
 
 

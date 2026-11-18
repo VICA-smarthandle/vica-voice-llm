@@ -34,6 +34,11 @@ def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
     msg.reply = intent.reply
     msg.safety_flag = intent.safety_flag
     msg.wait_minutes = int(intent.wait_minutes)
+    if hasattr(msg, "speaker_verdict"):
+        # 옛 vica_interfaces 설치본(__slots__ 에 새 필드 없음)에서도 의도 발행이 깨지지 않게(검토 I3).
+        msg.speaker_verdict = intent.speaker_verdict
+        msg.speaker_score = float(intent.speaker_score)
+        msg.speaker_score_joined = float(intent.speaker_joined)
     return msg
 
 
