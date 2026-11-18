@@ -1,0 +1,12 @@
+# 예약할 수 있는 시설(시연용). 운영 폴더(~/vica_data/reservations/facilities.yaml)에 같은 꼴의 파일이 있으면 그것을 쓴다.
+# default_hours: 끝 시각을 말하지 않았을 때 쓰는 시간(시간). open·close: 예약을 받는 시각.
+- name: 세미나실
+  aliases: [세미나룸]
+  default_hours: 2
+  open: '09:00'
+  close: '18:00'
+- name: 상담실
+  aliases: []
+  default_hours: 2
+  open: '09:00'
+  close: '18:00'
