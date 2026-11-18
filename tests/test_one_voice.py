@@ -5,7 +5,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.langchain_intent_parser import _shortcut_intent
-from src.one_voice import hand_over_question, held_resume_carrier, voice_may_speak
+from src.one_voice import demote_unasked_confirm, hand_over_question, held_resume_carrier, voice_may_speak
 from src.replies import (APPROACH_ONBOARDING, COMMAND_DECLINED, RESUME_CONFIRM, RETRY_PROMPT, WAKE_GREETING,
                          choose_between)
 from src.question_record import OpenQuestion
@@ -112,3 +112,52 @@ def test_confirmed_navigate_sentence_is_not_handed_over():
     assert hand_over_question(intent, DESTS) is intent
     said = VicaIntent(intent="navigate", matched_destination_id="elev", need_confirm=False, reply="엘리베이터 안내를 시작합니다.")
     assert hand_over_question(said, DESTS) is said
+
+
+# --- 확인 없이 나온 '확정'은 제안으로 낮춘다 (11-18 사용자: "LLM 이 확정으로 내는 것도 막아야") ---------------------
+def _confirm_q(*ids):
+    return OpenQuestion(id="q9", kind="confirm", text="엘리베이터로 안내해드릴까요?", option_ids=tuple(ids), opened_at=0.0)
+
+
+def _go(dest_id="elev", **kw):
+    base = dict(intent="navigate", matched_destination_id=dest_id, need_confirm=False, reply="엘리베이터 안내를 시작합니다.")
+    base.update(kw)
+    return VicaIntent(**base)
+
+
+def test_unasked_confirmed_navigate_becomes_proposal():
+    """11-18 13:05:39 실기 — 두 번 거절한 뒤 "화장실로 가자"에 LLM 이 확정을 내 확인 없이 출발했다."""
+    out = demote_unasked_confirm(_go(), None, DESTS)
+    assert (out.intent, out.matched_destination_id, out.need_confirm, out.reply) == ("navigate", "elev", True, "")
+
+
+def test_confirmed_navigate_kept_when_its_confirm_question_is_open():
+    intent = _go()
+    assert demote_unasked_confirm(intent, _confirm_q("elev"), DESTS) is intent
+
+
+def test_confirmed_navigate_demoted_when_another_destination_was_asked():
+    assert demote_unasked_confirm(_go(), _confirm_q("wc"), DESTS).need_confirm is True
+
+
+def test_confirmed_navigate_demoted_when_open_question_is_not_a_confirm():
+    wake = OpenQuestion(id="q1", kind="open", text="네?", option_ids=(), opened_at=0.0)
+    assert demote_unasked_confirm(_go(), wake, DESTS).need_confirm is True
+
+
+def test_unapproachable_destination_stays_confirmed():
+    """갈 수 없는 곳은 그대로 보낸다 — 미션이 이유를 말하고 거절한다(확인 질문을 하면 "네" 뒤에야 거절한다)."""
+    dests = DESTS + [DestinationData(id="p407", name="407호", is_approachable=False)]
+    intent = _go("p407", reply="407호로 안내해드릴까요?")
+    assert demote_unasked_confirm(intent, None, dests) is intent
+
+
+@pytest.mark.parametrize("intent", [
+    VicaIntent(intent="navigate", matched_destination_id="elev", need_confirm=True, reply="엘리베이터로 안내해드릴까요?"),
+    VicaIntent(intent="resume", need_confirm=False),
+    VicaIntent(intent="affirm", need_confirm=False),
+    VicaIntent(intent="navigate", matched_destination_id="모르는id", need_confirm=False),
+    VicaIntent(intent="navigate", matched_destination_id="elev", need_confirm=False, safety_flag="emergency"),
+])
+def test_demote_leaves_everything_else_alone(intent):
+    assert demote_unasked_confirm(intent, None, DESTS) is intent

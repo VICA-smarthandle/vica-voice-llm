@@ -48,6 +48,24 @@ def hand_over_question(intent: VicaIntent, destinations: Sequence[DestinationDat
     return intent
 
 
+def demote_unasked_confirm(intent: VicaIntent, question: Optional[OpenQuestion],
+                           destinations: Sequence[DestinationData]) -> VicaIntent:
+    """확인 질문 없이 나온 navigate '확정'을 제안으로 낮춘다 — 미션이 "…로 안내해드릴까요?"를 묻게 된다.
+
+    확정은 그 목적지의 확인 질문(질문 기록 kind=confirm, 후보에 그 목적지)이 열려 있을 때만 그대로 보낸다.
+    11-18 실기 13:05:39: 두 번 거절한 뒤의 "화장실로 가자"에 LLM 이 확정을 내 확인 없이 출발했다(사용자 "막아야").
+    갈 수 없는 곳은 그대로 둔다 — 미션이 이유를 말하고 거절한다.
+    """
+    if intent.intent != "navigate" or intent.need_confirm or intent.safety_flag == "emergency":
+        return intent
+    dest = next((d for d in destinations if d.id == intent.matched_destination_id), None)
+    if dest is None or not dest.is_approachable:
+        return intent
+    if question is not None and question.kind == "confirm" and dest.id in question.option_ids:
+        return intent
+    return intent.model_copy(update={"need_confirm": True, "reply": ""})
+
+
 def voice_may_speak(intent: VicaIntent, question: Optional[OpenQuestion]) -> bool:
     """음성 노드가 이 의도의 reply 를 말해도 되나. 미션 질문이 열려 있으면 사용자 질문의 답만(설계 4.4).
     "다시 출발할까요?"는 판단을 음성이 쥔 질문이라(결정 B) 그 대답("알겠습니다. 계속 진행할게요.")도 음성이 말한다."""

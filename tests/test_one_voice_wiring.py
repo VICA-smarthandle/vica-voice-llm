@@ -93,3 +93,12 @@ def test_history_keeps_the_question_text_when_handed_over():
 def test_no_logger_picked_by_condition():
     """rclpy 로거는 같은 호출 줄에서 심각도가 바뀌면 ValueError 로 노드가 죽는다(2단계 검토 C1)."""
     assert not [n for n in ast.walk(TREE) if isinstance(n, ast.Call) and isinstance(n.func, ast.IfExp)]
+
+
+def test_unasked_confirm_is_demoted_before_hand_over():
+    """확정 낮추기는 질문 넘김이 켜졌을 때만, 넘기기 전에, 발화 때 열려 있던 질문으로 한다."""
+    fn = _method("_publish_intent")
+    (call,) = _calls(fn, "demote_unasked_confirm")
+    assert any("self._hand_over" in test and in_body for test, in_body in _branch_tests(fn, call))
+    assert call.lineno < _calls(fn, "hand_over_question")[0].lineno
+    assert ast.unparse(call.args[1]) == "question"

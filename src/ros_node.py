@@ -56,7 +56,7 @@ from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
-from .one_voice import hand_over_question, held_resume_carrier, voice_may_speak
+from .one_voice import demote_unasked_confirm, hand_over_question, held_resume_carrier, voice_may_speak
 from .ros_convert import intent_to_msg, msg_to_robot_state, supports_ask_fields
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
@@ -449,6 +449,14 @@ class LlmIntentNode(Node):
 
         # 2-4) 한 목소리(3-가, 설계 4.4) — 대답을 기다리는 문장은 말하지 않고 미션에 넘긴다. 미션이 말하고
         #      질문 기록·듣기 요청을 낸다. 목적지 확인 질문은 미션이 confirm_prompt 로 묻는다(결정 A).
+        if self._hand_over:
+            # 확인 질문 없이 나온 '확정'은 제안으로 낮춘다 — 그 목적지의 확인 질문이 열려 있을 때만 확정이다
+            # (11-18 사용자). 낮추면 미션이 confirm_prompt 로 묻는다.
+            asked = demote_unasked_confirm(intent, question, self._destinations)
+            if asked is not intent:
+                self.get_logger().info(
+                    f"[확정 막음] 열린 확인 질문이 없어 제안으로 낮춤: dest={intent.matched_destination_id}")
+            intent = asked
         history_line = intent.reply
         if self._hand_over:
             handed = hand_over_question(intent, self._destinations)
