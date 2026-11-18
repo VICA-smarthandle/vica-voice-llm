@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 사용자가 말로 시설을 예약하면(시연 대본 D1) 예약 파일에 저장되고 `/vica/reservation/event` 가 나간다 — 온라인 글자 경로(gpt-5.4-mini)와 소리 경로(Realtime)에서.
+**Goal:** 사용자가 말로 시설을 예약하면(시연 대본 D1) 예약 파일에 저장되고 `/vica/reservation/event` 가 나간다 — 외부 API 두 경로(gpt-5.4-mini 글자, Realtime 소리)에서.
 
-**Architecture:** LLM 은 도구 하나를 호출한다(`set_intent` = 지금의 `_IntentDraft`, `reserve_facility` = 예약 요청). 예약 요청 뒤의 일(말에 없는 값 버리기·날짜·시각 읽기·겹침·묻는 문장·저장)은 음성 저장소의 순수 모듈 4개가 하고, `ros_node` 는 그 결과를 `VicaIntent.ask_text`(미션이 말함) 또는 `reply`(음성이 말함)로 내보낸다. 도구 출력은 경로별 `.env` 스위치(기본 꺼짐) 뒤에 두고, 재생 측정이 기준을 넘을 때만 켠다.
+**Architecture:** LLM 은 도구 하나를 호출한다(`set_intent` = 지금의 `_IntentDraft`, `reserve_facility` = 예약 요청과 그 대답). 값은 LLM 이 읽고, 코드는 지어낸 값 거르기·날짜 계산·겹침·묻는 문장·저장만 한다. 진행 중인 예약은 `[지금 상황]` 블록의 한 줄로 LLM 에 알린다. 결과는 `VicaIntent.ask_text`(미션이 말함) 또는 `reply`(음성이 말함)로 나간다. 도구 출력은 경로별 `.env` 스위치(기본 꺼짐) 뒤에 두고 재생 측정이 기준을 넘을 때만 켠다. 로컬 모델에는 도구를 주지 않는다.
 
 **Tech Stack:** Python 3.10 · pytest · LangChain(`langchain-openai` 1.5.1 `bind_tools`) · OpenAI Realtime(`openai` 3.1.0) · ROS 2 Humble(rclpy, 음성은 소스에서 바로 실행)
 
-**Spec:** `docs/superpowers/specs/2026-11-18-facility-reservation-tool-calling-design.md` (범위: 9절의 1~3단계. 앱·지도 서버·취소 요청 = 4단계, 로컬 도구 출력 = 5단계는 이 계획 밖)
+**Spec:** `docs/superpowers/specs/2026-11-18-facility-reservation-tool-calling-design.md` (범위: 9절의 1~3단계. 앱·지도 서버·취소 요청 = 4단계는 이 계획 밖)
 
 ## Global Constraints
 
@@ -16,9 +16,11 @@
 - `vica_ros2_ws`(미션·`vica_interfaces`)와 `VICA_Supervisor` 의 diff 는 0줄.
 - 커밋 메시지는 기존 문체(한국어, `feat(voice): …`), 끝에 `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - 스위치 `VICA_TOOLS_TEXT`·`VICA_TOOLS_AUDIO`(값 `on` 이면 켬, 기본 꺼짐). 둘 다 꺼져 있으면 동작이 지금과 같아야 한다 — 작업 전 기준 **1718 passed** 가 그대로 통과한다.
+- **로컬 경로에는 도구를 주지 않는다**(D11). `_build_local_structured` 와 Modelfile 의 diff 는 0줄.
+- **예약 대답을 읽는 새 글자 규칙을 만들지 않는다**(D12). 이름·날짜·시각·네/아니요는 지금의 해석 경로(글자 규칙 → LLM, 소리 모드는 Realtime)가 읽는다.
 - **저장하지 않은 예약을 완료라고 말하지 않는다.** 문장 ③은 `ReservationStore.add` 가 돌려준 뒤에만 나간다.
 - **LLM 에 저장 도구를 주지 않는다.** 이동 도구도 만들지 않는다(`vica-voice-llm/CLAUDE.md`).
-- 지시문(`_build_system_prompt`·`build_audio_prompt`)은 고치지 않는다. 도구 규칙은 도구 설명에 적는다(로컬 폴백이 같은 지시문을 쓴다).
+- 지시문(`_build_system_prompt`·`build_audio_prompt`)은 고치지 않는다. 도구 규칙은 도구 설명에 적는다.
 - 문장 9개는 아래 글자 그대로(설계 6절, 사용자 확정):
   - ① `성함을 말씀해 주세요.`
   - ② `{이름} 님 이름으로 {날짜} {시작}부터 {끝}까지 {시설} 예약할까요?` — 예: `김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?`
@@ -37,13 +39,14 @@
 
 ## Review Focus
 
-1. 이름 질문에 목적지 이름이나 멈춤 말 한마디("화장실", "잠깐만")가 이름으로 저장되지 않는다. → Task 4 `test_name_step_rejects_commands_and_places`
+1. LLM 이 지어낸 이름(받아쓴 글자에 없는 이름)은 저장되지 않고 ①을 다시 묻는다. → Task 4 `test_values_not_in_the_words_are_dropped`
 2. 확인 질문에 "네"가 두 번 와도(메아리·겹친 발화) 예약이 두 건 생기지 않는다. → Task 4 `test_confirm_no_and_second_yes_does_not_save_twice`
 3. 예약 파일이 잘려 있으면 덮어쓰지 않는다 — 기존 예약을 날리지 않고 ⑨로 끝난다. → Task 1 `test_broken_file_is_not_overwritten`, Task 4 `test_save_failure_says_unavailable_not_done`
 4. 끝 시각이 운영 시간을 넘는 요청("오후 다섯 시" + 2시간)과 이미 지난 시각은 ⑧이고 저장되지 않는다. → Task 4 `test_out_of_hours_and_past_are_refused`
 5. 도구 호출이 없거나 두 개 오거나 인자가 빈 `reserve_facility({})` 여도 죽지 않는다 — 없으면 실패 처리, 두 개면 첫 호출, 빈 인자면 ⑦부터. → Task 5 `test_tool_message_shapes`, Task 4 `test_empty_call_asks_facility_first`
 6. 같은 첫 요청을 소리·글자 두 경로가 모두 받아도 "성함을 말씀해 주세요."가 한 번만 나간다. → Task 9 `test_audio_reservation_is_under_the_text_first_guard`
-7. 스위치가 꺼진 경로(로컬 폴백 포함)에서 "예약해 줘"가 엉뚱한 이동이 되지 않고 ⑨가 된다. → Task 6 `test_reservation_word_without_tools_is_refused`
+7. 도구가 없는 경로(스위치 꺼짐·로컬 폴백)에서 "예약해 줘"가 엉뚱한 이동이 되지 않고 ⑨가 된다. → Task 6 `test_reservation_word_without_tools_is_refused`
+8. 예약 질문 중에 잡음이 못 알아들은 말로 읽혀도 진행 중인 예약이 날아가지 않는다. → Task 4 `test_general_result_while_active`
 
 ---
 
@@ -140,7 +143,7 @@ def test_load_facilities(tmp_path):
 
 ---
 
-### Task 2: 날짜·시각 읽기와 말로 읽기 (설계 5.2-2·4, 6절)
+### Task 2: 날짜 계산 · 낱말 있는지 보기 · 말로 읽기 (설계 5.2-2, 6절)
 
 **Files:**
 - Create: `src/reservation_time.py`
@@ -148,68 +151,55 @@ def test_load_facilities(tmp_path):
 
 **Interfaces:**
 - Produces:
-  - `read_date(text: str, today: date) -> Optional[date]`
-  - `read_times(text: str) -> tuple[Optional[str], Optional[str]]` — `(시작, 끝)`, `"HH:MM"`
-  - `has_date_word(text: str) -> bool`, `has_time_word(text: str) -> bool`
+  - `resolve_date(expr: str, today: date) -> Optional[date]` — LLM 이 준 날짜 표현을 날짜로
+  - `valid_hhmm(value: str) -> Optional[str]` — `"9:30"` → `"09:30"`, 시각이 아니면 `None`
+  - `has_date_word(text: str) -> bool`, `has_time_word(text: str) -> bool`, `has_span_word(text: str) -> bool`
   - `speak_date(day: date, today: date) -> str`, `speak_time(hhmm: str) -> str`, `speak_range(start: str, end: str) -> str`
 - 규칙(시험이 다 정하지 못하는 것)
-  - 오전·오후 표시가 없는 시각은 1~8시면 오후(13~20시), 9~12시면 그대로.
-  - "저녁"·"밤" 은 오후, "아침"·"새벽" 은 오전, "낮 열두 시"·"오후 열두 시" 는 12:00.
-  - 끝 시각은 "까지" 앞의 시각. 표시가 없으면 시작보다 늦은 첫 시각(시작과 같은 오전·오후, 안 되면 오후).
+  - 이 모듈은 글자에서 값을 읽지 않는다. `has_*` 는 그런 낱말이 있는지만 본다(LLM 이 지어낸 값을 거르는 데 쓴다).
+  - `has_time_word`: 오전·오후·아침·낮·저녁·밤·새벽, 또는 수(한글 수사·숫자) + "시". "시간"의 "시"는 세지 않는다.
+  - `has_span_word`: "까지" · "시간" · "동안".
   - 지난 날짜("11월 1일"을 11-18 에 말함)도 올해 날짜로 돌려준다 — 거절은 Task 4 가 한다.
   - `speak_range` 는 끝이 시작과 같은 오전·오후면 끝의 표시를 뺀다.
 
 - [ ] **Step 1: 실패하는 시험 작성** — `tests/test_reservation_time.py`
 
 ```python
-"""예약 날짜·시각 읽기와 말로 읽기(설계 2026-11-18 5.2·6절)."""
+"""예약 날짜 계산·낱말 보기·말로 읽기(설계 2026-11-18 5.2·6절)."""
 from datetime import date
 
 import pytest
 
-from src.reservation_time import (has_date_word, has_time_word, read_date, read_times, speak_date,
-                                  speak_range, speak_time)
+from src.reservation_time import (has_date_word, has_span_word, has_time_word, resolve_date, speak_date,
+                                  speak_range, speak_time, valid_hhmm)
 
 TODAY = date(2026, 11, 18)   # 수요일
 
 
-@pytest.mark.parametrize("text, start, end", [
-    ("내일 오후 두 시에 세미나실 예약해 줘.", "14:00", None),
-    ("세미나실 좀 예약하고 싶은데, 모레 오전 열 시.", "10:00", None),
-    ("상담실 오늘 오후 네 시에 쓸 수 있어?", "16:00", None),
-    ("내일 세 시에 상담실 잡아 줘.", "15:00", None),
-    ("다음 주 월요일 오전 아홉 시 세미나실 예약.", "09:00", None),
-    ("오늘 저녁 여섯 시 반에 세미나실 쓸 수 있을까?", "18:30", None),
-    ("김토니 이름으로 내일 오전 열한 시 상담실 예약해 줘.", "11:00", None),
-    ("모레 오후 한 시 반 세미나실 예약 부탁해요.", "13:30", None),
-    ("세미나실 내일 열 시부터 예약할게.", "10:00", None),
-    ("11월 20일 오후 두 시 세미나실 예약해 줘.", "14:00", None),
-    ("내일 두 시부터 세 시까지 세미나실 예약해 줘.", "14:00", "15:00"),
-    ("내일 오후 두 시부터 네 시까지 세미나실.", "14:00", "16:00"),
-    ("모레 오전 열 시부터 열두 시까지 상담실.", "10:00", "12:00"),
-    ("내일 14시에 세미나실.", "14:00", None),
-    ("내일 2시 30분에 세미나실.", "14:30", None),
-    ("세미나실 예약해 줘.", None, None),
+@pytest.mark.parametrize("expr, expected", [
+    ("오늘", date(2026, 11, 18)), ("내일", date(2026, 11, 19)), ("모레", date(2026, 11, 20)),
+    ("글피", date(2026, 11, 21)), ("다음 주 월요일", date(2026, 11, 23)), ("다음주 월요일", date(2026, 11, 23)),
+    ("이번 주 금요일", date(2026, 11, 20)), ("금요일", date(2026, 11, 20)), ("11월 20일", date(2026, 11, 20)),
+    ("20일", date(2026, 11, 20)), ("11월 1일", date(2026, 11, 1)), ("2026-11-20", date(2026, 11, 20)),
+    ("언젠가", None), ("", None),
 ])
-def test_read_times(text, start, end):
-    assert read_times(text) == (start, end)
+def test_resolve_date(expr, expected):
+    assert resolve_date(expr, TODAY) == expected
 
 
-@pytest.mark.parametrize("text, expected", [
-    ("오늘 오후 네 시", date(2026, 11, 18)), ("내일 오후 두 시", date(2026, 11, 19)),
-    ("모레 오전 열 시", date(2026, 11, 20)), ("글피에", date(2026, 11, 21)),
-    ("다음 주 월요일 오전 아홉 시", date(2026, 11, 23)), ("이번 주 금요일", date(2026, 11, 20)),
-    ("금요일 두 시", date(2026, 11, 20)), ("11월 20일 오후 두 시", date(2026, 11, 20)),
-    ("11월 1일 오후 두 시", date(2026, 11, 1)), ("세미나실 예약해 줘.", None),
-])
-def test_read_date(text, expected):
-    assert read_date(text, TODAY) == expected
+def test_valid_hhmm():
+    assert valid_hhmm("14:00") == "14:00" and valid_hhmm("9:30") == "09:30"
+    assert valid_hhmm("25:00") is None and valid_hhmm("오후 두 시") is None and valid_hhmm("") is None
 
 
 def test_word_presence():
-    assert has_date_word("내일 세 시") and has_time_word("내일 세 시")
-    assert not has_date_word("세미나실 예약해 줘.") and not has_time_word("세미나실 예약해 줘.")
-    assert not has_time_word("세미나실이 어디 있어?")     # '시' 한 글자에 속지 않는다
+    assert has_date_word("내일 세 시") and has_date_word("11월 20일에") and has_date_word("금요일")
+    assert not has_date_word("세미나실 예약해 줘.")
+    assert has_time_word("내일 세 시") and has_time_word("14시에") and has_time_word("오후에 쓸게요")
+    assert not has_time_word("세미나실 예약해 줘.") and not has_time_word("세미나실이 어디 있어?")
+    assert not has_time_word("세 시간만 쓸게요")          # 쓰는 시간이지 시각이 아니다
+    assert has_span_word("두 시부터 세 시까지") and has_span_word("세 시간만 쓸게요") and has_span_word("두 시간 동안")
+    assert not has_span_word("내일 오후 두 시에 세미나실 예약해 줘.")
 
 
 def test_speaking():
@@ -221,9 +211,9 @@ def test_speaking():
 ```
 
 - [ ] **Step 2: 실패 확인** — `.venv/bin/python -m pytest tests/test_reservation_time.py -q -p no:cacheprovider` → `ModuleNotFoundError`
-- [ ] **Step 3: `src/reservation_time.py` 구현** — 정규식과 한글 수사 표. `langchain_intent_parser._SINO_UNITS`·`_NATIVE_NUM` 은 import 하지 않는다(그 모듈은 langchain 을 끌어온다).
-- [ ] **Step 4: 통과 확인** — 같은 명령 → 28 passed
-- [ ] **Step 5: 커밋** — `feat(voice): 예약 날짜·시각 읽기와 말로 읽기`
+- [ ] **Step 3: `src/reservation_time.py` 구현** — `langchain_intent_parser` 는 import 하지 않는다(langchain 을 끌어온다).
+- [ ] **Step 4: 통과 확인** — 같은 명령 → 17 passed
+- [ ] **Step 5: 커밋** — `feat(voice): 예약 날짜 계산·낱말 보기·말로 읽기`
 
 ---
 
@@ -279,29 +269,26 @@ def test_confirm_sentence_is_the_demo_line():
 - Test: `tests/test_reservation_flow.py`
 
 **Interfaces:**
-- Consumes: Task 1 `ReservationStore`·`Facility`·`Reservation`·`ConflictError`, Task 2 전부, Task 3 전부, `src.question_record.OpenQuestion`, `src.schema.VicaIntent`, `src.handle_mode.AFFIRMATIVES`·`SOFT_AFFIRMATIVES`·`NEGATIVES`
+- Consumes: Task 1 `ReservationStore`·`Facility`·`Reservation`·`ConflictError`, Task 2 전부, Task 3 전부, `src.question_record.OpenQuestion`, `src.schema.VicaIntent`
 - Produces:
   - `@dataclass(frozen=True) ReserveCall(facility: str = "", date: str = "", start_time: str = "", end_time: str = "", name: str = "")` — LLM 이 부른 도구의 인자(빈 값 = 말하지 않음)
   - `@dataclass(frozen=True) FlowOutput(say: str, kind: str, saved: Optional[Reservation] = None)` — `kind` 는 `"open"`·`"yesno"`·`""`(`""` = 대답을 기다리지 않는 안내)
   - `start_gate(dialog_state: str, question: Optional[OpenQuestion], own_text: str) -> str` — `"ok"`·`"busy"`·`"mute"`
-  - `class ReservationFlow(store, facilities: Sequence[Facility], clock: Callable[[], datetime] = datetime.now, stop_words: Collection[str] = ())`
-    - `active: bool`(속성) · `asked_text: str`(지금 넘긴 질문 문장, 없으면 `""`)
-    - `awaits_answer(question: Optional[OpenQuestion]) -> bool` — 진행 중이고 `question.text == asked_text`
-    - `on_call(call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]` — `"mute"` 면 `None`
-    - `on_text(text: str, question: Optional[OpenQuestion]) -> Optional[FlowOutput]` — 내 질문의 대답으로 규칙이 읽었을 때만 값, 아니면 `None`
-    - `on_general(intent: VicaIntent) -> Optional[FlowOutput]` — 일반 해석 결과가 승낙·거절이면 처리, 그 밖이면 진행 상태를 버리고 `None`
+  - `class ReservationFlow(store, facilities: Sequence[Facility], clock: Callable[[], datetime] = datetime.now)`
+    - `store`(속성) · `active: bool`(속성) · `asked_text: str`(지금 넘긴 질문 문장, 없으면 `""`)
+    - `on_call(call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]` — 진행 중이면 `gate` 를 보지 않는다. 진행 중이 아니고 `"busy"` 면 ⑨, `"mute"` 면 `None`
+    - `on_general(intent: VicaIntent) -> Optional[FlowOutput]` — 진행 중일 때 일반 해석 결과를 받는다(아래 규칙)
     - `on_question_record(text: str) -> None` — 미션의 질문 기록이 바뀔 때마다 부른다(`""` = 열린 질문 없음). 내가 넘긴 질문이 한 번 열렸다가(`text == asked_text`) 다른 것으로 바뀌면 진행 상태를 버린다. 새 질문을 넘기면 "열렸다"를 다시 센다.
-    - `note: str`(속성) — 마지막 `on_call` 에서 모델 값과 글자에서 읽은 값이 달랐으면 그 내용(로그용), 아니면 `""`
+    - `situation_line() -> str` — 진행 중이 아니면 `""`. 진행 중이면 한 줄: `[진행 중인 예약] 시설 세미나실 · 날짜 내일 · 시작 14:00 · 끝 16:00 · 이름 (아직 없음) · 방금 물은 것: "성함을 말씀해 주세요."` (없는 값은 `(아직 없음)`, 날짜는 `speak_date`)
     - `drop() -> None`
   - `to_intent(out: FlowOutput) -> VicaIntent` — 질문은 `intent="clarify"`, `reply=""`, `ask_text`, `ask_kind`, `need_confirm=False`, `confidence=1.0`. 안내는 `intent="question"`, `reply=문장`, `need_confirm=False`, `confidence=1.0`.
   - `created_event(res: Reservation, now: datetime) -> str` — JSON, 키 `event`(`"reservation_created"`)·`id`·`facility`·`date`·`start`·`end`·`name`·`source`·`timestamp`
 - 규칙(시험이 다 정하지 못하는 것)
-  - `start_gate`: `dialog_state == "idle"` 이고 (`question is None` 또는 `question.kind == "open"` 또는 `question.text == own_text`)면 `"ok"`. `"awaiting_user"`·`"patrolling"`·`"patrol_dwell"` 과 그 밖의 순찰 상태는 `"mute"`. 나머지는 `"busy"`. 순찰 상태 이름은 `src/patrol_sound.py` 의 `STATE_*` 를 쓴다.
-  - 값 거르기는 설계 5.2-2 그대로. 시설은 `call.facility` 가 글자에 없어도 글자에 시설 이름·별칭이 있으면 그것을 쓴다.
+  - `start_gate`: `dialog_state == "idle"` 이고 (`question is None` 또는 `question.kind == "open"` 또는 `question.text == own_text`)면 `"ok"`. `"awaiting_user"` 와 순찰 상태(`src/patrol_sound.py` 의 `STATE_*`)는 `"mute"`. 나머지는 `"busy"`.
+  - 값 받기는 설계 5.2-2 그대로: LLM 값을 쓰고, 글자에 근거가 없는 값만 버린다(`name` 은 글자에 그 이름이 있어야, `facility` 는 이름·별칭이 있어야, `date`·`start_time` 은 `has_date_word`·`has_time_word`, `end_time` 은 `has_span_word`). `date` 는 `resolve_date`, 시각은 `valid_hhmm`.
   - 묻는 순서: 시설(⑦) → 날짜·시각(⑤) → 시각 검사(⑧) → 겹침(④) → 이름(①) → 확인(②). ④·⑧ 뒤에는 시각을 비우고 시설·이름·날짜는 쥔다. 날짜가 이미 지난 날이면 날짜도 비운다.
-  - 승낙 = 문장부호·공백을 뗀 전체 글자가 `AFFIRMATIVES | SOFT_AFFIRMATIVES` 에 있을 때. 거절 = 그 전체 글자 또는 첫 낱말이 `NEGATIVES` 에 있을 때. `on_general` 의 승낙은 확인 단계에서만 저장으로 이어진다.
-  - 이름 단계: 글자에서 공백 아닌 문장부호와 끝말(`이라고 합니다`·`라고 합니다`·`입니다`·`이에요`·`예요`·`이요`·`요`)을 떼고 `[가-힣]{2,5}` 전체 일치, 그리고 `stop_words`·긍정·부정 낱말이 아닐 때만 이름. 글자 안의 공백은 지우지 않는다("화장실 가자"가 이름이 되면 안 된다).
-  - 저장한 뒤와 거절 뒤에는 진행 상태를 닫는다.
+  - `on_general`: `affirm` 이고 확인(②)을 기다리는 중이면 저장 → ③. `deny`·`cancel` 이면 ⑥ 뒤 버림. `navigate`·`pause`·`resume`·`wait`·`finish`·`help` 면 버리고 `None`. 그 밖(`unknown`·`question`·`clarify`·확인 단계가 아닌 `affirm`)은 그대로 두고 `None`.
+  - 저장한 뒤와 거절 뒤에는 진행 상태를 닫는다. `ConflictError` 면 ④, `OSError` 면 ⑨ 뒤 버림.
 
 - [ ] **Step 1: 실패하는 시험 작성** — `tests/test_reservation_flow.py`
 
@@ -321,6 +308,8 @@ from src.schema import VicaIntent
 NOW = datetime(2026, 11, 18, 14, 3, 21)        # 수요일
 FACILITIES = [Facility("세미나실", ("세미나룸",), 2, "09:00", "18:00"), Facility("상담실", (), 2, "09:00", "18:00")]
 DEMO = "김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+YES = VicaIntent(intent="affirm", need_confirm=False)
+NO = VicaIntent(intent="deny", need_confirm=False)
 
 
 def q(text, kind="open"):
@@ -329,18 +318,21 @@ def q(text, kind="open"):
 
 @pytest.fixture
 def flow(tmp_path):
-    store = ReservationStore(tmp_path / "reservations.json")
-    return ReservationFlow(store, FACILITIES, clock=lambda: NOW, stop_words={"화장실", "잠깐만", "비카야"})
+    return ReservationFlow(ReservationStore(tmp_path / "reservations.json"), FACILITIES, clock=lambda: NOW)
 
 
-def request(flow, text="내일 오후 두 시에 세미나실 예약해 줘.", **kw):
+def call(flow, text, **kw):
     return flow.on_call(ReserveCall(**kw), text, "ok")
 
 
+def first(flow, text="내일 오후 두 시에 세미나실 예약해 줘."):
+    return call(flow, text, facility="세미나실", date="내일", start_time="14:00")
+
+
 def test_demo_script(flow):
-    assert request(flow, facility="세미나실", date="내일", start_time="14:00") == FlowOutput(p.ASK_NAME, "open")
-    assert flow.on_text("김토니", q(p.ASK_NAME)) == FlowOutput(DEMO, "yesno")
-    out = flow.on_text("그래", q(DEMO, "yesno"))
+    assert first(flow) == FlowOutput(p.ASK_NAME, "open")
+    assert call(flow, "김토니", name="김토니") == FlowOutput(DEMO, "yesno")
+    out = flow.on_general(YES)
     assert out.say == p.DONE and out.kind == "open"
     assert (out.saved.facility, out.saved.date, out.saved.start, out.saved.end, out.saved.name) == (
         "세미나실", "2026-11-19", "14:00", "16:00", "김토니")
@@ -348,53 +340,51 @@ def test_demo_script(flow):
 
 
 def test_values_not_in_the_words_are_dropped(flow):
-    out = request(flow, "세미나실 예약해 줘.", facility="세미나실", date="오늘", start_time="14:00", name="홍길동")
+    out = call(flow, "세미나실 예약해 줘.", facility="세미나실", date="오늘", start_time="14:00", name="홍길동")
     assert out == FlowOutput(p.ASK_WHEN, "open")
-    assert flow.on_text("내일 오후 두 시", q(p.ASK_WHEN)) == FlowOutput(p.ASK_NAME, "open")   # 이름 '홍길동'은 버려졌다
+    assert call(flow, "내일 오후 두 시", date="내일", start_time="14:00") == FlowOutput(p.ASK_NAME, "open")
+    assert call(flow, "음", name="홍길동") == FlowOutput(p.ASK_NAME, "open")     # 글자에 없는 이름 — 다시 묻는다
+    assert call(flow, "제 이름은 김토니예요.", name="김토니") == FlowOutput(DEMO, "yesno")
 
 
-def test_time_read_from_the_words_beats_the_model(flow):
-    request(flow, "상담실 오늘 오후 네 시에 쓸 수 있어?", facility="상담실", date="오늘", start_time="14:00")
-    assert "14:00" in flow.note and "16:00" in flow.note
-    out = flow.on_text("이서연입니다.", q(p.ASK_NAME))
+def test_the_models_time_is_used(flow):
+    call(flow, "상담실 오늘 오후 네 시에 쓸 수 있어?", facility="상담실", date="오늘", start_time="16:00")
+    out = call(flow, "이서연입니다.", name="이서연")
     assert out.say == "이서연 님 이름으로 오늘 오후 네 시부터 여섯 시까지 상담실 예약할까요?"
 
 
-def test_spoken_end_time_is_kept(flow):
-    request(flow, "내일 두 시부터 세 시까지 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="14:00")
-    assert "오후 두 시부터 세 시까지" in flow.on_text("김토니", q(p.ASK_NAME)).say
+def test_end_time_only_when_spoken(flow):
+    call(flow, "내일 두 시부터 세 시까지 세미나실 예약해 줘.", facility="세미나실", date="내일",
+         start_time="14:00", end_time="15:00")
+    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    flow.drop()
+    call(flow, "모레 오후 두 시에 한 시간만 세미나실 쓸게요.", facility="세미나실", date="모레",
+         start_time="14:00", end_time="15:00")
+    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    flow.drop()
+    first(flow, "내일 오후 두 시에 세미나실 예약해 줘.")          # 끝을 말하지 않았다
+    flow.drop()
+    call(flow, "내일 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="14:00", end_time="17:00")
+    assert "오후 두 시부터 네 시까지" in call(flow, "김토니", name="김토니").say     # 지어낸 끝은 버리고 기본 2시간
 
 
 def test_empty_call_asks_facility_first(flow):
-    assert request(flow, "예약 좀 하려고.") == FlowOutput(p.ASK_WHERE, "open")
-    assert flow.on_text("세미나실", q(p.ASK_WHERE)) == FlowOutput(p.ASK_WHEN, "open")
+    assert call(flow, "예약 좀 하려고.") == FlowOutput(p.ASK_WHERE, "open")
+    assert call(flow, "세미나실이요.", facility="세미나실") == FlowOutput(p.ASK_WHEN, "open")
 
 
 def test_taken_slot_then_another_time(flow):
     flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "이서연", NOW)
-    assert request(flow, facility="세미나실", date="내일", start_time="14:00") == FlowOutput(p.TAKEN, "open")
-    assert flow.on_text("오후 네 시", q(p.TAKEN)) == FlowOutput(p.ASK_NAME, "open")   # 날짜(내일)는 쥐고 있다
-    assert "오후 네 시부터 여섯 시까지" in flow.on_text("김토니", q(p.ASK_NAME)).say
-
-
-def test_question_closing_drops_the_draft(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    flow.on_question_record("")                 # 앞 질문("네?")이 닫힘 — 내 질문은 아직 열린 적 없다
-    assert flow.active
-    flow.on_question_record(p.ASK_NAME)         # 미션이 내 질문을 열었다
-    flow.on_text("김토니", q(p.ASK_NAME))       # 새 질문(②)을 넘겼다
-    flow.on_question_record("")                 # ①이 닫힘 — ②는 아직 안 열렸다
-    assert flow.active
-    flow.on_question_record(DEMO)
-    flow.on_question_record("네?")              # 대답 없이 다시 불렀다
-    assert not flow.active
+    assert first(flow) == FlowOutput(p.TAKEN, "open")
+    assert call(flow, "오후 네 시", start_time="16:00") == FlowOutput(p.ASK_NAME, "open")   # 날짜(내일)는 쥐고 있다
+    assert "오후 네 시부터 여섯 시까지" in call(flow, "김토니", name="김토니").say
 
 
 def test_out_of_hours_and_past_are_refused(flow):
-    late = request(flow, "내일 오후 다섯 시에 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="17:00")
+    late = call(flow, "내일 오후 다섯 시에 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="17:00")
     assert late == FlowOutput(p.BAD_TIME, "open")
     flow.drop()
-    past = request(flow, "오늘 오전 아홉 시에 세미나실 예약해 줘.", facility="세미나실", date="오늘", start_time="09:00")
+    past = call(flow, "오늘 오전 아홉 시에 세미나실 예약해 줘.", facility="세미나실", date="오늘", start_time="09:00")
     assert past == FlowOutput(p.BAD_TIME, "open") and flow.store.list() == []
 
 
@@ -402,6 +392,8 @@ def test_gate(flow):
     assert flow.on_call(ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", "busy") == FlowOutput(p.UNAVAILABLE, "")
     assert flow.on_call(ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", "mute") is None
     assert not flow.active
+    first(flow)
+    assert flow.on_call(ReserveCall(name="김토니"), "김토니", "busy") == FlowOutput(DEMO, "yesno")   # 진행 중이면 문을 다시 보지 않는다
     assert start_gate("idle", None, "") == "ok" and start_gate("idle", q("네?"), "") == "ok"
     assert start_gate("idle", q("화장실로 안내해드릴까요?", "confirm"), "") == "busy"
     assert start_gate("idle", q(DEMO, "yesno"), DEMO) == "ok"
@@ -409,49 +401,55 @@ def test_gate(flow):
     assert start_gate("awaiting_user", None, "") == "mute" and start_gate("patrolling", None, "") == "mute"
 
 
-def test_name_step_rejects_commands_and_places(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    for text in ("화장실", "잠깐만", "화장실 먼저 가자", "네"):
-        assert flow.on_text(text, q(p.ASK_NAME)) is None
-    assert flow.on_text("아니, 됐어.", q(p.ASK_NAME)) == FlowOutput(p.NOT_RESERVED, "") and not flow.active
-
-
-def test_answer_to_another_question_is_not_mine(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    assert flow.on_text("김토니", q("네?")) is None and flow.on_text("김토니", None) is None
-    assert not flow.awaits_answer(q("네?")) and flow.awaits_answer(q(p.ASK_NAME))
-
-
 def test_confirm_no_and_second_yes_does_not_save_twice(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    flow.on_text("김토니", q(p.ASK_NAME))
-    assert flow.on_text("그래", q(DEMO, "yesno")).saved is not None
-    assert flow.on_text("그래", q(DEMO, "yesno")) is None and len(flow.store.list()) == 1
-    request(flow, "모레 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="모레", start_time="14:00")
-    line = flow.on_text("김토니", q(p.ASK_NAME)).say
-    assert flow.on_text("아니", q(line, "yesno")) == FlowOutput(p.NOT_RESERVED, "") and len(flow.store.list()) == 1
+    first(flow)
+    call(flow, "김토니", name="김토니")
+    assert flow.on_general(YES).saved is not None
+    assert flow.on_general(YES) is None and len(flow.store.list()) == 1
+    first(flow, "모레 오후 두 시에 세미나실 예약해 줘.")
+    call(flow, "김토니", name="김토니")
+    assert flow.on_general(NO) == FlowOutput(p.NOT_RESERVED, "") and not flow.active and len(flow.store.list()) == 1
 
 
 def test_save_failure_says_unavailable_not_done(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    flow.on_text("김토니", q(p.ASK_NAME))
+    first(flow)
+    call(flow, "김토니", name="김토니")
     flow.store.path.write_text('[{"id": "r1", "facil', encoding="utf-8")
-    assert flow.on_text("그래", q(DEMO, "yesno")) == FlowOutput(p.UNAVAILABLE, "") and not flow.active
+    assert flow.on_general(YES) == FlowOutput(p.UNAVAILABLE, "") and not flow.active
 
 
 def test_general_result_while_active(flow):
-    request(flow, facility="세미나실", date="내일", start_time="14:00")
-    flow.on_text("김토니", q(p.ASK_NAME))
-    assert flow.on_general(VicaIntent(intent="affirm", need_confirm=False)).saved is not None
-    request(flow, "모레 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="모레", start_time="14:00")
+    first(flow)                                                   # 이름을 기다리는 중
+    for kind in ("unknown", "question", "clarify", "affirm"):
+        assert flow.on_general(VicaIntent(intent=kind, need_confirm=False)) is None and flow.active
     assert flow.on_general(VicaIntent(intent="navigate", destination_candidate="화장실")) is None and not flow.active
-    request(flow, "모레 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="모레", start_time="14:00")
-    assert flow.on_general(VicaIntent(intent="deny", need_confirm=False)) == FlowOutput(p.NOT_RESERVED, "")
+    first(flow)
+    assert flow.on_general(VicaIntent(intent="cancel", need_confirm=False)) == FlowOutput(p.NOT_RESERVED, "")
 
 
-def test_same_call_twice_asks_the_same_question_once_more(flow):
-    first = request(flow, facility="세미나실", date="내일", start_time="14:00")
-    assert request(flow, facility="세미나실", date="내일", start_time="14:00") == first == FlowOutput(p.ASK_NAME, "open")
+def test_question_closing_drops_the_draft(flow):
+    first(flow)
+    flow.on_question_record("")                 # 앞 질문("네?")이 닫힘 — 내 질문은 아직 열린 적 없다
+    assert flow.active
+    flow.on_question_record(p.ASK_NAME)         # 미션이 내 질문을 열었다
+    call(flow, "김토니", name="김토니")          # 새 질문(②)을 넘겼다
+    flow.on_question_record("")                 # ①이 닫힘 — ②는 아직 안 열렸다
+    assert flow.active
+    flow.on_question_record(DEMO)
+    flow.on_question_record("네?")              # 대답 없이 다시 불렀다
+    assert not flow.active
+
+
+def test_same_call_twice_asks_the_same_question(flow):
+    assert first(flow) == first(flow) == FlowOutput(p.ASK_NAME, "open")
+
+
+def test_situation_line(flow):
+    assert flow.situation_line() == ""
+    first(flow)
+    line = flow.situation_line()
+    assert line.startswith("[진행 중인 예약]") and "세미나실" in line and "내일" in line and "14:00" in line
+    assert "(아직 없음)" in line and p.ASK_NAME in line
 
 
 def test_to_intent_and_event(flow):
@@ -466,9 +464,9 @@ def test_to_intent_and_event(flow):
 ```
 
 - [ ] **Step 2: 실패 확인** — `.venv/bin/python -m pytest tests/test_reservation_flow.py -q -p no:cacheprovider` → `ModuleNotFoundError`
-- [ ] **Step 3: `src/reservation_flow.py` 구현** — `store` 와 진행 값은 공개 속성(`flow.store`). `on_general` 의 승낙·거절은 `intent.intent in ("affirm",)` / `("deny", "cancel")`. 저장은 `store.add`; `ConflictError` 면 ④, `OSError` 면 ⑨ 뒤 `drop`.
-- [ ] **Step 4: 통과 확인** — 같은 명령 → 16 passed
-- [ ] **Step 5: 커밋** — `feat(voice): 예약 진행 상태 — 말에 없는 값 버림·이름은 글자 그대로·저장 뒤에만 완료 문장`
+- [ ] **Step 3: `src/reservation_flow.py` 구현**
+- [ ] **Step 4: 통과 확인** — 같은 명령 → 15 passed
+- [ ] **Step 5: 커밋** — `feat(voice): 예약 진행 상태 — 값은 LLM, 코드는 지어낸 값 거르기·겹침·저장 뒤에만 완료 문장`
 
 ---
 
@@ -487,13 +485,13 @@ def test_to_intent_and_event(flow):
   - `tool_calls.reserve_tool(facility_names: Sequence[str], with_heard_text: bool = False) -> dict` — `{"type": "function", "function": {"name", "description", "parameters"}}`. `parameters.properties` 는 `facility`(enum = 이름들)·`date`·`start_time`·`end_time`·`name`(+ `heard_text`), `required` 는 `[]`(with_heard_text 면 `["heard_text"]`).
   - `tool_calls.set_intent_tool(parameters: dict) -> dict` — 같은 꼴, 이름 `set_intent`
   - `tool_calls.reserve_call(args: dict) -> ReserveCall` — 모르는 키는 버리고 `None`·비문자열은 `""`
-  - `langchain_intent_parser._set_intent_tool() -> dict` — `tool_calls.set_intent_tool(_IntentDraft 의 JSON 스키마)` 
+  - `langchain_intent_parser._set_intent_tool() -> dict` — `tool_calls.set_intent_tool(_IntentDraft 의 JSON 스키마)`
   - `langchain_intent_parser._draft_from_tool_message(msg) -> _IntentDraft | ReserveCall` — `msg.tool_calls` 의 첫 호출. 호출이 없거나 이름을 모르거나 인자가 `_IntentDraft` 와 안 맞으면 `ValueError`.
   - `langchain_intent_parser._get_tool_llm(model: str, *, timeout: float = 15, max_retries: int = 1)` — `.invoke(messages) -> _IntentDraft | ReserveCall`
   - `parse_intent(...) -> VicaIntent | ReserveCall` — LLM 이 `reserve_facility` 를 부르면 `_finalize` 를 거치지 않고 `ReserveCall` 을 그대로 돌려준다.
 - 도구 설명 글자(설계 5.1, 규칙을 여기에 적는다):
-  - `reserve_facility`: `시설을 예약해 달라거나 그 시간에 쓸 수 있는지 묻는 말에만 호출한다. 어디로 가자, 안내해 달라는 말은 이동이므로 set_intent 를 호출한다. 사용자가 말한 값만 넣는다. 실제 예약은 사용자 확인 뒤 시스템이 한다.`
-  - `date`: `사용자가 말한 날짜 표현 그대로. 예: 오늘, 내일, 모레, 다음 주 월요일, 11월 20일` · `start_time`: `시작 시각, 24시간 HH:MM` · `end_time`: `끝 시각을 말했을 때만, 24시간 HH:MM` · `name`: `예약자 이름. 사용자가 말했을 때만` · `heard_text`: `들린 말을 한국어로 그대로 적는다`
+  - `reserve_facility`: `시설을 예약해 달라는 말, 그 시간에 쓸 수 있는지 묻는 말, 진행 중인 예약에 대한 대답(이름·날짜·시각·시설)에 호출한다. 사용자가 이번에 말한 값만 넣는다. 어디로 가자, 안내해 달라는 말은 이동이므로 set_intent 를 호출한다. 실제 예약은 사용자 확인 뒤 시스템이 한다.`
+  - `date`: `사용자가 말한 날짜 표현 그대로. 예: 오늘, 내일, 모레, 다음 주 월요일, 11월 20일` · `start_time`: `시작 시각, 24시간 HH:MM` · `end_time`: `끝 시각이나 쓰는 시간을 말했을 때만, 끝 시각을 24시간 HH:MM 으로` · `name`: `예약자 이름. 사용자가 말했을 때만` · `heard_text`: `들린 말을 한국어로 그대로 적는다`
   - `set_intent`: `시설 예약이 아닌 모든 말의 의도를 정한다.`
 - `set_intent` 의 `parameters` 는 `_IntentDraft.model_json_schema()` 에서 만든다(칸과 설명이 지금 구조화 출력과 같아야 한다).
 - 도구 출력은 `PROVIDER == "openai"` 이고 `text_tools_on()` 일 때만 쓴다. `get_backend_manager` 의 클라우드 쪽과 `parse_intent(model=…)` 직접 호출 쪽 둘 다 같은 조건으로 고른다. 로컬(`_build_local_structured`)은 그대로.
@@ -509,7 +507,7 @@ from src.reservation_flow import ReserveCall
 
 def test_reserve_tool_shape():
     tool = tool_calls.reserve_tool(["세미나실", "상담실"])["function"]
-    assert tool["name"] == "reserve_facility" and "이동" in tool["description"]
+    assert tool["name"] == "reserve_facility" and "이동" in tool["description"] and "진행 중인 예약" in tool["description"]
     props = tool["parameters"]["properties"]
     assert set(props) == {"facility", "date", "start_time", "end_time", "name"}
     assert props["facility"]["enum"] == ["세미나실", "상담실"] and tool["parameters"]["required"] == []
@@ -573,6 +571,12 @@ def test_parse_intent_hands_back_the_reserve_call(monkeypatch):
 def test_set_intent_tool_has_the_draft_fields():
     names = set(parser._set_intent_tool()["function"]["parameters"]["properties"])
     assert names == set(parser._IntentDraft.model_fields)
+
+
+def test_local_backend_is_untouched_by_the_switch(monkeypatch):
+    monkeypatch.setenv("VICA_TOOLS_TEXT", "on")
+    import inspect
+    assert "bind_tools" not in inspect.getsource(parser._build_local_structured)
 ```
 
 - [ ] **Step 2: 실패 확인** — `.venv/bin/python -m pytest tests/test_tool_calls.py tests/test_parser_tools.py -q -p no:cacheprovider`
@@ -580,55 +584,53 @@ def test_set_intent_tool_has_the_draft_fields():
 - [ ] **Step 4: `langchain_intent_parser.py`** — `_set_intent_tool()`, `_draft_from_tool_message`, `_get_tool_llm`(`ChatOpenAI(model, temperature=0, timeout, max_retries).bind_tools([_set_intent_tool(), reserve_tool(이름들)], tool_choice="required")`, 시설 이름은 `default_facilities()`), 조건에 따라 고르는 자리 두 곳, `parse_intent` 의 `isinstance(draft, ReserveCall)` 갈래.
 - [ ] **Step 5: `.env.example`** 에 `VICA_TOOLS_TEXT=off`·`VICA_TOOLS_AUDIO=off`·`VICA_RESERVATION_DIR` 설명 한 줄씩.
 - [ ] **Step 6: 통과 확인** — 새 두 파일 통과, 그리고 전체 `.venv/bin/python -m pytest -q -p no:cacheprovider` → 기존 1718 + 새 시험 모두 통과
-- [ ] **Step 7: 커밋** — `feat(voice): 글자 경로 도구 출력 — set_intent·reserve_facility, 스위치 VICA_TOOLS_TEXT(기본 꺼짐)`
+- [ ] **Step 7: 커밋** — `feat(voice): 글자 경로 도구 출력 — set_intent·reserve_facility, 스위치 VICA_TOOLS_TEXT(기본 꺼짐), 로컬은 그대로`
 
 ---
 
 ### Task 6: 음성 노드 배선 — 글자 경로 (설계 5.3·5.5)
 
 **Files:**
-- Modify: `src/reservation_flow.py`(갈림 함수 2개), `src/ros_node.py`(`__init__`, `_on_user_text`, `_publish_intent`, `_shadow_text`)
+- Modify: `src/reservation_flow.py`(갈림 함수), `src/ros_node.py`(`__init__`, `_on_user_text`, `_on_question`, `_publish_intent`, `_situation_block`, `_shadow_text`)
 - Test: `tests/test_reservation_flow.py`(갈림), `tests/test_reservation_wiring.py`(새, `tests/test_one_voice_wiring.py` 와 같은 소스 구조 시험)
 
 **Interfaces:**
 - Consumes: Task 4·5 전부
 - Produces:
-  - `reservation_flow.answer_by_rule(flow: Optional[ReservationFlow], text: str, question: Optional[OpenQuestion]) -> Optional[FlowOutput]` — `flow` 가 있고 `flow.awaits_answer(question)` 일 때만 `flow.on_text`
   - `reservation_flow.handle_result(flow: Optional[ReservationFlow], result, text: str, *, gate: str, tools_used: bool) -> tuple[Optional[FlowOutput], Optional[VicaIntent]]`
     - `flow is None`: `(None, result)`.
     - `result` 가 `ReserveCall`: `(flow.on_call(result, text, gate), None)`.
     - 진행 중: `flow.on_general(result)` 가 값을 주면 `(그 값, None)`.
     - `tools_used` 가 거짓이고 글자에 `예약` 이 있고 `result.intent` 가 `affirm`·`deny`·`cancel`·`pause`·`resume` 이 아니고 `safety_flag != "emergency"`: `gate == "mute"` 면 `(None, None)`, 아니면 `(FlowOutput(UNAVAILABLE, ""), None)`.
     - 그 밖: `(None, result)`.
-  - `ros_node`: `self._reservation: Optional[ReservationFlow]`(두 스위치 중 하나라도 켜졌을 때만 만든다. `stop_words` = 목적지 이름·별칭 + `_PAUSE_WORDS` + `_RESUME_WORDS` + `"비카야"`), 발행자 `self._reservation_pub`(`std_msgs/String`, `/vica/reservation/event`, depth 10), `_publish_intent(..., scripted: bool = False)`, `_reservation_say(self, out: FlowOutput, text: str, link_text: str = "") -> None`
+  - `ros_node`: `self._reservation: Optional[ReservationFlow]`(두 스위치 중 하나라도 켜졌을 때만 만든다), 발행자 `self._reservation_pub`(`std_msgs/String`, `/vica/reservation/event`, depth 10), `_publish_intent(..., scripted: bool = False)`, `_reservation_say(self, out: FlowOutput, text: str, link_text: str = "") -> None`
 - 배선 규칙
-  - `_on_user_text`: 긴급어·멈춤 말 처리 **뒤**, 소리 결과 소비(`audio_turn_applies`)와 `parse_intent` **앞**에서 `answer_by_rule` 을 부른다. 값이 있으면 `_reservation_say` 뒤 `self._last_text_publish_t`·`_last_text_publish_intent` 를 채우고 끝.
-  - `parse_intent` 결과는 `handle_result` 를 거친다. `gate = start_gate(self._robot_state.dialog_state, self._question, flow.asked_text)`, `tools_used = text_tools_on() and self._backend.state is not BackendState.LOCAL`.
+  - `_situation_block`: 진행 중이면 돌려주는 글 끝에 `flow.situation_line()` 을 한 줄 더한다.
+  - `_on_user_text`: `parse_intent` 결과를 `handle_result` 에 넣는다. `gate = start_gate(self._robot_state.dialog_state, self._question, flow.asked_text)`, `tools_used = text_tools_on() and self._backend.state is not BackendState.LOCAL`. `FlowOutput` 이면 `_reservation_say`, 의도면 지금처럼 `_publish_intent`, 둘 다 `None` 이면 아무것도 내지 않는다. 어느 쪽이든 `self._last_text_publish_t`·`_last_text_publish_intent` 는 지금처럼 채운다.
   - `_reservation_say`: `out.saved` 가 있으면 먼저 `created_event` 를 발행하고, `self._publish_intent(to_intent(out), text, scripted=True, link_text=link_text)`.
   - `_publish_intent` 의 `scripted=True`: 재청취 기각(`is_relisten_noise`)·`_apply_misheard_rule`·`quiet_for_mission` 을 건너뛴다. 대화 기록의 로봇 줄은 `ask_text or reply`.
-  - `_shadow_text` 는 `ReserveCall` 이 와도 죽지 않고 `intent=reserve_facility` 로 로그만 남긴다.
   - `_on_question` 은 질문 기록을 받을 때마다 `self._reservation.on_question_record(msg.text if msg.id else "")` 를 부른다(흐름이 있을 때).
   - `self._history.begin_turn(...)` 이 참(대화 맥락을 비움)인 두 자리에서 `self._reservation.drop()` 을 부른다.
-  - `handle_result` 뒤 `flow.note` 가 비어 있지 않으면 `[예약]` 로그 한 줄로 남긴다.
+  - `_shadow_text` 는 `ReserveCall` 이 와도 죽지 않고 `intent=reserve_facility` 로 로그만 남긴다.
 
 - [ ] **Step 1: 실패하는 시험 작성**
 
 `tests/test_reservation_flow.py` 에 더함
 ```python
-from src.reservation_flow import answer_by_rule, handle_result
+from src.reservation_flow import handle_result
 
 
 def test_routing(flow):
     nav = VicaIntent(intent="navigate", destination_candidate="화장실", matched_destination_id="restroom")
     assert handle_result(None, nav, "화장실로 가자.", gate="ok", tools_used=True) == (None, nav)
-    assert answer_by_rule(None, "김토니", q(p.ASK_NAME)) is None
     out, passed = handle_result(flow, ReserveCall(facility="세미나실", date="내일", start_time="14:00"),
                                 "내일 오후 두 시에 세미나실 예약해 줘.", gate="ok", tools_used=True)
     assert out == FlowOutput(p.ASK_NAME, "open") and passed is None
-    assert answer_by_rule(flow, "김토니", q(p.ASK_NAME)) == FlowOutput(DEMO, "yesno")
-    assert answer_by_rule(flow, "김토니", q("네?")) is None
-    out, passed = handle_result(flow, nav, "화장실로 가자.", gate="ok", tools_used=True)
-    assert (out, passed) == (None, nav) and not flow.active
+    out, passed = handle_result(flow, ReserveCall(name="김토니"), "김토니", gate="ok", tools_used=True)
+    assert out == FlowOutput(DEMO, "yesno") and passed is None
+    out, passed = handle_result(flow, YES, "그래", gate="ok", tools_used=True)
+    assert out.say == p.DONE and passed is None                   # 예약이 받은 승낙은 미션에 보내지 않는다
+    assert handle_result(flow, nav, "화장실로 가자.", gate="ok", tools_used=True) == (None, nav)
 
 
 def test_reservation_word_without_tools_is_refused(flow):
@@ -636,20 +638,19 @@ def test_reservation_word_without_tools_is_refused(flow):
     assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="ok", tools_used=False) == (FlowOutput(p.UNAVAILABLE, ""), None)
     assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, None)
     assert handle_result(flow, nav, "예약은 됐고 화장실 가자.", gate="ok", tools_used=True) == (None, nav)
-    yes = VicaIntent(intent="affirm", need_confirm=False)
-    assert handle_result(flow, yes, "네 예약이요", gate="ok", tools_used=False) == (None, yes)
+    assert handle_result(flow, YES, "네 예약이요", gate="ok", tools_used=False) == (None, YES)
 ```
 
-`tests/test_reservation_wiring.py` — `test_one_voice_wiring.py` 의 `_method`·`_calls` 도우미를 가져다 쓴다.
+`tests/test_reservation_wiring.py` — `test_one_voice_wiring.py` 의 `SRC`·`_method`·`_calls`·`_branch_tests` 도우미를 가져다 쓴다.
 ```python
-def test_rule_answer_comes_before_the_model():
-    body = ast.unparse(_method("_on_user_text"))
-    assert body.index("answer_by_rule(") < body.index("parse_intent(")
-    assert body.index("detect_emergency(") < body.index("answer_by_rule(")
-
-
 def test_model_result_goes_through_handle_result():
     assert _calls(_method("_on_user_text"), "handle_result")
+    body = ast.unparse(_method("_on_user_text"))
+    assert body.index("parse_intent(") < body.index("handle_result(")
+
+
+def test_situation_block_carries_the_draft_line():
+    assert "situation_line(" in ast.unparse(_method("_situation_block"))
 
 
 def test_scripted_skips_the_three_filters():
@@ -677,10 +678,10 @@ def test_question_record_and_cleared_context_reach_the_flow():
 ```
 
 - [ ] **Step 2: 실패 확인** — `.venv/bin/python -m pytest tests/test_reservation_flow.py tests/test_reservation_wiring.py -q -p no:cacheprovider`
-- [ ] **Step 3: `reservation_flow.py` 에 `answer_by_rule`·`handle_result` 구현**
+- [ ] **Step 3: `reservation_flow.py` 에 `handle_result` 구현**
 - [ ] **Step 4: `ros_node.py` 배선** — 위 배선 규칙대로.
 - [ ] **Step 5: 통과 확인** — 두 파일 통과 뒤 전체 시험 통과(스위치가 꺼진 기본 상태에서 기존 시험이 그대로여야 한다)
-- [ ] **Step 6: 커밋** — `feat(voice): 예약 흐름 배선(글자 경로) — 규칙 대답이 LLM 앞, 코드가 만든 문장은 기각·대꾸 바꾸기를 건너뜀, /vica/reservation/event`
+- [ ] **Step 6: 커밋** — `feat(voice): 예약 흐름 배선(글자 경로) — [지금 상황]에 진행 중인 예약, 코드가 만든 문장은 기각·대꾸 바꾸기를 건너뜀, /vica/reservation/event`
 
 ---
 
@@ -694,9 +695,12 @@ def test_question_record_and_cleared_context_reach_the_flow():
 **Interfaces:**
 - Consumes: Task 4·5·6
 - Produces:
-  - `tools.reserve_cases.CASES: list[Case]` — `Case(id, history, text, expect)`. `~/vica_data/tool_call_test_20261118/measure.py` 의 `ROWS` 32개(R1~R12·W 제외·N1~N13·M1~M4)에서 날씨 3개를 빼고, 끝 시각 3개를 더한다: E1 `내일 두 시부터 세 시까지 세미나실 예약해 줘.`(14:00~15:00) · E2 `모레 오전 열 시부터 열두 시까지 상담실 예약해 줘.`(10:00~12:00) · E3 `내일 오후 한 시부터 세 시까지 세미나실 쓸게.`(13:00~15:00). 모두 32개.
-  - `tools.reserve_replay.grade_case(case, result, flow) -> dict` — 예약 발화는 `handle_result` 를 거친 뒤 진행 상태의 시설·날짜·시작·끝이 기대와 같은지, 그 밖 발화는 `ReserveCall` 이 아닌지. 이름 대답(M1·M2)은 `answer_by_rule` 로 이름이 들어갔는지. M3("아니, 됐어.")·M4("화장실 먼저 가자.")는 예약이 저장되지 않고 진행 상태가 닫혔는지(요약의 `other_ok`).
-  - `python -m tools.reserve_replay --path gpt|realtime` — 운영 지시문(`parse_intent` 그대로)과 대화 기록을 붙여 돌리고 `예약 발화 맞음 n/15 · 그 밖에서 reserve 호출 n/13 · 이름 대답 n/2 · 평균 응답` 을 찍는다. 기록은 `~/vica_data/tool_call_test_20261118/reserve_replay_<경로>_<시각>.jsonl`.
+  - `tools.reserve_cases.CASES: list[Case]` — `Case(id: str, setup: tuple, text: str, expect: dict)`. `setup` 은 그 발화 전에 진행 상태에 넣을 `(ReserveCall, 글자)` 들(빈 tuple = 첫 요청).
+    - 첫 요청 15개: `~/vica_data/tool_call_test_20261118/measure.py` 의 `ROWS` 가운데 R1~R12, 그리고 E1 `내일 두 시부터 세 시까지 세미나실 예약해 줘.`(14:00~15:00) · E2 `모레 오전 열 시부터 열두 시까지 상담실 예약해 줘.`(10:00~12:00) · E3 `내일 오후 두 시에 한 시간만 세미나실 쓸게요.`(14:00~15:00).
+    - 그 밖 13개: 같은 파일의 N1~N13.
+    - 이어진 대답 10개(F1~F10, `setup` 으로 진행 상태를 만든 뒤 `[지금 상황]` 한 줄과 넘긴 질문을 붙임): 이름 질문에 `김토니` · `이서연입니다.` · `제 이름은 김토니예요.` · `아니, 됐어.`(거절) · `화장실 먼저 가자.`(이동), ⑤ 뒤 `내일 오후 세 시`, ⑦ 뒤 `세미나실이요.`, 확인에 `그래.`(승낙) · `아니요.`(거절) · `아니 네 시로 해 줘.`(시작 16:00 으로 다시 확인).
+  - `tools.reserve_replay.summarize(rows: list[dict]) -> dict` — 키 `first_ok`·`first_total`·`stray_reserve`·`follow_ok`·`follow_total`
+  - `python -m tools.reserve_replay --path gpt|realtime` — 운영 지시문(`parse_intent` 그대로)에 `situation=flow.situation_line()` 과 대화 기록(넘긴 질문을 로봇 줄로)을 붙여 돌리고, 결과를 `handle_result` 에 넣어 진행 상태와 저장 결과로 채점한다. `첫 요청 n/15 · 그 밖에서 reserve 호출 n/13 · 이어진 대답 n/10 · 평균 응답` 을 찍고 `~/vica_data/tool_call_test_20261118/reserve_replay_<경로>_<시각>.jsonl` 에 남긴다.
   - `tools.answer_replay`: `--tools` 를 주면 import 전에 `VICA_TOOLS_TEXT=on`·`VICA_TOOLS_AUDIO=on` 을 넣는다. 해석 결과가 `ReserveCall` 인 행은 `wrong` 으로 센다(208행에는 예약 발화가 없다).
 
 - [ ] **Step 1: 실패하는 시험 작성**
@@ -710,18 +714,19 @@ from tools.reserve_replay import summarize
 
 def test_case_set_shape():
     kinds = [c.id[0] for c in CASES]
-    assert len(CASES) == 32 and kinds.count("R") == 12 and kinds.count("E") == 3
-    assert kinds.count("N") == 13 and kinds.count("M") == 4 and "W" not in kinds
-    assert len({c.id for c in CASES}) == 32
+    assert len(CASES) == 38 and len({c.id for c in CASES}) == 38
+    assert kinds.count("R") == 12 and kinds.count("E") == 3 and kinds.count("N") == 13 and kinds.count("F") == 10
+    assert all(c.setup for c in CASES if c.id.startswith("F")) and not any(c.setup for c in CASES if c.id[0] in "REN")
 
 
 def test_summary_counts():
     rows = [{"id": "R1", "ok": True, "reserve_called": True, "wall_s": 1.0},
             {"id": "E1", "ok": False, "reserve_called": True, "wall_s": 1.0},
             {"id": "N3", "ok": False, "reserve_called": True, "wall_s": 1.0},
-            {"id": "M1", "ok": True, "reserve_called": False, "wall_s": 1.0}]
+            {"id": "F1", "ok": True, "reserve_called": True, "wall_s": 1.0},
+            {"id": "F8", "ok": False, "reserve_called": False, "wall_s": 1.0}]
     s = summarize(rows)
-    assert (s["reserve_ok"], s["reserve_total"], s["stray_reserve"], s["name_ok"]) == (1, 2, 1, 1)
+    assert (s["first_ok"], s["first_total"], s["stray_reserve"], s["follow_ok"], s["follow_total"]) == (1, 2, 1, 1, 2)
 ```
 
 `tests/test_answer_replay.py` 에 더함 — 기존 `replay` 시험과 같은 가짜 행으로:
@@ -734,16 +739,17 @@ def test_reserve_call_on_a_labeled_row_counts_as_wrong():
 (`ROWS`·`replay` 의 인자 꼴은 그 파일의 기존 시험을 따른다.)
 
 - [ ] **Step 2: 실패 확인**
-- [ ] **Step 3: 구현** — `tools/reserve_cases.py`, `tools/reserve_replay.py`(`summarize(rows) -> dict` 포함), `tools/answer_replay.py`.
+- [ ] **Step 3: 구현** — `tools/reserve_cases.py`, `tools/reserve_replay.py`, `tools/answer_replay.py`.
 - [ ] **Step 4: 통과 확인** — 두 시험 파일과 전체 시험
 - [ ] **Step 5: 커밋** — `feat(voice): 예약 묶음 재생·208행 재생의 도구 출력 스위치`
-- [ ] **Step 6: 측정(사용자에게 알리고 실행 — OpenAI API 약 240번)**
+- [ ] **Step 6: 측정(사용자에게 알리고 실행 — OpenAI API 약 250번)**
+  - `.venv/bin/python -m tools.reserve_replay --path gpt`
+    합격: 첫 요청 **15/15**, 그 밖에서 reserve 호출 **0/13**, 이어진 대답 **10/10**.
+    이어진 대답이 여럿 틀리면(`[지금 상황]` 한 줄만으로 대답을 잇지 못함) 켜지 않고, 대화 기록에 도구 호출 기록을 넣는 방식으로 바꾸는 안을 수치와 함께 사용자에게 보고한다(설계 7절).
   - `.venv/bin/python -m tools.answer_replay --path gpt --tools --labels ~/vica_data/voice_answer_audit_20261113/labeled.csv --rounds 1`
     합격: 208행(`confirmed == 'ear-1117'` 행을 `tools.answer_grade.grade` 로 다시 채점한 값) 잘못된 행동 **14 이하**(11-18 기준 10~12 + 2).
-  - `.venv/bin/python -m tools.reserve_replay --path gpt`
-    합격: 예약 발화 **15/15**, 그 밖에서 reserve 호출 **0/13**, 이름 대답 **2/2**.
-  - 결과를 설계서 7절 끝에 표로 적고 커밋(`docs(voice): 예약 도구 출력 재생 결과 — gpt`). 기준을 못 넘으면 켜지 않고 사용자에게 수치와 틀린 행을 보고한다.
-- [ ] **Step 7: 켜기와 실기(사용자와 함께)** — 사용자가 `.env` 에 `VICA_TOOLS_TEXT=on` 을 넣고 글자 모드(`VICA_INTENT_INPUT=text`, `VICA_LLM_PROVIDER=openai`)로 음성 노드를 다시 띄운다. 주행 없이 설계 7절 장면 8개를 한다: 대본 그대로 · 이미 예약 있음 · 확인에 "아니" · 이름을 잘못 들었을 때 "아니" · 이름 질문 중 "화장실로 가자" · 날짜 없이 "세미나실 예약해 줘" · "두 시부터 세 시까지" · 이름 질문에 대답 없이 지나간 뒤 다시 요청.
+  - 결과를 설계서 7절 끝에 표로 적고 커밋(`docs(voice): 예약 도구 출력 재생 결과 — gpt`). 기준을 못 넘으면 켜지 않고 틀린 행을 보고한다.
+- [ ] **Step 7: 켜기와 실기(사용자와 함께)** — 사용자가 `.env` 에 `VICA_TOOLS_TEXT=on` 을 넣고 글자 모드(`VICA_INTENT_INPUT=text`, `VICA_LLM_PROVIDER=openai`)로 음성 노드를 다시 띄운다. 주행 없이 설계 7절 장면을 한다: 대본 그대로 · 이미 예약 있음 · 확인에 "아니" · 이름을 잘못 들었을 때 "아니" · 이름 질문 중 "화장실로 가자" · 날짜 없이 "세미나실 예약해 줘" · "두 시부터 세 시까지" · 이름 질문에 대답 없이 지나간 뒤 다시 요청 · 오프라인(로컬)에서 "세미나실 예약해 줘"(⑨).
   확인: `ros2 topic echo /vica/reservation/event --once`(저장한 내용과 같은가), `python -m tools.reservations list`, 음성·미션 로그에서 한 질문에 두 목소리 0·저장 없는 ③ 0. 결과는 `~/vica_data/field_test_<날짜>/RESULT.md`.
 
 ---
@@ -807,7 +813,7 @@ def test_reserve_tool_result_is_handed_back(monkeypatch):
 
 ---
 
-### Task 9: 음성 노드 배선 — 소리 경로 (설계 5.3 P7)
+### Task 9: 음성 노드 배선 — 소리 경로 (설계 5.3)
 
 **Files:**
 - Modify: `src/ros_node.py`(`_on_user_audio`)
@@ -816,29 +822,29 @@ def test_reserve_tool_result_is_handed_back(monkeypatch):
 **Interfaces:**
 - Consumes: Task 6 `handle_result`·`_reservation_say`, Task 8 `parse_intent_audio`
 - 배선 규칙
-  - `_on_user_audio`: `parse_intent_audio` 를 부르기 **전에** `self._reservation is not None and self._reservation.awaits_answer(self._question)` 이면 로그 한 줄(`[예약] 예약 질문이 열려 있어 소리 경로 생략 — 받아쓴 글자가 처리`)을 남기고 끝낸다. `self._audio_turn` 에 `handled` 를 넣지 않는다(글자 경로가 "소리 경로 결과 없음"으로 받게).
-  - `parse_intent_audio` 결과는, 지금 있는 두 가드(멈춤 말, `self._last_text_publish_t > turn_started` 로 글자가 먼저 발행했는지) **뒤에서** `handle_result(..., heard, gate=…, tools_used=audio_tools_on())` 를 거친다. `FlowOutput` 이면 `self._audio_turn.update(handled=True, …)` 뒤 `_reservation_say(out, heard)`.
+  - 예약 질문이 열려 있어도 소리 경로는 평소대로 Realtime 을 부른다(D12). `_situation_block()` 이 진행 중인 예약 한 줄을 이미 싣는다(Task 6).
+  - `parse_intent_audio` 결과는, 지금 있는 두 가드(멈춤 말, `self._last_text_publish_t > turn_started` 로 글자가 먼저 발행했는지) **뒤에서** `handle_result(..., heard, gate=…, tools_used=audio_tools_on())` 를 거친다. `FlowOutput` 이면 `self._audio_turn.update(handled=True, …)` 뒤 `_reservation_say(out, heard)`. 둘 다 `None` 이면 `handled=True` 만 남기고 끝낸다.
   - `[RT]` 로그 줄은 `ReserveCall` 일 때 `intent=reserve_facility` 로 찍는다.
 
 - [ ] **Step 1: 실패하는 시험 작성** — `tests/test_reservation_wiring.py` 에 더함
 
 ```python
-def test_audio_steps_aside_while_a_reservation_question_is_open():
-    body = ast.unparse(_method("_on_user_audio"))
-    assert body.index("awaits_answer(") < body.index("parse_intent_audio(")
-
-
 def test_audio_reservation_is_under_the_text_first_guard():
     body = ast.unparse(_method("_on_user_audio"))
     guard = body.index("self._last_text_publish_t > turn_started", body.index("detect_emergency("))
     assert guard < body.index("handle_result(")
     assert _calls(_method("_on_user_audio"), "self._reservation_say")
+
+
+def test_audio_path_is_not_bypassed_for_reservation_answers():
+    body = ast.unparse(_method("_on_user_audio"))
+    assert "asked_text" not in body[:body.index("parse_intent_audio(")]      # 예약 질문이라고 소리 경로를 비키지 않는다
 ```
 
 - [ ] **Step 2: 실패 확인**
 - [ ] **Step 3: 구현**
 - [ ] **Step 4: 통과 확인** — 이 파일과 전체 시험
-- [ ] **Step 5: 커밋** — `feat(voice): 예약 흐름 배선(소리 경로) — 예약 질문이 열리면 받아쓴 글자가 처리`
+- [ ] **Step 5: 커밋** — `feat(voice): 예약 흐름 배선(소리 경로) — Realtime 결과를 예약 흐름으로`
 
 ---
 
@@ -847,11 +853,11 @@ def test_audio_reservation_is_under_the_text_first_guard():
 **Files:**
 - Modify: `tools/reserve_replay.py`(`--path realtime` 은 `ask_text` 로), 설계서 7절
 
-- [ ] **Step 1: 측정(사용자에게 알리고 실행 — Realtime 약 240번, 주행 꺼졌을 때)**
+- [ ] **Step 1: 측정(사용자에게 알리고 실행 — Realtime 약 250번, 주행 꺼졌을 때)**
+  - `.venv/bin/python -m tools.reserve_replay --path realtime`
+    합격: 첫 요청 **15/15**, 그 밖에서 reserve 호출 **0/13**, 이어진 대답 **10/10**.
   - `.venv/bin/python -m tools.answer_replay --path realtime --tools --labels ~/vica_data/voice_answer_audit_20261113/labeled.csv --rounds 1`
     합격: 208행 잘못된 행동 **15 이하**(11-18 기준 11~13 + 2).
-  - `.venv/bin/python -m tools.reserve_replay --path realtime`
-    합격: 예약 발화 **15/15**, 그 밖에서 reserve 호출 **0/13**. 이름 대답 2개는 소리 모드에서 규칙이 처리하므로 `answer_by_rule` 로만 본다.
   - 결과를 설계서 7절에 더해 커밋(`docs(voice): 예약 도구 출력 재생 결과 — Realtime`). 기준을 못 넘으면 켜지 않고 보고한다.
-- [ ] **Step 2: 켜기와 실기(사용자와 함께)** — 사용자가 `.env` 에 `VICA_TOOLS_AUDIO=on` 을 넣고 소리 모드로 음성 노드를 다시 띄운다. Task 7 Step 7 의 장면 8개를 소리 모드에서 한다. 더 볼 것: 받아쓰기가 이름을 어떻게 적었는지(음성 로그의 받아쓴 글자와 ②의 이름), 첫 요청에 ①이 한 번만 나가는지, 예약 질문 중 `[예약] … 소리 경로 생략` 로그.
-- [ ] **Step 3: 마무리** — 전체 시험 통과 확인, 설계서 9절의 1~3단계에 끝난 날짜를 적고 커밋. 4단계(앱·지도 서버·취소)와 5단계(로컬)는 다음 계획.
+- [ ] **Step 2: 켜기와 실기(사용자와 함께)** — 사용자가 `.env` 에 `VICA_TOOLS_AUDIO=on` 을 넣고 소리 모드로 음성 노드를 다시 띄운다. Task 7 Step 7 의 장면을 소리 모드에서 한다. 더 볼 것: Realtime 이 이름을 어떻게 들었는지(`[RT]` 로그의 `heard` 와 ②의 이름), 첫 요청에 ①이 한 번만 나가는지.
+- [ ] **Step 3: 마무리** — 전체 시험 통과 확인, 설계서 9절의 1~3단계에 끝난 날짜를 적고 커밋. 4단계(앱·지도 서버·취소)는 다음 계획.
