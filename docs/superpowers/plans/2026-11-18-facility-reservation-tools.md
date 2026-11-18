@@ -15,7 +15,7 @@
 - 저장소는 음성 `~/VICA-smarthandle/vica-voice-llm` 하나만 고친다. 브랜치 `after_feedback_waiting`, 작업마다 커밋, **푸시하지 않는다**.
 - `vica_ros2_ws`(미션·`vica_interfaces`)와 `VICA_Supervisor` 의 diff 는 0줄.
 - 커밋 메시지는 기존 문체(한국어, `feat(voice): …`), 끝에 `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
-- 스위치 `VICA_TOOLS_TEXT`·`VICA_TOOLS_AUDIO`(값 `on` 이면 켬, 기본 꺼짐). 둘 다 꺼져 있으면 동작이 지금과 같아야 한다 — 작업 전 기준 **1718 passed** 가 그대로 통과한다.
+- 스위치 `VICA_TOOLS_TEXT`·`VICA_TOOLS_AUDIO`(값 `on` 이면 켬, 기본 꺼짐). 둘 다 꺼져 있으면 동작이 지금과 같아야 한다 — 작업 전 기준 **1812 passed**(11-18 밤, 소프트웨어 에코 제거 머지 `a9ef695` 뒤)가 그대로 통과한다.
 - **로컬 경로에는 도구를 주지 않는다**(D11). `_build_local_structured` 와 Modelfile 의 diff 는 0줄.
 - **예약 대답을 읽는 새 글자 규칙을 만들지 않는다**(D12). 이름·날짜·시각·네/아니요는 지금의 해석 경로(글자 규칙 → LLM, 소리 모드는 Realtime)가 읽는다.
 - **저장하지 않은 예약을 완료라고 말하지 않는다.** 문장 ③은 `ReservationStore.add` 가 돌려준 뒤에만 나간다.
@@ -583,7 +583,7 @@ def test_local_backend_is_untouched_by_the_switch(monkeypatch):
 - [ ] **Step 3: `src/tool_calls.py` 구현**
 - [ ] **Step 4: `langchain_intent_parser.py`** — `_set_intent_tool()`, `_draft_from_tool_message`, `_get_tool_llm`(`ChatOpenAI(model, temperature=0, timeout, max_retries).bind_tools([_set_intent_tool(), reserve_tool(이름들)], tool_choice="required")`, 시설 이름은 `default_facilities()`), 조건에 따라 고르는 자리 두 곳, `parse_intent` 의 `isinstance(draft, ReserveCall)` 갈래.
 - [ ] **Step 5: `.env.example`** 에 `VICA_TOOLS_TEXT=off`·`VICA_TOOLS_AUDIO=off`·`VICA_RESERVATION_DIR` 설명 한 줄씩.
-- [ ] **Step 6: 통과 확인** — 새 두 파일 통과, 그리고 전체 `.venv/bin/python -m pytest -q -p no:cacheprovider` → 기존 1718 + 새 시험 모두 통과
+- [ ] **Step 6: 통과 확인** — 새 두 파일 통과, 그리고 전체 `.venv/bin/python -m pytest -q -p no:cacheprovider` → 기존 1812 + 새 시험 모두 통과
 - [ ] **Step 7: 커밋** — `feat(voice): 글자 경로 도구 출력 — set_intent·reserve_facility, 스위치 VICA_TOOLS_TEXT(기본 꺼짐), 로컬은 그대로`
 
 ---
