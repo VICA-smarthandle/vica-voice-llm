@@ -40,6 +40,14 @@ def test_removes_echo_delayed_118ms():
     assert _db(out[5 * SR:], mic[5 * SR:]) <= -6.0           # 설계 5.1 — 5 s 뒤 6 dB 이상
 
 @needs_lib
+def test_reference_delay_is_applied():                       # 64 ms 필터는 기준을 100 ms 늦춰야 118 ms 에코에 닿는다
+    ref = _noise(8, 5); mic = _echo_of(ref)
+    late = _run(EchoCanceller(delay_ms=100, tail_ms=64), mic, ref)
+    raw = _run(EchoCanceller(delay_ms=0, tail_ms=64), mic, ref)
+    assert _db(late[5 * SR:], mic[5 * SR:]) <= -6.0
+    assert _db(raw[5 * SR:], mic[5 * SR:]) > -1.0
+
+@needs_lib
 def test_quiet_reference_keeps_input_within_1db_for_20s():   # Review Focus 2
     mic = _noise(20, 2, amp=3000)
     out = _run(EchoCanceller(), mic, np.zeros_like(mic))

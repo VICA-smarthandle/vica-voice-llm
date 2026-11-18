@@ -90,3 +90,30 @@ def test_raising_warn_callback_never_escapes():
     st = EchoStage(EchoConfig("on"), bad_warn, factory=FakeEc)
     st._ec.boom = True
     assert st.feed(CH0, CH5) is CH0 and st.mode == "off"
+
+def test_build_survives_a_raising_warn_with_a_bad_delay(tmp_path):   # 기동을 막지 않는다
+    def bad_warn(s): raise RuntimeError("warn")
+    st = build_echo_stage({"VICA_SW_AEC": "on", "VICA_SW_AEC_DELAY_MS": "abc"}, lambda s: None, bad_warn,
+                          log_dir=tmp_path, factory=FakeEc)
+    assert st is not None and st.mode == "on" and st._ec.args == (100, 256)
+
+def test_build_survives_a_raising_info(tmp_path):
+    def bad_info(s): raise RuntimeError("info")
+    st = build_echo_stage({"VICA_SW_AEC": "on"}, bad_info, lambda s: None, log_dir=tmp_path, factory=FakeEc)
+    assert st is not None and st.mode == "on"
+
+def test_build_meter_failure_means_no_stage_and_one_warning(tmp_path, monkeypatch):
+    import src.echo_cancel as ec
+    def boom(*a, **k): raise OSError("meter")
+    monkeypatch.setattr(ec, "EchoMeter", boom)
+    warns = []
+    def warn(s): warns.append(s); raise RuntimeError("warn too")
+    assert build_echo_stage({"VICA_SW_AEC": "on"}, lambda s: None, warn, log_dir=tmp_path, factory=FakeEc) is None
+    assert len(warns) == 1 and "켤 수 없음" in warns[0] and FakeEc.made == 0
+
+def test_build_unresolvable_log_folder_means_no_stage(monkeypatch):
+    import src.echo_cancel as ec
+    monkeypatch.setattr(ec, "AEC_LOG_DIR", "~no_such_user_vica_aec/aec_log")   # expanduser 가 예외를 낸다
+    warns = []
+    assert build_echo_stage({"VICA_SW_AEC": "on"}, lambda s: None, warns.append, factory=FakeEc) is None
+    assert len(warns) == 1 and "켤 수 없음" in warns[0]

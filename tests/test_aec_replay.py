@@ -1,8 +1,8 @@
 import json
 import numpy as np
 import pytest
-from src.aec_replay import (Item, ItemResult, Ment, Session, frames_for, judge, load_session, ment_reductions,
-                            run_item, split_blocks)
+from src.aec_replay import (Item, ItemResult, Ment, Session, format_report, frames_for, judge, load_session,
+                            ment_reductions, run_item, split_blocks)
 from src.echo_cancel import BLOCK, EchoConfig
 from src.env_file import values_from
 from src.mic_check_replay import Models
@@ -151,3 +151,78 @@ def test_frames_for_on_fails_closed_when_the_canceller_dies():
     blocks = [np.full((BLOCK, 6), 1000, np.int16) for _ in range(3)]
     with pytest.raises(RuntimeError, match="도중에 꺼졌다"):
         frames_for(blocks, "on", EchoConfig("on"), factory=Bad)
+
+
+def test_judge_user_only_stop_two_blocks_later_is_late():
+    two = {**GOOD, "user_stop_1": res("user_stop_1", emer=1, fe=11.0 + 2 * DT)}
+    rep = judge(session(ITEMS), GOOD, two, [-8.0])
+    assert rep["user_only"]["late"] == ["user_stop_1"] and not rep["user_only"]["pass"] and not rep["pass"]
+    one = {**GOOD, "user_stop_1": res("user_stop_1", emer=1, fe=11.0 + DT)}
+    assert judge(session(ITEMS), GOOD, one, [-8.0])["user_only"]["late"] == []
+    none = {**GOOD, "user_stop_1": res("user_stop_1", emer=1, fe=None)}
+    assert judge(session(ITEMS), GOOD, none, [-8.0])["user_only"]["late"] == ["user_stop_1"]
+
+
+def test_judge_user_only_zero_baseline_is_incomplete_with_a_note():
+    assert judge(session(ITEMS), GOOD, GOOD, [-8.0])["notes"] == []
+    zero = {**GOOD, "user_stop_1": res("user_stop_1")}
+    rep = judge(session(ITEMS), zero, zero, [-8.0])
+    assert not rep["complete"] and not rep["pass"] and len(rep["notes"]) == 1 and "멈춰" in rep["notes"][0]
+    wake = ITEMS + [Item("user_wake_1", "user_only", "비카야 화장실 가자", "wake", 74, 78)]
+    good = {**GOOD, "user_wake_1": res("user_wake_1", wakes=1, fw=75.0)}
+    assert judge(session(wake), good, good, [-8.0])["complete"]
+    deaf = {**GOOD, "user_wake_1": res("user_wake_1")}
+    rep = judge(session(wake), deaf, deaf, [-8.0])
+    assert not rep["complete"] and len(rep["notes"]) == 1 and "비카야" in rep["notes"][0]
+
+
+def test_judge_without_user_only_stop_items_is_incomplete():     # "멈춰" 기준선이 아예 없으면 판정하지 않는다
+    wake_only = [i for i in ITEMS if i.id != "user_stop_1"] + [Item("user_wake_1", "user_only", "비카야 화장실 가자", "wake", 74, 78)]
+    good = {**GOOD, "user_wake_1": res("user_wake_1", wakes=1, fw=75.0)}
+    rep = judge(session(wake_only), good, good, [-8.0])
+    assert not rep["complete"] and not rep["pass"] and len(rep["notes"]) == 1 and "멈춰" in rep["notes"][0]
+
+
+def test_judge_overlap_stop_zero_baseline_keeps_complete_and_adds_a_note():
+    zero = {**GOOD, "over_stop_1": res("over_stop_1")}
+    rep = judge(session(ITEMS), zero, zero, [-8.0])
+    assert rep["overlap_stop"]["off"] == 0 and rep["complete"] and rep["pass"]
+    assert len(rep["notes"]) == 1 and "겹침" in rep["notes"][0]
+
+
+def test_judge_user_only_silenced_item_fails():
+    gone = {**GOOD, "user_stop_1": res("user_stop_1", emer=1, fe=11.0, rms=0.0)}
+    rep = judge(session(ITEMS), GOOD, gone, [-8.0])
+    assert rep["user_only"]["silenced"] == ["user_stop_1"] and not rep["user_only"]["pass"] and not rep["pass"]
+    assert rep["user_only"]["level_db_max"] == 0.0
+    json.dumps(rep, allow_nan=False)
+    assert judge(session(ITEMS), GOOD, GOOD, [-8.0])["user_only"]["silenced"] == []
+
+
+def test_format_report_prints_notes_late_and_silenced():
+    off = {**GOOD, "over_stop_1": res("over_stop_1")}
+    on = {**off, "user_stop_1": res("user_stop_1", emer=1, fe=11.0 + 2 * DT, rms=0.0)}
+    rep = judge(session(ITEMS), off, on, [-8.0])
+    lines = format_report(rep).splitlines()
+    assert rep["notes"] and all(any(n in line for line in lines) for n in rep["notes"])
+    assert any("늦은" in line and "user_stop_1" in line for line in lines)
+    assert any("지워진" in line and "user_stop_1" in line for line in lines)
+
+
+def test_replay_tool_refuses_a_missing_env_file(tmp_path, monkeypatch, capsys):
+    import dotenv
+    import tools.mic_venue_check as mvc
+    from tools.aec_replay import main
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)       # 시험 환경에 .env 를 올리지 않는다
+    monkeypatch.setattr(mvc, "_load_models", lambda hint: pytest.fail("모델을 올리면 안 된다"))
+    rc = main([str(tmp_path / "set.json"), "--env", str(tmp_path / "없음.env"), "--force"])
+    assert rc != 0 and "없음.env" in capsys.readouterr().out
+
+
+def test_replay_settings_record_what_the_run_used(tmp_path):
+    from tools.aec_replay import run_settings
+    env = tmp_path / "x.env"
+    s = run_settings(env, EchoConfig("off", 120, 128), values_from({}))
+    assert s["env"] == str(env.resolve()) and (s["delay_ms"], s["tail_ms"]) == (120, 128)
+    assert s["values"]["wake_threshold"] == values_from({}).wake_threshold
+    json.dumps(s, ensure_ascii=False, allow_nan=False)

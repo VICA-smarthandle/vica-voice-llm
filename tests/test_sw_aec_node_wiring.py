@@ -29,3 +29,12 @@ def test_env_example_and_test_defaults_name_the_switch():
     for key in ("VICA_SW_AEC=", "VICA_SW_AEC_DELAY_MS=", "VICA_SW_AEC_TAIL_MS="):
         assert key in example, key
     assert '"VICA_SW_AEC": "off"' in (ROOT / "tests" / "conftest.py").read_text()
+
+def test_env_example_names_the_reduction_log():
+    assert "~/vica_data/aec_log/YYYYMMDD.jsonl" in (ROOT / ".env.example").read_text()
+
+def test_echo_cancel_imports_are_relative_and_in_order():
+    assert "from src." not in (ROOT / "src" / "echo_cancel.py").read_text()
+    node = (ROOT / "src" / "ros_wakeword_node.py").read_text()
+    at = [node.index(f"from .{m} import") for m in ("dsp_state", "echo_cancel", "patrol_sound")]
+    assert at == sorted(at)

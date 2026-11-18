@@ -46,10 +46,10 @@ from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
-from .echo_cancel import build_echo_stage, clip_info_with_aec
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
+from .echo_cancel import build_echo_stage, clip_info_with_aec
 from .patrol_sound import PatrolSoundTap, sound_watched
 from .realtime_intent import float32_to_pcm16
 from .speaker_follow import SpeakerFollow, spk_config_from_env

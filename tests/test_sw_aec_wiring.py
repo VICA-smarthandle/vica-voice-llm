@@ -1,7 +1,9 @@
 import ast
 from pathlib import Path
 import numpy as np
+from src.echo_cancel import EchoConfig, EchoStage
 from src.wakeword_monitor import FRAME, WakewordMonitor, _queue_item
+from tests.test_sw_aec_canceller import SR, _db, _echo_of, _noise, needs_lib
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "wakeword_monitor.py"
 
@@ -48,3 +50,18 @@ def test_run_uses_both_helpers_before_process_frame():
     calls = lambda name: [n for n in ast.walk(run) if isinstance(n, ast.Call) and ast.unparse(n.func) == name]
     assert len(calls("_queue_item")) == 1 and len(calls("self._frame_from_queue")) == 1
     assert calls("self._frame_from_queue")[0].lineno < calls("self.process_frame")[0].lineno
+
+@needs_lib
+def test_real_stage_through_the_queue_helpers_removes_the_echo():   # 실제 libspeexdsp · 설계 5.1
+    ref = _noise(8, 4); mic = _echo_of(ref)                          # ch0 = ch5 의 118 ms 늦은 에코
+    m = monitor(); warns = []
+    m.echo_stage = EchoStage(EchoConfig("on"), warns.append)
+    out = []
+    for i in range(0, len(mic) - FRAME + 1, FRAME):
+        b = np.zeros((FRAME, 6), np.int16); b[:, 0] = mic[i:i + FRAME]; b[:, 5] = ref[i:i + FRAME]
+        f = m._frame_from_queue(_queue_item(b, True))
+        assert f.ndim == 1 and f.dtype == np.int16 and f.flags.c_contiguous and len(f) == FRAME
+        out.append(f)
+    out = np.concatenate(out)
+    assert m.echo_stage.mode == "on" and warns == []
+    assert _db(out[5 * SR:], mic[5 * SR:len(out)]) <= -6.0

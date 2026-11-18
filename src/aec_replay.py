@@ -103,7 +103,10 @@ def _window(frames: Sequence, start: float, end: float) -> list:
 
 def run_item(models: Models, values: MicValues, frames: Sequence[np.ndarray], item: Item,
              ments: Sequence[Ment]) -> ItemResult:
-    """항목 하나를 새 감시기에 흘린다. 앞 PRE_ROLL_SEC 는 먹이되 rms 는 항목 구간만 본다. 뒤 조용한 조각도 한 조각씩."""
+    """항목 하나를 새 감시기에 흘린다. 앞 PRE_ROLL_SEC 는 먹이되 rms 는 항목 구간만 본다. 뒤 조용한 조각도 한 조각씩.
+
+    사람만 항목 앞 삐 소리는 스피커 지연 탓에 앞 구간이 아니라 항목 창 첫머리에 들어온다(4 s 창에서 −0.09 dB) — 창은 그대로 둔다.
+    """
     run = _Run(models, values)
     a = max(0, int((item.start - PRE_ROLL_SEC) / DT))
     b = min(len(frames), math.ceil(item.end / DT))
@@ -167,14 +170,19 @@ def _pairs(session: Session, off: Mapping, on: Mapping, kind: str, expect: Optio
             if i.kind == kind and (expect is None or i.expect == expect) and i.id in off and i.id in on]
 
 
+def _late_stops(pairs: Sequence) -> list:
+    """둘 다 잡은 "멈춰" 중 on 이 한 조각을 넘게 늦은 항목. 시각이 None 이면 늦은 것으로 본다."""
+    return [i.id for i, f, n in pairs if _caught("emergency", f) and _caught("emergency", n)
+            and (f.first_emergency is None or n.first_emergency is None
+                 or round((n.first_emergency - f.first_emergency) / DT) > LATE_MAX_BLOCKS)]
+
+
 def judge(session: Session, off: Mapping, on: Mapping, reductions: Sequence[float]) -> dict:
     """설계 5.4 — on 이 off 보다 나빠지지 않았는지와 로봇 멘트 줄임."""
     stop = _pairs(session, off, on, "overlap", "emergency")
     n_off, n_on = sum(_caught("emergency", f) for _, f, _ in stop), sum(_caught("emergency", n) for _, _, n in stop)
     lost_stop = [i.id for i, f, n in stop if _caught("emergency", f) and not _caught("emergency", n)]
-    late = [i.id for i, f, n in stop if _caught("emergency", f) and _caught("emergency", n)
-            and (f.first_emergency is None or n.first_emergency is None
-                 or round((n.first_emergency - f.first_emergency) / DT) > LATE_MAX_BLOCKS)]
+    late = _late_stops(stop)
     overlap_stop = {"n": len(stop), "off": n_off, "on": n_on, "lost": lost_stop, "late": late,
                     "pass": not lost_stop and not late}
 
@@ -185,10 +193,13 @@ def judge(session: Session, off: Mapping, on: Mapping, reductions: Sequence[floa
 
     user = _pairs(session, off, on, "user_only")
     differs = [i.id for i, f, n in user if _caught(i.expect, f) != _caught(i.expect, n) or f.texts != n.texts]
+    user_late = _late_stops([p for p in user if p[0].expect == "emergency"])
+    silenced = [i.id for i, _, n in user if not n.rms > 0]     # off 는 늘 바닥 잡음이 있다 — on 0 은 지워진 것
     levels = [abs(20.0 * math.log10(n.rms / f.rms)) for _, f, n in user if f.rms > 0 and n.rms > 0]
     level_max = max(levels) if levels else 0.0
-    user_only = {"n": len(user), "differs": differs, "level_db_max": level_max,
-                 "pass": not differs and level_max <= LEVEL_TOL_DB}
+    user_only = {"n": len(user), "differs": differs, "late": user_late, "silenced": silenced,
+                 "level_db_max": level_max,
+                 "pass": not differs and not user_late and not silenced and level_max <= LEVEL_TOL_DB}
 
     robot = _pairs(session, off, on, "robot_only")
     events_off = sum(f.wakes + f.emergencies for _, f, _ in robot)
@@ -201,9 +212,17 @@ def judge(session: Session, off: Mapping, on: Mapping, reductions: Sequence[floa
 
     complete = bool(session.complete and overlap_stop["n"] > 0 and overlap_wake["n"] > 0
                     and user_only["n"] > 0 and len(reductions) > 0)
+    notes = []
+    for expect, word in (("emergency", "멈춰"), ("wake", "비카야")):
+        alone = [f for i, f, _ in user if i.expect == expect]
+        if (alone or expect == "emergency") and not any(_caught(expect, f) for f in alone):   # "멈춰" 는 0개도 기준선 없음
+            complete = False
+            notes.append(f"사람만 \"{word}\" {len(alone)}개 중 off 가 잡은 것이 0개 — 녹음이나 도구가 잘못됐다(판정할 수 없다).")
+    if overlap_stop["n"] > 0 and overlap_stop["off"] == 0:
+        notes.append(f"겹침 \"멈춰\" {overlap_stop['n']}개를 off 에서 하나도 못 잡았다 — on 이 나빠지지 않았다는 근거가 없다.")
     parts = (overlap_stop, overlap_wake, user_only, robot_only)
     return {"overlap_stop": overlap_stop, "overlap_wake": overlap_wake, "user_only": user_only,
-            "robot_only": robot_only, "complete": complete,
+            "robot_only": robot_only, "complete": complete, "notes": notes,
             "pass": complete and all(p["pass"] or p.get("n") == 0 for p in parts)}
 
 
@@ -221,9 +240,11 @@ def format_report(report: dict) -> str:
         f"사람만        {u['n']:4d}                {_ok(u['pass'])}  (소리 크기 차 최대 {u['level_db_max']:.2f} dB)",
         f"로봇만 줄임 중앙값 {'없음' if median is None else f'{median:.1f} dB'} · 새 사건 {r['new_events']}건(off {r['events_off']} → on {r['events_on']})   {_ok(r['pass'])}",
         f"놓친 항목(멈춰): {', '.join(s['lost']) or '없음'} · (비카야): {', '.join(w['lost']) or '없음'}",
-        f"늦은 항목: {', '.join(s['late']) or '없음'}",
+        f"늦은 항목(멈춰, 겹침): {', '.join(s['late']) or '없음'} · (사람만): {', '.join(u['late']) or '없음'}",
         f"달라진 항목: {', '.join(u['differs']) or '없음'}",
-        *([] if report["complete"] else ["불완전: 녹음이 끊겼거나 묶음·줄임 값이 비어 있어 판정할 수 없다"]),
+        f"지워진 항목(사람만, on 소리 0): {', '.join(u['silenced']) or '없음'}",
+        *([] if report["complete"] else ["불완전: 녹음이 끊겼거나 묶음·줄임 값·기준선이 비어 있어 판정할 수 없다"]),
+        *(f"참고: {note}" for note in report["notes"]),
         f"종합: {_ok(report['pass'])}",
     ]
     return "\n".join(lines)

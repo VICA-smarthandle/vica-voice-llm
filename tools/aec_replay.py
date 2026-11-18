@@ -20,18 +20,28 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def run_settings(env_path: Path, config, values) -> dict:
+    """replay.json 에 남길 이번 실행의 설정 — 에코 제거 늦춤·필터(ms), 문턱값(MicValues), .env 경로."""
+    return {"env": str(Path(env_path).resolve()), "delay_ms": config.delay_ms, "tail_ms": config.tail_ms,
+            "values": asdict(values)}
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="6채널 녹음을 운영 감시기에 에코 제거 off·on 으로 흘려 견준다")
     ap.add_argument("session", type=Path, help="tools.aec_record 가 쓴 시각표 json")
-    ap.add_argument("--env", type=Path, default=ROOT / ".env", help="마이크 값을 읽을 .env(기본 저장소 .env)")
+    ap.add_argument("--env", type=Path, default=None, help="마이크 값을 읽을 .env(기본 저장소 .env)")
     ap.add_argument("--out", type=Path, default=None, help="결과 json(기본 시각표 옆 replay.json)")
     ap.add_argument("--force", action="store_true", help="음성 칸이 켜져 있어도 돌린다")
     args = ap.parse_args(argv)
+    if args.env is not None and not args.env.is_file():
+        print(f"--env 파일이 없습니다: {args.env} — 기본 문턱값으로 돌지 않도록 멈춥니다.")
+        return 1
+    env_path = args.env or ROOT / ".env"
     # 감시기 모듈은 가져오는 순간 환경에서 문턱을 읽는다 — .env 를 먼저 올리고 tools·src 를 가져온다.
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
-    if args.env != ROOT / ".env":
-        load_dotenv(args.env, override=True)
+    if env_path != ROOT / ".env":
+        load_dotenv(env_path, override=True)
     from tools.mic_venue_check import _proc_cmdlines, voice_stack_running
     running = voice_stack_running(_proc_cmdlines())
     if running and not args.force:
@@ -49,7 +59,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from tools.mic_venue_check import _load_models
 
     session = load_session(args.session)
-    values = values_from(read_env(args.env))
+    values = values_from(read_env(env_path))
     config = echo_config_from_env(os.environ)
     x6, rate = sf.read(str(session.wav), dtype="int16", always_2d=True)
     if rate != 16000 or x6.shape[1] != 6:
@@ -70,7 +80,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  {mode} {item.id}")
     reductions = ment_reductions(session, frames["off"], frames["on"])
     out = args.out or args.session.with_name("replay.json")
-    body = {"reductions": reductions, "off": {k: asdict(v) for k, v in results["off"].items()},
+    body = {"settings": run_settings(env_path, config, values), "reductions": reductions,
+            "off": {k: asdict(v) for k, v in results["off"].items()},
             "on": {k: asdict(v) for k, v in results["on"].items()}}
     out.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")   # 판정 전에 먼저 남긴다
     report = judge(session, results["off"], results["on"], reductions)

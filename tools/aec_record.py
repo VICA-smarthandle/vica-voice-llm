@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -31,14 +32,17 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-from tools.mic_venue_check import ROBOT_CLIPS, _proc_cmdlines, load_clips, voice_stack_running  # noqa: E402
+from tools.mic_venue_check import (ROBOT_CLIPS, _install_signal_handlers, _proc_cmdlines, load_clips,  # noqa: E402
+                                   voice_stack_running)
+
+say = functools.partial(print, flush=True)   # 파이프(tee)로 볼 때도 안내가 늦지 않게
 
 RATE = 16000
 CHANNELS = 6              # ch0 = 칩 처리음 · ch1~4 = 마이크 원음 · ch5 = 재생 참조
 BLOCK = 1280
 OVERLAP_CLIPS = ("mission_msg_approach_question.wav", "mission_msg_estopped.wav",
                  "mission_msg_paused.wav", "mission_msg_estop_reject.wav")
-LEAD_SEC, GAP_SEC, USER_WINDOW_SEC, OVERLAP_TAIL_SEC = 2.0, 1.0, 4.0, 2.0   # GAP 1.0 = 운영 간격(멘트 뒤 0.4 s + 쉼 1.0 s)
+LEAD_SEC, GAP_SEC, USER_WINDOW_SEC, OVERLAP_TAIL_SEC = 2.0, 1.0, 4.0, 2.0   # GAP 1.0 s = 로봇만 멘트 사이 쉼(삐 두 번 사이도)
 ROBOT_TAIL_SEC = 0.5      # 로봇만 구간 끝에 더하는 여유
 STALL_SEC = 1.0           # 받은 표본이 이만큼 늘지 않으면 마이크가 멈춘 것
 PROMPT_PAUSE_SEC = 1.0    # 할 말을 읽을 시간(다음 소리 전)
@@ -72,10 +76,14 @@ def build_script() -> list:
 
 
 def session_dict(started: str, wav_name: str, chip: dict, ments: list, items: list,
-                 cues: Optional[list] = None, complete: bool = True) -> dict:
-    """시각표 json. cues = 삐 소리 구간들, complete=False = 중간에 끊겨 그때까지만 저장한 묶음."""
+                 cues: Optional[list] = None, complete: bool = True, overflows: int = 0) -> dict:
+    """시각표 json. cues = 삐 소리 구간들, complete=False = 중간에 끊겨 그때까지만 저장한 묶음.
+
+    overflows = 입력 콜백이 status(넘침 등)를 받은 횟수 — 0 이 아니면 그 자리 소리가 빠졌을 수 있다.
+    """
     return {"version": 1, "rate": RATE, "channels": CHANNELS, "started": started, "wav": wav_name,
-            "chip": chip, "ments": ments, "items": items, "cues": list(cues or []), "complete": complete}
+            "chip": chip, "ments": ments, "items": items, "cues": list(cues or []), "complete": complete,
+            "overflows": int(overflows)}
 
 
 def out_dir_problem(out_dir: Path) -> Optional[str]:
@@ -107,9 +115,16 @@ def apply_chip_from_env() -> dict:
     etail, nlatten = echo_tuning_from_env(os.environ.get("VICA_MIC_GAMMA_ETAIL", ""),
                                           os.environ.get("VICA_MIC_NLATTEN", ""))
     if etail is not None or nlatten is not None:
-        wrote = apply_echo_tuning(etail, nlatten)
-        chip["echo_tuning"] = {"gamma_etail": etail, "nlatten": nlatten, "wrote": dict(wrote or {}), "ok": bool(wrote)}
+        wrote = dict(apply_echo_tuning(etail, nlatten) or {})
+        ok = ((etail is None or "GAMMA_ETAIL" in wrote)          # 둘째 값에서 끊기면 하나만 남는다
+              and (nlatten is None or "NLATTENONOFF" in wrote))
+        chip["echo_tuning"] = {"gamma_etail": etail, "nlatten": nlatten, "wrote": wrote, "ok": ok}
     return chip
+
+
+def failed_chip_writes(chip: dict) -> list:
+    """칩 값 중 쓰기에 실패한(ok False) 이름들. 공장값으로 녹음하면 운영과 견줄 수 없다."""
+    return [name for name, entry in chip.items() if not entry.get("ok")]
 
 
 def _prompt(step: Step, index: int, total: int) -> str:
@@ -128,32 +143,39 @@ def record(out_dir: Path, countdown: float) -> int:
 
     problem = out_dir_problem(out_dir)
     if problem:
-        print(problem)
+        say(problem)
         return 1
     out_dir.mkdir(parents=True, exist_ok=True)     # 녹음 전에 폴더를 잡아 둔다(권한 문제를 끝에서 알지 않도록)
     chip = apply_chip_from_env()                   # 마이크 스트림을 열기 전에(제어 전송 거부 방지)
+    failed = failed_chip_writes(chip)
+    if failed:
+        say(f"칩 값 쓰기 실패: {', '.join(failed)} — 운영과 다른 칩 값으로 녹음하면 견줄 수 없어 시작하지 않습니다.")
+        return 1
     clips, missing = load_clips(BAKED_DIR, tuple(dict.fromkeys(ROBOT_CLIPS + OVERLAP_CLIPS)))
     if missing:
-        print("멘트 파일이 없습니다:", ", ".join(missing))
+        say("멘트 파일이 없습니다:", ", ".join(missing))
         return 1
     clip_by_name = {c.name: c for c in clips}
     if audio_out.output_device() is None:          # 입력을 열기 전에 출력 장치를 먼저 잡아 둔다
-        print("reSpeaker 재생 장치를 찾지 못했습니다.")
+        say("reSpeaker 재생 장치를 찾지 못했습니다.")
         return 1
     in_dev = next((i for i, d in enumerate(sd.query_devices())
                    if "respeaker" in d["name"].lower() and d["max_input_channels"] >= CHANNELS), None)
     if in_dev is None:
-        print("reSpeaker 6채널 입력 장치를 찾지 못했습니다.")
+        say("reSpeaker 6채널 입력 장치를 찾지 못했습니다.")
         return 1
 
     beep = (0.3 * np.sin(2 * np.pi * BEEP_HZ * np.arange(int(BEEP_SEC * RATE)) / RATE)).astype(np.float32)
     chunks, lock = [], threading.Lock()
     received = [0]
+    overflows = [0]
 
     def cb(indata, frames, t, status):
         with lock:
             chunks.append(indata.copy())
             received[0] += frames
+            if status:                             # 넘침 등 — 횟수만 세어 끝에 알린다
+                overflows[0] += 1
 
     def now() -> float:
         return received[0] / RATE
@@ -184,11 +206,11 @@ def record(out_dir: Path, countdown: float) -> int:
     total_robot = sum(1 for s in steps if s.kind == "robot_only")
     ments, items = [], []
     started = datetime.now().isoformat(timespec="seconds")
-    print(f"세 단계로 녹음합니다(약 {(len(steps) * 5) // 60 + 1}분): 1) 로봇만 — 조용히 · 2) 사람만 — 삐 뒤에 말하기 · 3) 로봇 멘트와 겹쳐 말하기.")
-    print(f"{countdown:g}초 뒤 녹음을 시작합니다. 마이크 앞에 서세요.")
+    say(f"세 단계로 녹음합니다(약 {(len(steps) * 5) // 60 + 1}분): 1) 로봇만 — 조용히 · 2) 사람만 — 삐 뒤에 말하기 · 3) 로봇 멘트와 겹쳐 말하기.")
+    say(f"{countdown:g}초 뒤 녹음을 시작합니다. 마이크 앞에 서세요.")
     time.sleep(countdown)
 
-    complete, reason = False, None
+    complete, reason, saved = False, None, False
     robot_first, robot_last_end, n_robot = None, 0.0, 0
     try:
         with sd.InputStream(device=in_dev, channels=CHANNELS, samplerate=RATE, dtype="int16", blocksize=BLOCK, callback=cb):
@@ -196,7 +218,7 @@ def record(out_dir: Path, countdown: float) -> int:
             for step in steps:
                 if step.kind == "robot_only":
                     n_robot += 1
-                    print(_prompt(step, n_robot, total_robot))
+                    say(_prompt(step, n_robot, total_robot))
                     clip = clip_by_name[step.clip]
                     start, end = play(clip.pcm, clip.rate)
                     ments.append({"name": clip.name, "text": clip.text, "start": round(start, 3), "end": round(end, 3)})
@@ -206,20 +228,20 @@ def record(out_dir: Path, countdown: float) -> int:
                 elif step.kind == "cue":
                     wait(max(0.0, ROBOT_TAIL_SEC - GAP_SEC))
                     close_robot_item(items, robot_first, robot_last_end)
-                    print(_prompt(step, 0, 0))
+                    say(_prompt(step, 0, 0))
                     beep_once()
                     wait(GAP_SEC)
                     beep_once()
                     wait(PROMPT_PAUSE_SEC)
                 elif step.kind == "user_only":
-                    print(_prompt(step, 0, 0))
+                    say(_prompt(step, 0, 0))
                     wait(PROMPT_PAUSE_SEC)
                     _, beep_end = beep_once()
                     wait(USER_WINDOW_SEC)
                     items.append({"id": step.item_id, "kind": "user_only", "say": step.say, "expect": step.expect,
                                   "start": round(beep_end, 3), "end": round(beep_end + USER_WINDOW_SEC, 3)})
                 elif step.kind == "overlap":
-                    print(_prompt(step, 0, 0))
+                    say(_prompt(step, 0, 0))
                     wait(PROMPT_PAUSE_SEC)
                     clip = clip_by_name[step.clip]
                     start, end = play(clip.pcm, clip.rate)
@@ -233,33 +255,61 @@ def record(out_dir: Path, countdown: float) -> int:
         reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         raise
     finally:
-        _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
-                      robot_first, robot_last_end)
-    return 0
+        saved = _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
+                              robot_first, robot_last_end, overflows=overflows[0])
+    return 0 if saved else 1
 
 
 def _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
-                  robot_first, robot_last_end) -> None:
-    """그때까지 모은 것을 set.wav·set.json 으로 쓴다. 저장 실패는 원래 예외를 가리지 않도록 삼키고 알린다."""
+                  robot_first, robot_last_end, overflows: int = 0) -> bool:
+    """그때까지 모은 것을 set.json → set.wav 순으로 쓴다. 하나라도 못 쓰면 False.
+
+    wav 를 못 쓰면 같은 폴더에 set.npy(int16 배열)로 남긴다. 실패는 원래 예외를 가리지 않도록 삼키고 알린다.
+    """
+    lines, ok, data = [], True, None
     try:
-        import soundfile as sf
         with lock:
-            if not chunks:
-                print("받은 소리가 없어 저장하지 않습니다.")
-                return
-            data = np.concatenate(chunks)
+            data = np.concatenate(chunks) if chunks else None
+        if data is None:
+            lines.append("받은 소리가 없어 저장하지 않습니다.")
+            ok = False
+    except Exception as exc:
+        lines.append(f"저장 실패(소리 모으기): {type(exc).__name__}: {exc}")
+        ok = False
+    if data is not None:
         if not complete:
             close_robot_item(items, robot_first, robot_last_end)
-        sf.write(out_dir / "set.wav", data, RATE, subtype="PCM_16")
-        doc = session_dict(started, "set.wav", chip, ments, items, cues, complete)
-        (out_dir / "set.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        if complete:
-            print(f"녹음 끝: {out_dir} (set.wav {len(data) / RATE:.1f}초 · set.json 항목 {len(items)}개)")
+        try:
+            doc = session_dict(started, "set.wav", chip, ments, items, cues, complete, overflows=overflows)
+            (out_dir / "set.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as exc:
+            lines.append(f"set.json 저장 실패: {type(exc).__name__}: {exc}")
+            ok = False
+        try:
+            import soundfile as sf
+            sf.write(out_dir / "set.wav", data, RATE, subtype="PCM_16")
+        except Exception as exc:
+            ok = False
+            try:
+                np.save(out_dir / "set.npy", data)
+                lines.append(f"set.wav 저장 실패({type(exc).__name__}: {exc}) — 소리는 set.npy(int16 {CHANNELS}채널 배열)로 남겼습니다.")
+            except Exception as exc2:
+                lines.append(f"set.wav·set.npy 저장 모두 실패: {type(exc).__name__}: {exc} / {type(exc2).__name__}: {exc2}")
+        if overflows:
+            lines.append(f"입력 넘침(콜백 status) {overflows}번 — 그 자리 소리가 빠졌을 수 있습니다(set.json overflows).")
+        if not complete:
+            lines.append(f"녹음이 중간에 끊겨 그때까지({len(data) / RATE:.1f}초, 항목 {len(items)}개)만 저장했습니다: {out_dir}"
+                         f" — 이유: {reason}")
+        elif ok:
+            lines.append(f"녹음 끝: {out_dir} (set.wav {len(data) / RATE:.1f}초 · set.json 항목 {len(items)}개)")
         else:
-            print(f"녹음이 중간에 끊겨 그때까지({len(data) / RATE:.1f}초, 항목 {len(items)}개)만 저장했습니다: {out_dir}"
-                  f" — 이유: {reason}")
-    except Exception as exc:
-        print(f"저장 실패: {type(exc).__name__}: {exc}")
+            lines.append(f"녹음은 끝났지만 저장이 일부 실패했습니다: {out_dir}")
+    for line in lines:
+        try:
+            say(line)
+        except Exception:                          # 터미널이 끊겨도(SIGHUP) 파일은 이미 썼다
+            pass
+    return ok
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -269,11 +319,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = ap.parse_args(argv)
     running = voice_stack_running(_proc_cmdlines())
     if running:
-        print("⑫·⑬ 음성 칸이 켜져 있습니다. 끈 뒤 다시 실행하세요:")
+        say("⑫·⑬ 음성 칸이 켜져 있습니다. 끈 뒤 다시 실행하세요:")
         for line in running[:5]:
-            print("   ", line[:120])
+            say("   ", line[:120])
         return 1
     out_dir = args.out or DEFAULT_ROOT / datetime.now().strftime("%Y%m%d-%H%M%S")
+    _install_signal_handlers()   # 창 닫기(SIGHUP)·kill(SIGTERM)도 Ctrl+C 처럼 저장 경로(finally)를 거친다
     return record(out_dir, args.countdown)
 
 

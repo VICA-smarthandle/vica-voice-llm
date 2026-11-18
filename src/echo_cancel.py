@@ -12,7 +12,7 @@ from typing import Callable, Mapping, Optional
 
 import numpy as np
 
-from src.echo_meter import AEC_LOG_DIR, EchoMeter
+from .echo_meter import AEC_LOG_DIR, EchoMeter
 
 BLOCK = 1280          # wakeword_monitor.FRAME 과 같다
 SPEEX_FRAME = 160
@@ -184,18 +184,31 @@ class EchoStage:
         return out if self._mode == "on" else ch0
 
 
+def _tell(fn: Callable[[str], None], line: str) -> None:
+    """알림 콜백이 예외를 내도 기동을 막지 않는다."""
+    try:
+        fn(line)
+    except Exception:
+        pass
+
+
 def build_echo_stage(env: Mapping[str, str], info: Callable[[str], None], warn: Callable[[str], None],
                      log_dir: Optional[Path] = None, factory=EchoCanceller) -> Optional[EchoStage]:
-    config = echo_config_from_env(env)
-    for line in config.warnings:
-        warn(line)
-    if config.mode == "off":
+    """노드 기동 때 단계를 만든다. 예외를 내지 않는다 — 못 만들면 경고 한 번 뒤 None(원래 ch0 로 감시)."""
+    try:
+        config = echo_config_from_env(env)
+        for line in config.warnings:
+            _tell(warn, line)
+        if config.mode == "off":
+            return None
+        folder = Path(AEC_LOG_DIR).expanduser() if log_dir is None else Path(log_dir)
+        stage = EchoStage(config, warn, meter=EchoMeter(config.mode, folder, warn), factory=factory)
+    except Exception as exc:
+        _tell(warn, f"소프트웨어 에코 제거를 켤 수 없음 — 원래 소리로 계속 감시: {exc}")
         return None
-    folder = Path(AEC_LOG_DIR).expanduser() if log_dir is None else Path(log_dir)
-    stage = EchoStage(config, warn, meter=EchoMeter(config.mode, folder, warn), factory=factory)
     if stage.mode == "off":
         return None
-    info(f"소프트웨어 에코 제거: {config.mode} (기준 늦춤 {config.delay_ms} ms · 필터 {config.tail_ms} ms)")
+    _tell(info, f"소프트웨어 에코 제거: {config.mode} (기준 늦춤 {config.delay_ms} ms · 필터 {config.tail_ms} ms)")
     return stage
 
 
