@@ -316,7 +316,8 @@ git commit -m "fix(mission): 일시정지 중 확정 요청이 거절돼도 일�
   1. 안내 주행 중 "비카야" → "잠깐" → 미션 "잠시 멈추겠습니다. 다시 출발하려면 말씀해 주세요." (음성 로그에 LLM 호출 없이 `intent=pause`)
   2. "비카야" → "다시 가자" → 미션 "다시 출발할까요?" → "네" → "…로 다시 출발합니다." (음성 로그 `앞 '네' 뗌` 이 찍히면 그 줄도 확인)
   3. 다시 "잠깐" → "비카야" → "407호로 가자" → "비공개 목적지는 안내할 수 없습니다." → 미션 로그 `paused -> paused` → "비카야" → "다시 가자" → "다시 출발할까요?" → "네" → 출발
-  합격: 세 장면 모두 위 말·상태대로, 음성 로그에 407호 `navigate` 가 2번 장면에서 0건.
+  4. (Task 6) 다시 "잠깐" → "비카야" → "사회복지로 가자" → 미션 "사회복지로 안내해드릴까요?" → "아니" → **"알겠습니다. 다시 출발하려면 말씀해 주세요."** → 미션 로그 `confirming -> paused` → "비카야" → "다시 가자" → "다시 출발할까요?" → "네" → 원래 목적지로 출발
+  합격: 네 장면 모두 위 말·상태대로, 음성 로그에 407호 `navigate` 가 2번 장면에서 0건.
 
 - [ ] **Step 6: 결과 기록·커밋** — 설계서 5절에 재생 수치(74발화 `R`, 208행)와 실기 결과를 적고 커밋. 측정 파일은 `~/vica_data/field_test_20261118/` 에 둔다.
 
@@ -324,5 +325,21 @@ git commit -m "fix(mission): 일시정지 중 확정 요청이 거절돼도 일�
 git add docs/superpowers/specs/2026-11-18-offline-misread-fix-design.md
 git commit -m "docs(voice): 3-나-1 재생·실기 결과"
 ```
+
+---
+
+### Task 6: 일시정지 중 제안이 접히면 일시정지로 (미션, 설계 4.4 — 최종 검토 I4 뒤 추가, 사용자 11-18)
+
+**Files:**
+- Modify: `~/VICA-smarthandle/vica_ros2_ws/src/vica_mission_manager/vica_mission_manager/mission_logic.py` — 새 상수 `MSG_PAUSE_KEPT`, 표시 `self._pause_hold`, `on_intent`(제안으로 CONFIRMING 에 들어가는 자리), `_fold_confirming`, `on_confirm_answer`(아니요), `on_tick`(확인 무응답), 출발 시작 블록, `_to_idle`
+- Test: `test/test_reaction_rules.py`
+
+**Interfaces:**
+- Produces: `MSG_PAUSE_KEPT = "알겠습니다. 다시 출발하려면 말씀해 주세요."`(사용자 지정 글자 그대로). 반응표(`test_reaction_table.py`)의 `PAUSED` 행은 그대로다 — 첫 반응(확인 질문·CONFIRMING)은 바뀌지 않는다.
+
+- [x] 시험 5개: 아니요 → `[MSG_PAUSE_KEPT]`·`State.PAUSED`·이어진 resume 이 409호로 출발 / 무응답(16 s 에 한 번 다시 묻고 `confirm_timeout_sec` 뒤) → 같음 / `on_wake_call` → `[MSG_WAKE_GREETING]`·`State.PAUSED` / "네" → 엘리베이터로 출발 / 새 안내를 취소한 뒤의 제안 거절은 `State.IDLE`(낡은 보류 없음)
+- [x] 실패 확인: 앞 3개 FAIL(`State.IDLE != State.PAUSED` 등), 뒤 2개는 지금 동작을 고정하는 시험이라 PASS
+- [x] 구현 뒤 `python3 -m pytest test -q -p no:cacheprovider` → 5 failed(기준과 같은 5개) · 1780 passed
+- [ ] 미션 빌드(주행 묶음이 꺼진 때) → Task 5 Step 5 실기 4번 장면
 
 **이 계획 밖(설계 6절):** 지시문 예시 `"407호 가자"` 바꾸기(E)·지시문 규칙(D)의 효과 측정은 로봇이 빌 때 `hist_replay.py run D,E,DE` 로 따로 재고, 결과를 사용자에게 보고한 뒤 넣을지 정한다.
