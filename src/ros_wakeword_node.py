@@ -46,6 +46,7 @@ from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
+from .echo_cancel import build_echo_stage, clip_info_with_aec
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
@@ -316,6 +317,10 @@ class WakewordNode(Node):
                 self.get_logger().warning(
                     "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
+        self._echo_stage = build_echo_stage(
+            os.environ, self.get_logger().info, self.get_logger().warning)
+        self._monitor.echo_stage = self._echo_stage   # 감시 스레드를 띄우기 전에 붙인다
+
         # 경비(순찰) 큰 소리 판정(2026-11-14) — patrolling·patrol_dwell 에서만 계산·발행한다. 로직은 patrol_sound.py.
         self._pub_patrol = self.create_publisher(String, "/vica/patrol/event", 10)
         self._patrol = PatrolSoundTap(
@@ -534,12 +539,16 @@ class WakewordNode(Node):
         self.get_logger().info(describe_emergency_near(info, self._monitor.gate_b.threshold))
         self._save_estop_clip(info.get("audio"), info)
 
+    def _aec_mode(self) -> str:
+        # 저장 순간의 모드 — 에코 제거 단계가 도중에 죽으면 mode 가 off 로 바뀐다.
+        return self._echo_stage.mode if self._echo_stage is not None else "off"
+
     def _save_estop_clip(self, audio, info) -> None:
         # 기록일 뿐이다 — 저장이 실패해도 긴급 판정과 마이크 스레드는 계속 간다. 경고는 한 번만.
         if self._estop_clip_dir is None or audio is None or not info or len(audio) == 0:
             return
         try:
-            save_emergency_clip(self._estop_clip_dir, audio, info)
+            save_emergency_clip(self._estop_clip_dir, audio, clip_info_with_aec(info, self._aec_mode()))
         except Exception as exc:
             if not self._estop_clip_warned:
                 self._estop_clip_warned = True
@@ -548,7 +557,7 @@ class WakewordNode(Node):
     def _save_listen_clip(self, audio, info) -> None:
         # 긴급 소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
         try:
-            save_emergency_clip(self._listen_clip_dir, audio, info)
+            save_emergency_clip(self._listen_clip_dir, audio, clip_info_with_aec(info, self._aec_mode()))
         except Exception as exc:
             if not self._listen_clip_warned:
                 self._listen_clip_warned = True
@@ -557,7 +566,8 @@ class WakewordNode(Node):
     def _save_wake_clip(self, audio, info) -> None:
         # 긴급·말소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
         try:
-            save_emergency_clip(self._wake_clip_dir, audio, {**info, "dialog_state": self._dialog_state})
+            save_emergency_clip(self._wake_clip_dir, audio, clip_info_with_aec(
+                {**info, "dialog_state": self._dialog_state}, self._aec_mode()))
         except Exception as exc:
             if not self._wake_clip_warned:
                 self._wake_clip_warned = True
