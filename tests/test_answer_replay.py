@@ -7,7 +7,8 @@ import pytest
 
 from src.replies import LLM_UNAVAILABLE
 from src.schema import DestinationData, VicaIntent
-from tools.answer_replay import call_with_retry, clip_for, path_env, replay, text_for
+from tools import answer_replay
+from tools.answer_replay import call_with_retry, clip_for, parsed_text_for, path_env, replay, text_for
 
 
 def test_call_with_retry_retries_rate_limit_then_succeeds():
@@ -119,3 +120,20 @@ def test_mismatch_is_counted_apart_from_wrong(dests):
            "label_answer": "not_for_robot", "label_value": "", "dest_yaml": "x"}
     out = replay([row], lambda r: (VicaIntent(intent="question"), 1.0), lambda _p: dests)
     assert out["rows"][0]["status"] == "mismatch" and out["counts"].get("wrong", 0) == 0
+
+
+def test_text_path_strips_the_wake_echo_like_the_node():
+    """글자 경로 재생은 음성 노드처럼 호출 응답 "네?"의 메아리를 뗀 글자를 해석기에 넣는다(3-나-1, 기준 점수 11-18)."""
+    row = {"question": "네?", "kind": "open", "dialog_state": "idle", "stt": "네 나 배 아파.", "answer_text": "네 나 배 아파"}
+    assert parsed_text_for(row) == "나 배 아파."
+    assert parsed_text_for({**row, "dialog_state": "asking_next"}) == "네 나 배 아파."      # 물어 둔 질문을 쥔 단계
+    assert parsed_text_for({**row, "question": "화장실로 안내해드릴까요?", "kind": "confirm"}) == "네 나 배 아파."
+    assert parsed_text_for({**row, "stt": "네."}) == "네."
+    assert parsed_text_for({"stt": "그래.", "answer_text": "그래"}) == "그래."               # 옛 행(칸 없음)
+
+
+def test_text_interpreter_uses_the_stripped_text():
+    import inspect
+    source = inspect.getsource(answer_replay.main)
+    assert "parse_intent(parsed_text_for(row)" in source
+    assert "parse_intent(text_for(row)" not in source

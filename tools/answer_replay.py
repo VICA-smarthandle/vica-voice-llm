@@ -20,7 +20,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from src.question_record import OpenQuestion
 from src.replies import LLM_UNAVAILABLE
+from src.wake_echo import strip_wake_echo
 from tools.answer_grade import answer_of, grade
 
 STOP_AFTER_ERRORS = 5
@@ -84,6 +86,14 @@ def clip_for(row: dict, clips: list[dict], clips_dir: Path, window_s: float = 3.
         if best is None or gap < best[0]:
             best = (gap, c)
     return Path(clips_dir) / best[1]["file"] if best else None
+
+
+def parsed_text_for(row: dict) -> str:
+    """글자 경로가 해석기에 넣는 글자. 음성 노드(_on_user_text)처럼 호출 응답 "네?"의 메아리를 뗀다(3-나-1) —
+    안 떼면 재생 점수가 지금 로봇의 동작보다 나쁘게 나온다. 소리 경로(Realtime)에는 쓰지 않는다."""
+    question = OpenQuestion(id="replay", kind=row.get("kind", ""), text=row.get("question", ""),
+                            option_ids=(), opened_at=0.0)
+    return strip_wake_echo(text_for(row), question, row.get("dialog_state", ""))
 
 
 def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]]) -> dict:
@@ -167,7 +177,7 @@ def main() -> None:
     os.environ.update(env)
     model = MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자)'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -193,7 +203,7 @@ def main() -> None:
     def interpret_text(row: dict):
         dests, history, state = context(row)
         t0 = time.monotonic()
-        intent = parse_intent(text_for(row), dests, history=history, robot_state=state, model=model)
+        intent = parse_intent(parsed_text_for(row), dests, history=history, robot_state=state, model=model)
         return intent, time.monotonic() - t0
 
     clips = []
