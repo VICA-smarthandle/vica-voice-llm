@@ -161,3 +161,10 @@ def test_unapproachable_destination_stays_confirmed():
 ])
 def test_demote_leaves_everything_else_alone(intent):
     assert demote_unasked_confirm(intent, None, DESTS) is intent
+
+
+def test_resume_question_is_always_the_fixed_sentence():
+    """"다시 출발할까요?"는 정해진 문장만 넘긴다 — 11-18 온라인 실기에서 LLM 이 "…로봇은 그대로 서 있어요."를 덧붙였다(사용자 결정)."""
+    padded = VicaIntent(intent="resume", need_confirm=True, reply="다시 출발할까요? 로봇은 그대로 서 있어요.")
+    out = hand_over_question(padded, DESTS)
+    assert (out.ask_text, out.ask_kind, out.reply) == (RESUME_CONFIRM, "yesno", "")

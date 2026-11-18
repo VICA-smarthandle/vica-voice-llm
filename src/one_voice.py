@@ -42,7 +42,9 @@ def hand_over_question(intent: VicaIntent, destinations: Sequence[DestinationDat
     if intent.intent == "navigate" and intent.need_confirm and intent.matched_destination_id:
         return intent.model_copy(update={"reply": ""})
     if intent.intent == "resume" and intent.need_confirm:
-        return intent.model_copy(update={"reply": "", "ask_text": reply, "ask_kind": "yesno"})
+        # 정해진 문장만 넘긴다 — LLM 이 덧붙인 말("…로봇은 그대로 서 있어요.")은 버린다(11-18 사용자). 해석기의
+        # 승낙 단축(_COMMAND_CONFIRMS)도 이 글자와 통째로 견준다.
+        return intent.model_copy(update={"reply": "", "ask_text": RESUME_CONFIRM, "ask_kind": "yesno"})
     if intent.intent == "clarify" or expects_answer(reply):
         return intent.model_copy(update={"reply": "", "ask_text": reply, "ask_kind": "open"})
     return intent
