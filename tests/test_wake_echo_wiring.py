@@ -10,6 +10,7 @@ def test_user_text_is_stripped_before_any_rule():
     fn = _method("_on_user_text")
     (strip,) = _calls(fn, "strip_wake_echo")
     assert ast.unparse(strip.args[1]) == "self._question"
+    assert ast.unparse(strip.args[2]) == "self._robot_state.dialog_state"
     for later in ("stop_pause_intent_for", "detect_emergency", "parse_intent"):
         assert strip.lineno < min(c.lineno for c in _calls(fn, later)), later
 

@@ -300,7 +300,7 @@ class LlmIntentNode(Node):
             return
         # 호출 응답 "네?"가 녹음에 섞여 글자 앞에 붙은 "네"를 뗀다(3-나-1). 아래 규칙·LLM·대화 기록은 뗀 글자를,
         # 화자 판정 찾기만 원문(raw)을 쓴다 — 호출어 노드가 원문 글자로 판정을 실어 보낸다.
-        text = strip_wake_echo(raw, self._question)
+        text = strip_wake_echo(raw, self._question, self._robot_state.dialog_state)
         if text != raw:
             self.get_logger().info(f"앞 '네' 뗌: '{raw}' → '{text}'")
         self._reload_destinations_if_changed()

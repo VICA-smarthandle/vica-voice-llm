@@ -158,10 +158,18 @@ class TestPauseResumeTextRules:
         assert (result.intent, result.need_confirm, result.reply) == ("pause", False, PAUSE_ACK)
         assert is_instant_utterance(said)
 
+    @pytest.mark.parametrize("said", ["잠깐", "잠시"])
+    def test_bare_pause_words_may_be_a_time_answer(self, said):
+        # "몇 분쯤 걸리실까요?"에 "잠깐"·"잠시"는 시간 대답일 수 있다 — 일시정지로 읽어 "네?"가 나가면 안 된다.
+        # 이 단계에서는 예전처럼 LLM 몫으로 둔다. "잠깐만"은 지금 동작 그대로.
+        assert _shortcut_intent(said, [], [DEST], dialog_state="asking_wait_time", local=True) is None
+        assert _shortcut_intent("잠깐만", [], [DEST], dialog_state="asking_wait_time", local=True).intent == "pause"
+
     @pytest.mark.parametrize("said", [
         "다시 가자.", "다시 가", "다시 가줘", "다시 출발", "다시 출발.", "다시 출발해", "다시 출발해줘", "다시 출발하자",
         "출발", "출발해", "출발해줘", "출발하자", "계속 가자", "계속 가", "계속 가줘",
         "다시 가요", "다시 출발해요", "다시 출발해 주세요", "출발해요", "출발해 주세요", "계속 가요", "계속 가 주세요",
+        "다시 가 주세요", "다시 가줘요", "다시 출발해줘요", "출발해줘요", "계속 가줘요",     # 최종 검토 I3
     ])
     def test_resume_words_ask_before_moving(self, said):
         result = _shortcut_intent(said, [], [DEST], dialog_state="paused", local=True)
