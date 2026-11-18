@@ -6,8 +6,13 @@
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Mapping, Optional
 
 import numpy as np
+
+from src.echo_meter import AEC_LOG_DIR, EchoMeter
 
 BLOCK = 1280          # wakeword_monitor.FRAME 과 같다
 SPEEX_FRAME = 160
@@ -77,3 +82,122 @@ class EchoCanceller:
             self.close()
         except Exception:
             pass
+
+
+_MODES = ("off", "log", "on")
+
+
+@dataclass(frozen=True)
+class EchoConfig:
+    mode: str = "off"
+    delay_ms: int = 100
+    tail_ms: int = 256
+    warnings: tuple = ()
+
+
+def _int_in_range(env: Mapping[str, str], key: str, default: int, lo: int, hi: int, warnings: list) -> int:
+    raw = env.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        value = None
+    if value is None or not lo <= value <= hi:
+        warnings.append(f"{key}={raw!r} 를 못 읽음 — 기본값 {default} 로 돈다")
+        return default
+    return value
+
+
+def echo_config_from_env(env: Mapping[str, str]) -> EchoConfig:
+    """VICA_SW_AEC 계열 .env 키를 읽는다. 잘못된 값은 기본값 + 경고."""
+    warnings: list = []
+    raw = env.get("VICA_SW_AEC")
+    mode = "off" if raw is None else str(raw).strip().lower()
+    if mode == "":
+        mode = "off"
+    elif mode not in _MODES:
+        warnings.append(f"VICA_SW_AEC={raw!r} 는 off|log|on 이 아님 — off 로 돈다")
+        mode = "off"
+    delay_ms = _int_in_range(env, "VICA_SW_AEC_DELAY_MS", 100, 0, 400, warnings)
+    tail_ms = _int_in_range(env, "VICA_SW_AEC_TAIL_MS", 256, 32, 512, warnings)
+    return EchoConfig(mode, delay_ms, tail_ms, tuple(warnings))
+
+
+class EchoStage:
+    """마이크 루프 단계. 어떤 실패도 원래 ch0 를 막지 않는다(설계 4.3)."""
+
+    def __init__(self, config: EchoConfig, warn: Callable[[str], None],
+                 meter: Optional["EchoMeter"] = None,
+                 factory: Callable[..., EchoCanceller] = EchoCanceller) -> None:
+        self._config = config
+        self._warn = warn
+        self._meter = meter
+        self._factory = factory
+        self._mode = config.mode
+        self._ec = None
+        if self._mode == "off":
+            return
+        try:
+            self._ec = self._build()
+        except Exception as exc:
+            self._die(exc)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    def _build(self):
+        return self._factory(delay_ms=self._config.delay_ms, tail_ms=self._config.tail_ms)
+
+    def _die(self, exc: Exception) -> None:
+        ec, self._ec = self._ec, None
+        self._mode = "off"
+        try:
+            if ec is not None:
+                ec.close()
+        except Exception:
+            pass
+        try:
+            self._warn(f"소프트웨어 에코 제거 중단 — 원래 소리로 계속 감시: {exc}")
+        except Exception:
+            pass
+
+    def feed(self, ch0: np.ndarray, ch5: np.ndarray) -> np.ndarray:
+        if self._mode == "off" or self._ec is None:
+            return ch0
+        try:
+            if len(ch0) != BLOCK or len(ch5) != len(ch0):
+                old = self._ec
+                self._ec = self._build()
+                try:
+                    old.close()
+                except Exception:
+                    pass
+                return ch0
+            out = self._ec.process(ch0, ch5)
+            if self._meter is not None:
+                self._meter.update(ch0, out, ch5)
+        except Exception as exc:
+            self._die(exc)
+            return ch0
+        return out if self._mode == "on" else ch0
+
+
+def build_echo_stage(env: Mapping[str, str], info: Callable[[str], None], warn: Callable[[str], None],
+                     log_dir: Optional[Path] = None, factory=EchoCanceller) -> Optional[EchoStage]:
+    config = echo_config_from_env(env)
+    for line in config.warnings:
+        warn(line)
+    if config.mode == "off":
+        return None
+    folder = Path(AEC_LOG_DIR).expanduser() if log_dir is None else Path(log_dir)
+    stage = EchoStage(config, warn, meter=EchoMeter(config.mode, folder, warn), factory=factory)
+    if stage.mode == "off":
+        return None
+    info(f"소프트웨어 에코 제거: {config.mode} (기준 늦춤 {config.delay_ms} ms · 필터 {config.tail_ms} ms)")
+    return stage
+
+
+def clip_info_with_aec(info: dict, mode: str) -> dict:
+    return info if mode == "off" else {**info, "aec": mode}
