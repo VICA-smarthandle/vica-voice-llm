@@ -100,3 +100,15 @@ def test_voice_speaks_its_own_resume_answer():
     assert (declined.intent, declined.reply) == ("unknown", COMMAND_DECLINED)
     assert hand_over_question(declined, DESTS) is declined
     assert voice_may_speak(declined, _open(RESUME_CONFIRM)) is True
+
+
+def test_confirmed_navigate_sentence_is_not_handed_over():
+    """확정 navigate 에 붙은 문장은 예전에도 음성이 말하지 않았다 — 미션에 질문으로 넘기지 않는다.
+
+    11-18 실기: 접근 불가 목적지(407호)의 확정 navigate 에 붙은 "407호로 안내해드릴까요?"가 열린 질문으로 4번 실려 갔다.
+    """
+    intent = VicaIntent(intent="navigate", matched_destination_id="elev", need_confirm=False,
+                        reply="엘리베이터로 안내해드릴까요?")
+    assert hand_over_question(intent, DESTS) is intent
+    said = VicaIntent(intent="navigate", matched_destination_id="elev", need_confirm=False, reply="엘리베이터 안내를 시작합니다.")
+    assert hand_over_question(said, DESTS) is said

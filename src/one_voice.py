@@ -30,6 +30,10 @@ def hand_over_question(intent: VicaIntent, destinations: Sequence[DestinationDat
     reply = (intent.reply or "").strip()
     if intent.safety_flag == "emergency" or not reply:
         return intent
+    if intent.intent == "navigate" and not intent.need_confirm:
+        # 확정 navigate 의 문장은 예전에도 음성이 말하지 않았다(tts_queue.request_for_intent) — 넘기지 않는다.
+        # 접근 불가 목적지는 해석기가 확정으로 바꾸며 확인 문구를 붙여 둔다(11-18 실기: 407호 4번).
+        return intent
     tail = _CHOICE_TAIL.search(reply)
     if tail:
         return intent.model_copy(update={
