@@ -40,6 +40,7 @@ OVERLAP_CLIPS = ("mission_msg_approach_question.wav", "mission_msg_estopped.wav"
                  "mission_msg_paused.wav", "mission_msg_estop_reject.wav")
 LEAD_SEC, GAP_SEC, USER_WINDOW_SEC, OVERLAP_TAIL_SEC = 2.0, 0.3, 4.0, 2.0
 ROBOT_TAIL_SEC = 0.5      # 로봇만 구간 끝에 더하는 여유
+STALL_SEC = 1.0           # 받은 표본이 이만큼 늘지 않으면 마이크가 멈춘 것
 PROMPT_PAUSE_SEC = 1.0    # 할 말을 읽을 시간(다음 소리 전)
 BEEP_HZ, BEEP_SEC, BEEP_PEAK_DBFS = 880, 0.15, -20.0
 BAKED_DIR = ROOT / "assets" / "baked"
@@ -70,9 +71,26 @@ def build_script() -> list:
     return steps
 
 
-def session_dict(started: str, wav_name: str, chip: dict, ments: list, items: list) -> dict:
+def session_dict(started: str, wav_name: str, chip: dict, ments: list, items: list,
+                 cues: Optional[list] = None, complete: bool = True) -> dict:
+    """시각표 json. cues = 삐 소리 구간들, complete=False = 중간에 끊겨 그때까지만 저장한 묶음."""
     return {"version": 1, "rate": RATE, "channels": CHANNELS, "started": started, "wav": wav_name,
-            "chip": chip, "ments": ments, "items": items}
+            "chip": chip, "ments": ments, "items": items, "cues": list(cues or []), "complete": complete}
+
+
+def out_dir_problem(out_dir: Path) -> Optional[str]:
+    """저장 폴더에 이미 set.wav 가 있으면 덮어쓰지 않도록 이유를 돌려준다. 문제 없으면 None."""
+    if (Path(out_dir) / "set.wav").exists():
+        return f"{out_dir} 에 set.wav 가 이미 있습니다. 다른 --out 을 쓰거나 지운 뒤 다시 실행하세요."
+    return None
+
+
+def close_robot_item(items: list, first: Optional[float], last_end: float) -> None:
+    """로봇만 항목(첫 시작 ~ 마지막 끝 + 여유)을 한 번만 닫는다. 로봇 멘트를 하나도 못 틀었으면 아무것도 안 한다."""
+    if first is None or any(i["id"] == "robot_only" for i in items):
+        return
+    items.append({"id": "robot_only", "kind": "robot_only", "say": None, "expect": None,
+                  "start": round(first, 3), "end": round(last_end + ROBOT_TAIL_SEC, 3)})
 
 
 def apply_chip_from_env() -> dict:
@@ -105,10 +123,14 @@ def _prompt(step: Step, index: int, total: int) -> str:
 
 
 def record(out_dir: Path, countdown: float) -> int:
-    import soundfile as sf
     import sounddevice as sd
     from src import audio_out
 
+    problem = out_dir_problem(out_dir)
+    if problem:
+        print(problem)
+        return 1
+    out_dir.mkdir(parents=True, exist_ok=True)     # 녹음 전에 폴더를 잡아 둔다(권한 문제를 끝에서 알지 않도록)
     chip = apply_chip_from_env()                   # 마이크 스트림을 열기 전에(제어 전송 거부 방지)
     clips, missing = load_clips(BAKED_DIR, tuple(dict.fromkeys(ROBOT_CLIPS + OVERLAP_CLIPS)))
     if missing:
@@ -138,16 +160,25 @@ def record(out_dir: Path, countdown: float) -> int:
 
     def wait(sec: float) -> None:
         target = now() + sec
+        last_n, last_t = received[0], time.monotonic()
         while now() < target:
             time.sleep(0.01)
+            if received[0] != last_n:
+                last_n, last_t = received[0], time.monotonic()
+            elif time.monotonic() - last_t > STALL_SEC:
+                raise RuntimeError(f"마이크 스트림이 {STALL_SEC:g}초 넘게 멈췄습니다(받은 표본 정체)")
 
     def play(wave: np.ndarray, rate: int, **kw) -> tuple:
         start = now()
         audio_out.play(wave, rate, blocking=True, **kw)
         return start, now()
 
+    cues = []
+
     def beep_once() -> tuple:
-        return play(beep, RATE, peak_dbfs=BEEP_PEAK_DBFS)
+        start, end = play(beep, RATE, peak_dbfs=BEEP_PEAK_DBFS)
+        cues.append({"start": round(start, 3), "end": round(end, 3)})
+        return start, end
 
     steps = build_script()
     total_robot = sum(1 for s in steps if s.kind == "robot_only")
@@ -157,55 +188,78 @@ def record(out_dir: Path, countdown: float) -> int:
     print(f"{countdown:g}초 뒤 녹음을 시작합니다. 마이크 앞에 서세요.")
     time.sleep(countdown)
 
-    with sd.InputStream(device=in_dev, channels=CHANNELS, samplerate=RATE, dtype="int16", blocksize=BLOCK, callback=cb):
-        wait(LEAD_SEC)
-        robot_first, robot_last_end, n_robot = None, 0.0, 0
-        for step in steps:
-            if step.kind == "robot_only":
-                n_robot += 1
-                print(_prompt(step, n_robot, total_robot))
-                clip = clip_by_name[step.clip]
-                start, end = play(clip.pcm, clip.rate)
-                ments.append({"name": clip.name, "text": clip.text, "start": round(start, 3), "end": round(end, 3)})
-                robot_first = start if robot_first is None else robot_first
-                robot_last_end = end
-                wait(GAP_SEC)
-            elif step.kind == "cue":
-                if robot_first is not None and not items:
+    complete, reason = False, None
+    robot_first, robot_last_end, n_robot = None, 0.0, 0
+    try:
+        with sd.InputStream(device=in_dev, channels=CHANNELS, samplerate=RATE, dtype="int16", blocksize=BLOCK, callback=cb):
+            wait(LEAD_SEC)
+            for step in steps:
+                if step.kind == "robot_only":
+                    n_robot += 1
+                    print(_prompt(step, n_robot, total_robot))
+                    clip = clip_by_name[step.clip]
+                    start, end = play(clip.pcm, clip.rate)
+                    ments.append({"name": clip.name, "text": clip.text, "start": round(start, 3), "end": round(end, 3)})
+                    robot_first = start if robot_first is None else robot_first
+                    robot_last_end = end
+                    wait(GAP_SEC)
+                elif step.kind == "cue":
                     wait(max(0.0, ROBOT_TAIL_SEC - GAP_SEC))
-                    items.append({"id": "robot_only", "kind": "robot_only", "say": None, "expect": None,
-                                  "start": round(robot_first, 3), "end": round(robot_last_end + ROBOT_TAIL_SEC, 3)})
-                print(_prompt(step, 0, 0))
-                beep_once()
-                wait(GAP_SEC)
-                beep_once()
-                wait(PROMPT_PAUSE_SEC)
-            elif step.kind == "user_only":
-                print(_prompt(step, 0, 0))
-                wait(PROMPT_PAUSE_SEC)
-                _, beep_end = beep_once()
-                wait(USER_WINDOW_SEC)
-                items.append({"id": step.item_id, "kind": "user_only", "say": step.say, "expect": step.expect,
-                              "start": round(beep_end, 3), "end": round(beep_end + USER_WINDOW_SEC, 3)})
-            elif step.kind == "overlap":
-                print(_prompt(step, 0, 0))
-                wait(PROMPT_PAUSE_SEC)
-                clip = clip_by_name[step.clip]
-                start, end = play(clip.pcm, clip.rate)
-                ments.append({"name": clip.name, "text": clip.text, "start": round(start, 3), "end": round(end, 3)})
-                wait(OVERLAP_TAIL_SEC)
-                items.append({"id": step.item_id, "kind": "overlap", "say": step.say, "expect": step.expect,
-                              "start": round(start, 3), "end": round(end + OVERLAP_TAIL_SEC, 3)})
-        wait(0.3)
-
-    with lock:
-        data = np.concatenate(chunks)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sf.write(out_dir / "set.wav", data, RATE, subtype="PCM_16")
-    doc = session_dict(started, "set.wav", chip, ments, items)
-    (out_dir / "set.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"녹음 끝: {out_dir} (set.wav {len(data) / RATE:.1f}초 · set.json 항목 {len(items)}개)")
+                    close_robot_item(items, robot_first, robot_last_end)
+                    print(_prompt(step, 0, 0))
+                    beep_once()
+                    wait(GAP_SEC)
+                    beep_once()
+                    wait(PROMPT_PAUSE_SEC)
+                elif step.kind == "user_only":
+                    print(_prompt(step, 0, 0))
+                    wait(PROMPT_PAUSE_SEC)
+                    _, beep_end = beep_once()
+                    wait(USER_WINDOW_SEC)
+                    items.append({"id": step.item_id, "kind": "user_only", "say": step.say, "expect": step.expect,
+                                  "start": round(beep_end, 3), "end": round(beep_end + USER_WINDOW_SEC, 3)})
+                elif step.kind == "overlap":
+                    print(_prompt(step, 0, 0))
+                    wait(PROMPT_PAUSE_SEC)
+                    clip = clip_by_name[step.clip]
+                    start, end = play(clip.pcm, clip.rate)
+                    ments.append({"name": clip.name, "text": clip.text, "start": round(start, 3), "end": round(end, 3)})
+                    wait(OVERLAP_TAIL_SEC)
+                    items.append({"id": step.item_id, "kind": "overlap", "say": step.say, "expect": step.expect,
+                                  "start": round(start, 3), "end": round(end + OVERLAP_TAIL_SEC, 3)})
+            wait(0.3)
+        complete = True
+    except BaseException as exc:
+        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        raise
+    finally:
+        _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
+                      robot_first, robot_last_end)
     return 0
+
+
+def _save_session(out_dir, chunks, lock, started, chip, ments, items, cues, complete, reason,
+                  robot_first, robot_last_end) -> None:
+    """그때까지 모은 것을 set.wav·set.json 으로 쓴다. 저장 실패는 원래 예외를 가리지 않도록 삼키고 알린다."""
+    try:
+        import soundfile as sf
+        with lock:
+            if not chunks:
+                print("받은 소리가 없어 저장하지 않습니다.")
+                return
+            data = np.concatenate(chunks)
+        if not complete:
+            close_robot_item(items, robot_first, robot_last_end)
+        sf.write(out_dir / "set.wav", data, RATE, subtype="PCM_16")
+        doc = session_dict(started, "set.wav", chip, ments, items, cues, complete)
+        (out_dir / "set.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        if complete:
+            print(f"녹음 끝: {out_dir} (set.wav {len(data) / RATE:.1f}초 · set.json 항목 {len(items)}개)")
+        else:
+            print(f"녹음이 중간에 끊겨 그때까지({len(data) / RATE:.1f}초, 항목 {len(items)}개)만 저장했습니다: {out_dir}"
+                  f" — 이유: {reason}")
+    except Exception as exc:
+        print(f"저장 실패: {type(exc).__name__}: {exc}")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

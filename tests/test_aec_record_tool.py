@@ -27,3 +27,29 @@ def test_session_dict_shape():
     assert (d["version"], d["rate"], d["channels"], d["wav"]) == (1, 16000, 6, "set.wav")
     assert d["ments"][0]["text"] == "가" and d["items"][0]["expect"] == "emergency"
     json.dumps(d, ensure_ascii=False)
+
+
+def test_session_dict_defaults_and_partial_flag():
+    d = session_dict("t", "set.wav", {}, [], [])
+    assert d["cues"] == [] and d["complete"] is True
+    p = session_dict("t", "set.wav", {}, [], [], cues=[{"start": 1.0, "end": 1.15}], complete=False)
+    assert p["cues"] == [{"start": 1.0, "end": 1.15}] and p["complete"] is False
+    json.dumps(p, ensure_ascii=False)
+
+
+def test_out_dir_problem_refuses_existing_set_wav(tmp_path):
+    from tools.aec_record import out_dir_problem
+    assert out_dir_problem(tmp_path) is None
+    (tmp_path / "set.wav").write_bytes(b"")
+    assert "set.wav" in out_dir_problem(tmp_path)
+
+
+def test_close_robot_item_is_idempotent_and_needs_a_ment():
+    from tools.aec_record import close_robot_item
+    items = []
+    close_robot_item(items, None, 0.0)
+    assert items == []
+    close_robot_item(items, 2.0, 40.0)
+    close_robot_item(items, 2.0, 99.0)
+    assert items == [{"id": "robot_only", "kind": "robot_only", "say": None, "expect": None,
+                      "start": 2.0, "end": 40.5}]
