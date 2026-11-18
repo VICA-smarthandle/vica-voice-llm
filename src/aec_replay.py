@@ -19,6 +19,7 @@ from .mic_check_rules import MicValues
 from .mic_check_replay import DT, FLUSH_FRAMES, PAD_FRAMES, Models, _Run
 
 REDUCE_MIN_DB, LATE_MAX_SEC, LEVEL_TOL_DB, LEARN_SKIP_SEC, PRE_ROLL_SEC, TTS_TAIL_SEC = 6.0, 0.08, 1.0, 4.0, 1.0, 0.4
+LATE_MAX_BLOCKS = 1       # 늦음 = 한 조각을 넘게(부동소수 오차를 피해 조각 수로 견준다)
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class Session:
     wav: Optional[Path]
     ments: tuple
     items: tuple
+    complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,7 @@ def load_session(json_path: Path) -> Session:
     ments = tuple(Ment(m["name"], m["text"], float(m["start"]), float(m["end"])) for m in d["ments"])
     items = tuple(Item(i["id"], i["kind"], i.get("say"), i.get("expect"), float(i["start"]), float(i["end"]))
                   for i in d["items"])
-    return Session(json_path.parent / d["wav"], ments, items)
+    return Session(json_path.parent / d["wav"], ments, items, bool(d.get("complete", True)))
 
 
 def split_blocks(x6: np.ndarray) -> list:
@@ -79,9 +81,13 @@ def frames_for(blocks: Sequence[np.ndarray], mode: str, config: EchoConfig, fact
     """off = 블록마다 ch0 · on = EchoStage 하나로 처음부터 끝까지(운영처럼 학습을 이어 간다)."""
     if mode == "off":
         return [np.ascontiguousarray(b[:, 0]) for b in blocks]
+    warnings: list = []
     stage = EchoStage(EchoConfig("on", config.delay_ms, config.tail_ms, config.warnings),
-                      warn=lambda msg: print(f"  ({msg})"), factory=factory)
-    return [stage.feed(np.ascontiguousarray(b[:, 0]), np.ascontiguousarray(b[:, 5])) for b in blocks]
+                      warn=warnings.append, factory=factory)
+    out = [stage.feed(np.ascontiguousarray(b[:, 0]), np.ascontiguousarray(b[:, 5])) for b in blocks]
+    if stage.mode != "on":
+        raise RuntimeError("에코 제거가 도중에 꺼졌다 — 다시 틀기 결과를 쓸 수 없다: " + " / ".join(warnings))
+    return out
 
 
 def _rms(frames: Sequence[np.ndarray]) -> float:
@@ -97,28 +103,31 @@ def _window(frames: Sequence, start: float, end: float) -> list:
 
 def run_item(models: Models, values: MicValues, frames: Sequence[np.ndarray], item: Item,
              ments: Sequence[Ment]) -> ItemResult:
-    """항목 하나를 새 감시기에 흘린다. 앞 PRE_ROLL_SEC 는 먹이되 rms·세기는 항목 구간만 본다."""
+    """항목 하나를 새 감시기에 흘린다. 앞 PRE_ROLL_SEC 는 먹이되 rms 는 항목 구간만 본다. 뒤 조용한 조각도 한 조각씩."""
     run = _Run(models, values)
     a = max(0, int((item.start - PRE_ROLL_SEC) / DT))
     b = min(len(frames), math.ceil(item.end / DT))
     quiet = np.zeros(BLOCK, dtype=np.int16)
-    t, _ = run.feed([quiet] * FLUSH_FRAMES, [None] * FLUSH_FRAMES, a * DT - FLUSH_FRAMES * DT)
+    run.feed([quiet] * FLUSH_FRAMES, [None] * FLUSH_FRAMES, a * DT - FLUSH_FRAMES * DT)
     near = [m for m in ments if m.start < b * DT and m.end > a * DT]
-    started, stopped = set(), set()
+    noted = set()
+    speaking = False
     wakes, first_wake, first_emergency = 0, None, None
-    run.counting = True
-    for i in range(a, b):
+    for i in range(a, b + PAD_FRAMES):
         t = i * DT
+        run.counting = i < b
+        now_speaking = False
         for k, m in enumerate(near):
-            if k not in started and t >= m.start:
+            if k not in noted and t >= m.start:
                 run.monitor.note_robot_speech(m.text, now=t)
-                run.monitor.set_speaking(True, now=t)
-                started.add(k)
-            if k in started and k not in stopped and t >= m.end + TTS_TAIL_SEC:
-                run.monitor.set_speaking(False, now=t)
-                stopped.add(k)
+                noted.add(k)
+            if m.start <= t < m.end + TTS_TAIL_SEC:
+                now_speaking = True
+        if now_speaking != speaking:
+            run.monitor.set_speaking(now_speaking, now=t)
+            speaking = now_speaking
         before = len(run.emergencies)
-        _, out = run.feed([frames[i]], [None], t)
+        _, out = run.feed([frames[i] if i < b else quiet], [None], t)
         if out[0] == "wake":
             wakes += 1
             if first_wake is None:
@@ -126,7 +135,6 @@ def run_item(models: Models, values: MicValues, frames: Sequence[np.ndarray], it
         if len(run.emergencies) > before and first_emergency is None:
             first_emergency = t
     run.counting = False
-    run.feed([quiet] * PAD_FRAMES, [None] * PAD_FRAMES, b * DT)
     check = (run.monitor.last_emergency_check or {}).get("text", "") or ""
     return ItemResult(item.id, wakes, len(run.emergencies), first_wake, first_emergency, run.peak_a, run.peak_b,
                       tuple(run.texts), check, _rms(_window(frames, item.start, item.end)))
@@ -163,13 +171,17 @@ def judge(session: Session, off: Mapping, on: Mapping, reductions: Sequence[floa
     """설계 5.4 — on 이 off 보다 나빠지지 않았는지와 로봇 멘트 줄임."""
     stop = _pairs(session, off, on, "overlap", "emergency")
     n_off, n_on = sum(_caught("emergency", f) for _, f, _ in stop), sum(_caught("emergency", n) for _, _, n in stop)
-    late = [i.id for i, f, n in stop if f.emergencies and n.emergencies
-            and n.first_emergency - f.first_emergency > LATE_MAX_SEC]
-    overlap_stop = {"n": len(stop), "off": n_off, "on": n_on, "late": late, "pass": n_on >= n_off and not late}
+    lost_stop = [i.id for i, f, n in stop if _caught("emergency", f) and not _caught("emergency", n)]
+    late = [i.id for i, f, n in stop if _caught("emergency", f) and _caught("emergency", n)
+            and (f.first_emergency is None or n.first_emergency is None
+                 or round((n.first_emergency - f.first_emergency) / DT) > LATE_MAX_BLOCKS)]
+    overlap_stop = {"n": len(stop), "off": n_off, "on": n_on, "lost": lost_stop, "late": late,
+                    "pass": not lost_stop and not late}
 
     wake = _pairs(session, off, on, "overlap", "wake")
     w_off, w_on = sum(_caught("wake", f) for _, f, _ in wake), sum(_caught("wake", n) for _, _, n in wake)
-    overlap_wake = {"n": len(wake), "off": w_off, "on": w_on, "pass": w_on >= w_off}
+    lost_wake = [i.id for i, f, n in wake if _caught("wake", f) and not _caught("wake", n)]
+    overlap_wake = {"n": len(wake), "off": w_off, "on": w_on, "lost": lost_wake, "pass": w_on >= w_off}
 
     user = _pairs(session, off, on, "user_only")
     differs = [i.id for i, f, n in user if _caught(i.expect, f) != _caught(i.expect, n) or f.texts != n.texts]
@@ -179,14 +191,20 @@ def judge(session: Session, off: Mapping, on: Mapping, reductions: Sequence[floa
                  "pass": not differs and level_max <= LEVEL_TOL_DB}
 
     robot = _pairs(session, off, on, "robot_only")
-    new_events = sum((n.wakes + n.emergencies) - (f.wakes + f.emergencies) for _, f, n in robot)
+    events_off = sum(f.wakes + f.emergencies for _, f, _ in robot)
+    events_on = sum(n.wakes + n.emergencies for _, _, n in robot)
+    new_events = events_on - events_off
     median = statistics.median(reductions) if reductions else None
-    robot_only = {"reduce_db_median": median, "new_events": new_events,
+    robot_only = {"reduce_db_median": median, "events_off": events_off,
+                  "events_on": events_on, "new_events": new_events,
                   "pass": median is not None and median <= -REDUCE_MIN_DB and new_events <= 0}
 
+    complete = bool(session.complete and overlap_stop["n"] > 0 and overlap_wake["n"] > 0
+                    and user_only["n"] > 0 and len(reductions) > 0)
     parts = (overlap_stop, overlap_wake, user_only, robot_only)
     return {"overlap_stop": overlap_stop, "overlap_wake": overlap_wake, "user_only": user_only,
-            "robot_only": robot_only, "pass": all(p["pass"] or p.get("n") == 0 for p in parts)}
+            "robot_only": robot_only, "complete": complete,
+            "pass": complete and all(p["pass"] or p.get("n") == 0 for p in parts)}
 
 
 def _ok(flag: bool) -> str:
@@ -201,9 +219,11 @@ def format_report(report: dict) -> str:
         f"겹침 멈춰     {s['n']:4d} {s['off']:5d} {s['on']:4d}   {_ok(s['pass'])}",
         f"겹침 비카야   {w['n']:4d} {w['off']:5d} {w['on']:4d}   {_ok(w['pass'])}",
         f"사람만        {u['n']:4d}                {_ok(u['pass'])}  (소리 크기 차 최대 {u['level_db_max']:.2f} dB)",
-        f"로봇만 줄임 중앙값 {'없음' if median is None else f'{median:.1f} dB'} · 새 사건 {r['new_events']}건   {_ok(r['pass'])}",
+        f"로봇만 줄임 중앙값 {'없음' if median is None else f'{median:.1f} dB'} · 새 사건 {r['new_events']}건(off {r['events_off']} → on {r['events_on']})   {_ok(r['pass'])}",
+        f"놓친 항목(멈춰): {', '.join(s['lost']) or '없음'} · (비카야): {', '.join(w['lost']) or '없음'}",
         f"늦은 항목: {', '.join(s['late']) or '없음'}",
         f"달라진 항목: {', '.join(u['differs']) or '없음'}",
+        *([] if report["complete"] else ["불완전: 녹음이 끊겼거나 묶음·줄임 값이 비어 있어 판정할 수 없다"]),
         f"종합: {_ok(report['pass'])}",
     ]
     return "\n".join(lines)

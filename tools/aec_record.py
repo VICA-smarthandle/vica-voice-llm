@@ -38,7 +38,7 @@ CHANNELS = 6              # ch0 = 칩 처리음 · ch1~4 = 마이크 원음 · c
 BLOCK = 1280
 OVERLAP_CLIPS = ("mission_msg_approach_question.wav", "mission_msg_estopped.wav",
                  "mission_msg_paused.wav", "mission_msg_estop_reject.wav")
-LEAD_SEC, GAP_SEC, USER_WINDOW_SEC, OVERLAP_TAIL_SEC = 2.0, 0.3, 4.0, 2.0
+LEAD_SEC, GAP_SEC, USER_WINDOW_SEC, OVERLAP_TAIL_SEC = 2.0, 1.0, 4.0, 2.0   # GAP 1.0 = 운영 간격(멘트 뒤 0.4 s + 쉼 1.0 s)
 ROBOT_TAIL_SEC = 0.5      # 로봇만 구간 끝에 더하는 여유
 STALL_SEC = 1.0           # 받은 표본이 이만큼 늘지 않으면 마이크가 멈춘 것
 PROMPT_PAUSE_SEC = 1.0    # 할 말을 읽을 시간(다음 소리 전)
