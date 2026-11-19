@@ -10,6 +10,7 @@ LLM 은 발화마다 도구 하나를 부른다: set_intent(지금의 의도 해
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Sequence
 
 SET_INTENT = "set_intent"
@@ -35,6 +36,30 @@ def text_tools_on() -> bool:
 def audio_tools_on() -> bool:
     """소리 경로(Realtime)의 도구 출력. `.env` VICA_TOOLS_AUDIO=on, 기본 꺼짐."""
     return _on("VICA_TOOLS_AUDIO")
+
+
+# 저장소의 .env. LLM 노드는 langchain_intent_parser 가 import 때 읽어 환경 변수에 싣지만, TTS 노드는 읽지 않는다.
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
+
+def any_tools_on() -> bool:
+    """두 스위치 중 하나라도 켜졌는가 — .env 를 읽지 않는 프로세스(TTS 노드의 미리 합성)도 같은 답을 얻는다.
+
+    환경 변수에 있으면 그 값, 없으면 .env 파일에서 이 두 키만 읽는다(load_dotenv 와 같은 순서). 환경에는 아무것도
+    싣지 않는다 — load_dotenv 를 부르면 TTS 프로세스에 다른 키까지 실려 꺼진 상태의 동작이 달라질 수 있다.
+    """
+    keys = ("VICA_TOOLS_TEXT", "VICA_TOOLS_AUDIO")
+    values = {k: os.environ[k] for k in keys if k in os.environ}
+    if len(values) < len(keys):
+        try:
+            from dotenv import dotenv_values   # 지연 import — 이 모듈을 가볍게 둔다
+
+            from_file = dotenv_values(ENV_FILE) if ENV_FILE.is_file() else {}
+        except Exception:
+            from_file = {}
+        for k in keys:
+            values.setdefault(k, from_file.get(k) or "")
+    return any(v.strip().lower() == "on" for v in values.values())
 
 
 def reserve_tool(facility_names: Sequence[str], with_heard_text: bool = False) -> dict:

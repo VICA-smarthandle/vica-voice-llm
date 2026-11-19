@@ -24,3 +24,21 @@ def test_switches_default_off(monkeypatch):
     assert not tool_calls.text_tools_on() and not tool_calls.audio_tools_on()
     monkeypatch.setenv("VICA_TOOLS_TEXT", "on")
     assert tool_calls.text_tools_on() and not tool_calls.audio_tools_on()
+
+
+def test_any_tools_on_reads_the_env_file_for_processes_without_dotenv(monkeypatch, tmp_path):
+    """TTS 노드는 .env 를 읽지 않는다 — 환경 변수에 없으면 저장소 .env 에서 두 스위치만 읽는다(검토 M-1)."""
+    import os
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("VICA_TOOLS_AUDIO=on\nVICA_MADE_UP_KEY=secret\n", encoding="utf-8")
+    monkeypatch.setattr(tool_calls, "ENV_FILE", env_file)
+    monkeypatch.delenv("VICA_TOOLS_TEXT", raising=False)
+    monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+    assert tool_calls.any_tools_on()
+    assert "VICA_MADE_UP_KEY" not in os.environ and "VICA_TOOLS_AUDIO" not in os.environ   # 환경에 아무것도 싣지 않는다
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "off")                # 환경 변수가 있으면 그 값이 이긴다(load_dotenv 와 같은 순서)
+    assert not tool_calls.any_tools_on()
+    monkeypatch.delenv("VICA_TOOLS_AUDIO")
+    monkeypatch.setattr(tool_calls, "ENV_FILE", tmp_path / "없는파일")
+    assert not tool_calls.any_tools_on()

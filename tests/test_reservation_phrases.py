@@ -22,10 +22,14 @@ def test_confirm_sentence_is_the_demo_line():
     assert line == "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
 
 
-def test_fixed_sentences_are_prewarmed_only_when_a_tool_switch_is_on(monkeypatch):
+def test_fixed_sentences_are_prewarmed_only_when_a_tool_switch_is_on(monkeypatch, tmp_path):
     """스위치가 둘 다 꺼져 있으면 미리 합성 목록이 지금과 같다(TTS 기동 시간 그대로)."""
     from src import mission_phrases as mp
+    from src import tool_calls
 
+    env_file = tmp_path / ".env"                             # 운영 .env 대신 — TTS 노드는 이 파일에서 스위치를 읽는다
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(tool_calls, "ENV_FILE", env_file)
     monkeypatch.delenv("VICA_TOOLS_TEXT", raising=False)
     monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
     off = mp.standalone_prewarm([])
@@ -33,3 +37,6 @@ def test_fixed_sentences_are_prewarmed_only_when_a_tool_switch_is_on(monkeypatch
     monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
     on = mp.standalone_prewarm([])
     assert on[:len(off)] == off and on[len(off):] == list(p.FIXED)
+    monkeypatch.delenv("VICA_TOOLS_AUDIO")                   # 환경 변수 없이 .env 파일에만 켜 둔 경우(TTS 노드)
+    env_file.write_text("VICA_TOOLS_TEXT=on\n", encoding="utf-8")
+    assert mp.standalone_prewarm([]) == on

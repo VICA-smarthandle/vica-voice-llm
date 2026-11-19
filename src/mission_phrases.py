@@ -183,9 +183,10 @@ def standalone_prewarm(destinations: Iterable) -> list[str]:
     phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
     phrases += list(HELP_SENTENCES)
     # 예약 문장(2026-11-18) — 도구 출력 스위치가 하나라도 켜졌을 때만. 꺼져 있으면 목록이 예전과 같다.
-    from .tool_calls import audio_tools_on, text_tools_on
+    # TTS 노드는 .env 를 읽지 않아 스위치를 파일에서도 본다(any_tools_on).
+    from .tool_calls import any_tools_on
 
-    if text_tools_on() or audio_tools_on():
+    if any_tools_on():
         from .reservation_phrases import FIXED
 
         phrases += list(FIXED)
