@@ -595,15 +595,30 @@ def _get_tool_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
     """
     from langchain_openai import ChatOpenAI
 
+    names = [f.name for f in default_facilities()]
+    if not names:
+        # 시설 파일이 깨졌거나 비었다 — 빈 enum 은 API 가 요청을 통째로 거절한다.
+        raise ValueError("예약할 시설 목록이 비어 있다(facilities.yaml)")
     llm = ChatOpenAI(model=model, temperature=0, timeout=timeout, max_retries=max_retries)
-    tools = [_set_intent_tool(), reserve_tool([f.name for f in default_facilities()])]
+    tools = [_set_intent_tool(), reserve_tool(names)]
     return llm.bind_tools(tools, tool_choice="required") | _draft_from_tool_message
 
 
+def text_tools_active() -> bool:
+    """글자 경로의 클라우드 호출이 도구 출력을 쓰는가 — openai 이고 VICA_TOOLS_TEXT=on 일 때만."""
+    return PROVIDER == "openai" and text_tools_on()
+
+
 def _get_cloud_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
-    """클라우드 쪽 LLM 을 고른다 — openai 이고 VICA_TOOLS_TEXT=on 일 때만 도구 출력, 그 밖은 지금의 구조화 출력."""
-    if PROVIDER == "openai" and text_tools_on():
-        return _get_tool_llm(model, timeout=timeout, max_retries=max_retries)
+    """클라우드 쪽 LLM 을 고른다 — 도구 출력(text_tools_active) 또는 지금의 구조화 출력.
+
+    도구 출력을 못 만들면(시설 파일이 깨짐 등) 클라우드를 잃지 않게 구조화 출력으로 돈다 — 예약만 안 된다.
+    """
+    if text_tools_active():
+        try:
+            return _get_tool_llm(model, timeout=timeout, max_retries=max_retries)
+        except Exception as exc:
+            _log("error", f"[LLM] 도구 출력 준비 실패({exc}) — 구조화 출력으로 돈다(예약 안 됨)")
     return _get_structured_llm(model, timeout=timeout, max_retries=max_retries)
 
 

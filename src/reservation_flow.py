@@ -21,6 +21,8 @@ from .schema import VicaIntent
 NOT_YET = "(아직 없음)"
 # 진행 중인 예약을 버리는 다른 명령. 못 알아들은 말·질문은 버리지 않는다(잡음 한 번에 예약이 날아가면 안 된다).
 _OTHER_COMMANDS = frozenset({"navigate", "pause", "resume", "wait", "finish", "help"})
+# 도구가 없는 경로에서 '예약'이 든 말에 문장 ⑨를 말하지 않는 의도 — 승낙·거절과 서는 쪽 명령은 그대로 보낸다.
+_NOT_A_REQUEST = frozenset({"affirm", "deny", "cancel", "pause", "resume"})
 
 
 @dataclass(frozen=True)
@@ -216,11 +218,35 @@ class ReservationFlow:
         return FlowOutput(phrases.DONE, "open", saved=saved)
 
 
-def to_intent(out: FlowOutput) -> VicaIntent:
-    """예약 흐름의 말 → VicaIntent. 질문은 미션이 말하고(ask_text), 안내는 음성이 말한다(reply)."""
+def handle_result(flow: Optional[ReservationFlow], result, text: str, *, gate: str,
+                  tools_used: bool) -> tuple[Optional[FlowOutput], Optional[VicaIntent]]:
+    """해석 결과(VicaIntent 또는 ReserveCall)를 가른다 → (예약 흐름의 말, 평소대로 내보낼 의도).
+
+    둘 다 None 이면 아무것도 내지 않는다. gate 는 start_gate 의 값, tools_used 는 이 발화를 해석한 경로에
+    도구가 있었는가(스위치가 꺼진 경로·로컬 대피 중이면 거짓).
+    """
+    if isinstance(result, ReserveCall):
+        return (flow.on_call(result, text, gate) if flow is not None else None), None
+    if flow is None:
+        return None, result
+    out = flow.on_general(result)           # 진행 중인 예약이 받은 승낙·거절은 미션에 보내지 않는다
+    if out is not None:
+        return out, None
+    if (not tools_used and "예약" in (text or "") and result.intent not in _NOT_A_REQUEST
+            and result.safety_flag != "emergency"):
+        # 도구가 없는 경로(스위치 꺼짐·로컬 대피)로 온 예약 말 — 문장 ⑨(설계 5.1).
+        return (None, None) if gate == "mute" else (FlowOutput(phrases.UNAVAILABLE, ""), None)
+    return None, result
+
+
+def to_intent(out: FlowOutput, hand_over: bool = True) -> VicaIntent:
+    """예약 흐름의 말 → VicaIntent. 질문은 미션이 말하고(ask_text), 안내는 음성이 말한다(reply).
+
+    hand_over 가 거짓(ask_text 칸이 없는 옛 vica_interfaces)이면 질문도 음성 노드가 말하게 reply 에 둔다.
+    """
     if out.kind:
-        return VicaIntent(intent="clarify", need_confirm=False, confidence=1.0, reply="",
-                          ask_text=out.say, ask_kind=out.kind)
+        return VicaIntent(intent="clarify", need_confirm=False, confidence=1.0,
+                          reply="" if hand_over else out.say, ask_text=out.say, ask_kind=out.kind)
     return VicaIntent(intent="question", need_confirm=False, confidence=1.0, reply=out.say)
 
 

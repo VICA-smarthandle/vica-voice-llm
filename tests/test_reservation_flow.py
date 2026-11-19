@@ -185,3 +185,50 @@ def test_to_intent_and_event(flow):
     event = json.loads(created_event(res, NOW))
     assert event["event"] == "reservation_created" and event["id"] == res.id and event["name"] == "김민수"
     assert set(event) == {"event", "id", "facility", "date", "start", "end", "name", "source", "timestamp"}
+
+
+# ----- 해석 결과 가르기(작업 6) ------------------------------------------
+from src.reservation_flow import handle_result  # noqa: E402
+
+
+def test_routing(flow):
+    nav = VicaIntent(intent="navigate", destination_candidate="화장실", matched_destination_id="restroom")
+    assert handle_result(None, nav, "화장실로 가자.", gate="ok", tools_used=True) == (None, nav)
+    out, passed = handle_result(flow, ReserveCall(facility="세미나실", date="내일", start_time="14:00"),
+                                "내일 오후 두 시에 세미나실 예약해 줘.", gate="ok", tools_used=True)
+    assert out == FlowOutput(p.ASK_NAME, "open") and passed is None
+    out, passed = handle_result(flow, ReserveCall(name="김민수"), "김민수", gate="ok", tools_used=True)
+    assert out == FlowOutput(DEMO, "yesno") and passed is None
+    out, passed = handle_result(flow, YES, "그래", gate="ok", tools_used=True)
+    assert out.say == p.DONE and passed is None                   # 예약이 받은 승낙은 미션에 보내지 않는다
+    assert handle_result(flow, nav, "화장실로 가자.", gate="ok", tools_used=True) == (None, nav)
+
+
+def test_reservation_word_without_tools_is_refused(flow):
+    nav = VicaIntent(intent="navigate", destination_candidate="세미나실")
+    assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="ok", tools_used=False) == (FlowOutput(p.UNAVAILABLE, ""), None)
+    assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, None)
+    assert handle_result(flow, nav, "예약은 됐고 화장실 가자.", gate="ok", tools_used=True) == (None, nav)
+    assert handle_result(flow, YES, "네 예약이요", gate="ok", tools_used=False) == (None, YES)
+
+
+def test_emergency_and_switched_off_node_pass_straight_through(flow):
+    stop = VicaIntent(intent="unknown", need_confirm=False, safety_flag="emergency")
+    assert handle_result(flow, stop, "예약 멈춰", gate="ok", tools_used=False) == (None, stop)
+    # 흐름이 없는 노드(스위치 꺼짐)에 예약 호출이 오면 의도인 척 내보내지 않는다 — 아무것도 내지 않는다.
+    assert handle_result(None, ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", gate="ok", tools_used=True) == (None, None)
+
+
+def test_decline_inside_a_draft_is_kept_from_the_mission(flow):
+    first(flow)
+    out, passed = handle_result(flow, NO, "아니", gate="ok", tools_used=True)
+    assert out == FlowOutput(p.NOT_RESERVED, "") and passed is None and not flow.active
+
+
+def test_old_interfaces_get_the_question_as_a_spoken_reply():
+    """ask_text 칸이 없는 옛 vica_interfaces 에서는 질문도 음성 노드가 말한다 — reply 에 같은 문장을 둔다."""
+    ask = FlowOutput(p.ASK_NAME, "open")
+    assert to_intent(ask).reply == "" and to_intent(ask).ask_text == p.ASK_NAME
+    old = to_intent(ask, hand_over=False)
+    assert old.reply == p.ASK_NAME and old.intent == "clarify"
+    assert to_intent(FlowOutput(p.UNAVAILABLE, ""), hand_over=False) == to_intent(FlowOutput(p.UNAVAILABLE, ""))

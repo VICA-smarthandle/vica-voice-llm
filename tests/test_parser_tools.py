@@ -85,3 +85,17 @@ def test_tool_llm_binds_both_tools_and_requires_one(monkeypatch, tmp_path):
     assert bound["init"] == {"model": "gpt-5.4-mini", "temperature": 0, "timeout": 6, "max_retries": 0}
     assert bound["tools"][1]["function"]["parameters"]["properties"]["facility"]["enum"] == ["세미나실", "상담실"]
     assert llm.invoke([]) == ReserveCall(facility="상담실", name="이서연")
+
+
+def test_broken_facility_file_falls_back_to_structured_output(monkeypatch, tmp_path):
+    """시설 파일이 깨져 도구 출력을 못 만들면 클라우드를 잃지 않고 지금의 구조화 출력으로 돈다."""
+    (tmp_path / "facilities.yaml").write_text("facilities: [oops", encoding="utf-8")
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.setenv("VICA_TOOLS_TEXT", "on")
+    monkeypatch.setattr(parser, "PROVIDER", "openai")
+    structured = object()
+    monkeypatch.setattr(parser, "_get_structured_llm", lambda model, **kw: structured)
+    logged = []
+    monkeypatch.setattr(parser, "_log", lambda level, text: logged.append((level, text)))
+    assert parser._get_cloud_llm("gpt-5.4-mini") is structured
+    assert logged and logged[0][0] == "error" and "도구 출력" in logged[0][1]
