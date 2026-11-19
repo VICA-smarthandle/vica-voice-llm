@@ -130,3 +130,13 @@ def test_kind_reaches_the_local_schema_and_resets(on, monkeypatch):
 def test_local_schema_is_the_old_one_when_off():
     llm = FakeOllama()
     assert parser._ollama_structured(llm) is not None and llm.schemas == [parser._IntentDraft]
+
+
+def test_answer_that_is_not_text_does_not_fail_the_utterance(on):
+    """외부 API 가 answer 에 null·숫자를 넣어도 발화가 통째로 실패하지 않는다(검토 M2) — 빈 값으로 읽는다."""
+    from src.realtime_intent import RealtimeResult
+    assert parser._AnswerDraft(intent="unknown", answer=None).answer == ""
+    assert parser._AnswerDraft(intent="unknown", answer=3).answer == ""
+    result = RealtimeResult(draft={"intent": "unknown", "answer": None}, heard_text="뭐라고", latency_sec=1.0)
+    intent, _heard, _dt, _info = parser._deliver_realtime_result(result, DESTS, None, question=q())
+    assert (intent.intent, intent.answer) == ("unknown", "")

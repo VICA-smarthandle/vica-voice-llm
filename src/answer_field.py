@@ -11,13 +11,14 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, create_model
 
-from .handle_mode import AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply
+from .handle_mode import AFFIRMATIVES, NEGATIVES, normalize_short_reply
 from .question_record import OpenQuestion
 from .schema import VicaIntent
 
 ANSWERS = ("yes", "no", "destination", "choice", "minutes", "other", "unclear")
 
-# 스키마 칸 설명 — 세 경로(로컬 구조화 출력 · set_intent 인자 · Realtime 인자)가 같은 글을 쓴다. 지시문 본문은 고치지 않는다.
+# 스키마 칸 설명 — gpt(구조화 출력·set_intent 인자)와 Realtime(도구 인자)이 본다. 로컬(Ollama)은 스키마를 출력 문법으로만
+# 쓰고 이 글을 모델에 보여 주지 않는다 — 그래서 값의 뜻은 질문 줄(question_line)에도 적는다. 지시문 본문은 고치지 않는다.
 ANSWER_DESCRIPTION = (
     "[지금 상황]에 '로봇이 물은 질문' 줄이 있을 때만 채운다 — 그 질문에 대한 이 말의 대답. "
     "yes(승낙) · no(거절) · destination(다른 곳으로 가자 — destination_candidate 에 그곳) · "
@@ -30,7 +31,13 @@ _OWN = {"open": "yes", "confirm": "yes", "yesno": "yes", "yesno_inverted": "yes"
         "choice": "choice", "minutes": "minutes"}
 _KIND_KO = {"open": "열린 질문", "confirm": "확인 질문", "choice": "고르기 질문", "yesno": "네·아니요 질문",
             "yesno_inverted": "부정 질문", "minutes": "시간 질문"}
+# 질문 줄에 적는 값의 뜻. 2026-11-19 로컬 재생: 뜻 없이 값 이름만 주자 midm2-mini 가 "네?"·고르기 질문의 대답
+# 대부분에 no 를 냈다(380행 중 171) — answer 를 '대답인가 아닌가'로 읽은 것으로 보인다(검토 I2).
+_MEANING = {"yes": "승낙", "no": "거절", "destination": "다른 곳으로 가자(destination_candidate 에 그곳)",
+            "choice": "보기 중 하나를 고름(destination_candidate 에 그곳)", "minutes": "시간을 말함(wait_minutes 에 분)",
+            "other": "질문과 상관없는 명령이나 질문", "unclear": "못 알아들음"}
 _YES_NO_KINDS = ("confirm", "yesno", "yesno_inverted")
+_MINUTES_CORRECTS = ("", "minutes", "unclear")
 _INVERTED_NOTE = ". 필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no"   # 지금 지시문의 affirm·deny 기준과 같은 방향
 _HEADER = "\n[지금 상황]\n"
 
@@ -53,8 +60,10 @@ def question_line(question: Optional[OpenQuestion]) -> str:
     if question is None:
         return ""
     note = _INVERTED_NOTE if question.kind == "yesno_inverted" else ""
+    values = allowed(question.kind)
+    meanings = " · ".join(f"{v} {_MEANING[v]}" for v in values)
     return (f'- 로봇이 물은 질문: "{question.text}" '
-            f"({_KIND_KO.get(question.kind, '질문')} — answer 는 {'·'.join(allowed(question.kind))} 중 하나{note})")
+            f"({_KIND_KO.get(question.kind, '질문')} — answer 는 {'·'.join(values)} 중 하나: {meanings}{note})")
 
 
 def with_question(block: str, question: Optional[OpenQuestion]) -> str:
@@ -71,7 +80,8 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
     """이미 있는 짧은 대답 규칙만(설계 4.3-3): 통째로 네/아니요, N분. 질문 종류에 맞을 때만 (answer, 값), 아니면 None.
 
     새 낱말 목록·정규식을 두지 않는다 — handle_mode 의 낱말과 parse_wait_minutes 만 쓴다. "안내가 필요 없으신가요?"
-    (yesno_inverted)도 들은 대로 yes/no 다 — 뜻은 미션이 질문 종류로 읽는다.
+    (yesno_inverted)도 들은 대로 yes/no 다 — 뜻은 미션이 질문 종류로 읽는다. 혼잣소리('음'·'어어', SOFT_AFFIRMATIVES)는
+    여기서 정하지 않는다 — yesno 에는 "다시 출발할까요?"처럼 로봇이 움직이는 질문도 있다(2026-09-28, 검토 I4).
     """
     if not on() or question is None:
         return None
@@ -81,9 +91,6 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
             return ("no", "")
         if word in AFFIRMATIVES:
             return ("yes", "")
-        if word in SOFT_AFFIRMATIVES:
-            # 혼잣소리('음')는 확인 질문의 승낙이 아니다(2026-09-28) — 움직이지 않는 자리에서만 승낙.
-            return ("unclear", "") if question.kind == "confirm" else ("yes", "")
         return None
     if question.kind == "minutes":
         from .langchain_intent_parser import parse_wait_minutes   # 지연 import — 해석기가 이 모듈을 import 한다
@@ -91,6 +98,17 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
         minutes = parse_wait_minutes(text or "", range_factor=1.0 if local else 1.5)
         return ("minutes", str(minutes)) if minutes else None
     return None
+
+
+def transcript_wins(ruled: Optional[tuple[str, str]], heard_answer: str) -> bool:
+    """소리 모드 — 받아쓴 글자의 규칙 대답(ruled)을 Realtime 이 낸 대답(heard_answer) 대신 써도 되나(바탕 설계 D11).
+
+    통째로 네/아니요면 쓴다. 분은 값 바로잡기만 한다 — Realtime 도 시간으로 읽었거나(minutes) 대답을 못 냈을 때만.
+    parse_wait_minutes 는 문장 속의 분도 읽어서("십 분 말고 그냥 끝내 줘") Realtime 의 거절·다른 말을 덮으면 안 된다(검토 I3).
+    """
+    if ruled is None:
+        return False
+    return ruled[0] != "minutes" or (heard_answer or "") in _MINUTES_CORRECTS
 
 
 def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[tuple[str, str]] = None,

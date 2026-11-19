@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .destination_loader import _josa_euro
 from .destination_matcher import match_destination, tied_destinations
@@ -132,6 +132,12 @@ class _AnswerDraft(_IntentDraft):
 
     answer: str = Field(default="", description=answer_field.ANSWER_DESCRIPTION,
                         json_schema_extra={"enum": ["", *answer_field.ANSWERS]})
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _answer_text(cls, value):
+        # 도구 호출·Realtime 이 null·숫자를 넣어도 발화 하나가 통째로 실패하지 않게 빈 값으로 읽는다(검토 M2).
+        return value if isinstance(value, str) else ""
 
 
 def _draft_cls() -> type[_IntentDraft]:

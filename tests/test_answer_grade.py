@@ -110,3 +110,12 @@ def test_pred_of_prefers_the_answer_field(dests):
     assert pred_of(said, "yesno", "여기서 대기할까요?", dests) == ("yes", "")
     plain = VicaIntent(intent="navigate", matched_destination_id="d1")
     assert pred_of(plain, "yesno", "여기서 대기할까요?", dests) == answer_of(plain, "yesno", "여기서 대기할까요?", dests)
+
+
+def test_pred_of_reads_other_by_the_intent(dests):
+    """other = 질문과 상관없는 말 — 로봇이 하는 동작은 의도 칸이 정한다(설계 4.5). 글자 그대로 채점하면 엉뚱한 출발이 가려진다(검토 I1)."""
+    from tools.answer_grade import pred_of
+    nav = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=True, answer="other")
+    assert pred_of(nav, "yesno", "여기서 대기할까요?", dests) == ("destination", "d2")
+    asked = VicaIntent(intent="question", reply="화장실은 오른쪽에 있어요.", answer="other")
+    assert pred_of(asked, "confirm", "사회복지로 안내해드릴까요?", dests) == answer_of(asked, "confirm", "사회복지로 안내해드릴까요?", dests)

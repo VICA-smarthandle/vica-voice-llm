@@ -35,8 +35,14 @@ def test_allowed_by_kind():
 
 
 def test_question_line(on):
-    assert af.question_line(q()) == ('- 로봇이 물은 질문: "사회복지로 안내해드릴까요?" '
-                                     "(확인 질문 — answer 는 yes·no·destination·other·unclear 중 하나)")
+    # 값의 뜻까지 줄에 적는다 — 로컬(Ollama)은 스키마를 출력 문법으로만 쓰고 칸 설명을 모델에 보여 주지 않는다(검토 I2).
+    assert af.question_line(q()) == (
+        '- 로봇이 물은 질문: "사회복지로 안내해드릴까요?" (확인 질문 — answer 는 yes·no·destination·other·unclear 중 하나: '
+        "yes 승낙 · no 거절 · destination 다른 곳으로 가자(destination_candidate 에 그곳) · "
+        "other 질문과 상관없는 명령이나 질문 · unclear 못 알아들음)")
+    minutes = af.question_line(q("minutes", "몇 분쯤 걸리실까요?"))
+    assert "minutes 시간을 말함(wait_minutes 에 분)" in minutes and "yes 승낙" not in minutes
+    assert "choice 보기 중 하나를 고름(destination_candidate 에 그곳)" in af.question_line(q("choice", "A와 B 중 어디로 갈까요?"))
     inverted = af.question_line(q("yesno_inverted", "안내가 필요 없으신가요?"))
     assert "필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no" in inverted
     assert af.question_line(None) == ""
@@ -60,8 +66,6 @@ def test_off_is_inert():
 @pytest.mark.parametrize("text,kind,out", [
     ("네.", "confirm", ("yes", "")), ("네. 네.", "yesno", ("yes", "")), ("아니요", "yesno", ("no", "")),
     ("그래.", "yesno_inverted", ("yes", "")),      # 들은 대로 — 뜻(필요 없음)은 미션이 질문 종류로 읽는다
-    ("음", "confirm", ("unclear", "")),            # 혼잣소리는 확인 질문의 승낙이 아니다(09-28)
-    ("음", "yesno", ("yes", "")),
 ])
 def test_short_answer_whole_yes_no(on, text, kind, out):
     assert af.short_answer(text, q(kind)) == out
@@ -69,6 +73,8 @@ def test_short_answer_whole_yes_no(on, text, kind, out):
 
 @pytest.mark.parametrize("text,kind", [
     ("네 화장실로 가자", "confirm"), ("그래 맞아.", "yesno"), ("부요.", "yesno"),
+    # 혼잣소리('음')는 규칙이 정하지 않는다 — yesno 에는 "다시 출발할까요?"처럼 로봇이 움직이는 질문도 있다(09-28, 검토 I4).
+    ("음", "confirm"), ("음", "yesno"), ("어어", "yesno_inverted"),
     ("네", "open"), ("네", "choice"), ("네", "minutes"), ("삼십분.", "confirm"),
 ])
 def test_short_answer_only_whole_utterance(on, text, kind):
@@ -83,6 +89,16 @@ def test_short_answer_minutes(on):
     assert af.short_answer("십 분에서 십오 분", m, local=True) == ("minutes", "15")
     assert af.short_answer("십 분에서 십오 분", m) == ("minutes", "23")   # 로컬 규칙 밖은 큰 쪽 × 1.5(지금 _finalize 와 같다)
     assert af.short_answer("삼십분.", None) is None
+
+
+def test_transcript_rule_only_corrects_minutes():
+    assert af.transcript_wins(("yes", ""), "destination") is True       # 통째 네/아니요는 받아쓴 글자가 이긴다(D11)
+    assert af.transcript_wins(("no", ""), "yes") is True
+    for heard in ("minutes", "", "unclear"):
+        assert af.transcript_wins(("minutes", "30"), heard) is True      # 분은 값 바로잡기
+    for heard in ("no", "other", "destination", "yes"):
+        assert af.transcript_wins(("minutes", "10"), heard) is False     # "십 분 말고 그냥 끝내 줘" — Realtime 의 거절을 덮지 않는다
+    assert af.transcript_wins(None, "yes") is False
 
 
 def test_fill_rule_first_then_llm(on):

@@ -62,9 +62,12 @@ def answer_of(intent, kind: str, question: str, destinations: Sequence) -> tuple
 
 def pred_of(intent, kind: str, question: str, destinations: Sequence) -> tuple[str, str]:  # noqa: ANN001
     """채점에 쓸 (answer, value). 대답 칸이 채워졌으면 그 값(3-나-2 — 새 구조는 대답을 직접 낸다), 비었으면 지금
-    구조의 어댑터(answer_of)로 읽는다 — 규칙 지름길처럼 대답 칸을 안 채운 길은 기준 점수와 같은 방식으로 채점된다."""
+    구조의 어댑터(answer_of)로 읽는다 — 규칙 지름길처럼 대답 칸을 안 채운 길은 기준 점수와 같은 방식으로 채점된다.
+
+    other(질문과 상관없는 명령·질문)도 의도 칸으로 읽는다 — 그때 로봇이 하는 동작은 의도가 정한다(설계 4.5). 글자
+    그대로 채점하면 other 를 붙인 엉뚱한 출발이 '그 밖'으로 가려져 잘못된 행동이 실제보다 적게 나온다(검토 I1)."""
     answer = getattr(intent, "answer", "") or ""
-    if answer:
+    if answer and answer != "other":
         return answer, getattr(intent, "answer_value", "") or ""
     return answer_of(intent, kind, question, destinations)
 

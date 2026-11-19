@@ -27,7 +27,7 @@ from src.question_record import OpenQuestion
 from src.replies import LLM_UNAVAILABLE
 from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
-from tools.answer_grade import grade, pred_of, question_destination_id
+from tools.answer_grade import answer_of, grade, pred_of, question_destination_id
 
 STOP_AFTER_ERRORS = 5
 CLIPS_DIR = Path.home() / "vica_data" / "listen_clips"
@@ -127,19 +127,36 @@ def question_for(row: dict, destinations: Sequence) -> OpenQuestion:
     return OpenQuestion(id="replay", kind=kind, text=text, option_ids=options, opened_at=0.0)
 
 
+def transcript_for(row: dict) -> str:
+    """소리 경로에서 규칙에 댈 글자 = 그때의 받아쓴 글자(stt)만, 노드처럼 호출 응답 메아리를 뗀다. 없으면 빈 글자 —
+    받아쓴 글자가 없던 발화에 Realtime 이 들은 글자(answer_text)로 규칙을 대면 운영에 없던 점수가 붙는다(검토 M1)."""
+    stt = (row.get("stt") or "").strip()
+    if not stt:
+        return ""
+    question = OpenQuestion(id="replay", kind=row.get("kind", ""), text=row.get("question", ""),
+                            option_ids=(), opened_at=0.0)
+    return strip_wake_echo(stt, question, row.get("dialog_state", ""))
+
+
 def with_transcript_rule(intent, row: dict, question: OpenQuestion):  # noqa: ANN001
     """소리 경로 행 — 받아쓴 글자가 통째로 짧은 대답(네/아니요 · N분)이면 Realtime 의 대답 대신 그 규칙의 대답으로
-    채점한다(설계 2026-11-18 4.3-3, 바탕 설계 D11). 대답 칸이 꺼졌거나 규칙에 안 맞거나 예약 호출이면 받은 결과 그대로."""
+    채점한다(설계 2026-11-18 4.3-3, 바탕 설계 D11). 분은 Realtime 도 시간으로 읽었을 때 값만 바로잡는다
+    (answer_field.transcript_wins). 대답 칸이 꺼졌거나 규칙에 안 맞거나 예약 호출이면 받은 결과 그대로."""
     if isinstance(intent, ReserveCall):
         return intent
-    ruled = answer_field.short_answer(text_for(row), question)
-    if ruled is None:
+    ruled = answer_field.short_answer(transcript_for(row), question)
+    if not answer_field.transcript_wins(ruled, getattr(intent, "answer", "")):
         return intent
     return intent.model_copy(update={"question_id": question.id, "answer": ruled[0], "answer_value": ruled[1]})
 
 
-def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]]) -> dict:
-    """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약."""
+def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]],
+           rule_text: Callable[[dict], str] = parsed_text_for) -> dict:
+    """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약.
+
+    행에는 두 읽기를 다 남긴다 — pred(대답 칸 우선, 채점에 쓴 값)와 pred_intent(의도 칸만 = 1단계에서 로봇이 실제로
+    하는 동작), 그리고 answer·answer_src(rule = 짧은 대답 규칙 · llm). rule_text 는 그 경로가 규칙에 대는 글자다.
+    """
     out_rows, errors_in_row, stopped = [], 0, False
     for row in rows:
         rec = {k: row.get(k, "") for k in ("ts", "date", "time", "kind", "question", "answer_text",
@@ -150,6 +167,7 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             continue
         if not (row.get("answer_text") or "").strip():
             pred, pv, latency, why = "unclear", "", 0.0, "빈 글자"
+            both = {"pred_intent": "unclear", "pred_intent_value": "", "answer": "", "answer_value": "", "answer_src": ""}
         else:
             try:
                 intent, latency = interpret(row)
@@ -175,11 +193,17 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
                                  "why": "reserve_facility"})
                 continue
             pred, pv = pred_of(intent, row["kind"], row["question"], dests)
+            by_intent = answer_of(intent, row["kind"], row["question"], dests)
+            answer, value = getattr(intent, "answer", "") or "", getattr(intent, "answer_value", "") or ""
+            ruled = answer_field.short_answer(rule_text(row), question_for(row, dests))
+            src = "rule" if ruled is not None and ruled == (answer, value) else ("llm" if answer else "")
+            both = {"pred_intent": by_intent[0], "pred_intent_value": by_intent[1],
+                    "answer": answer, "answer_value": value, "answer_src": src}
             why = (f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
-                   f"/answer={getattr(intent, 'answer', '') or '-'}")
+                   f"/answer={answer or '-'}")
         errors_in_row = 0
         status = grade(row["label_answer"], row.get("label_value", ""), pred, pv, row.get("kind", ""))
-        out_rows.append({**rec, "status": status, "pred": pred, "pred_value": pv, "latency": latency, "why": why})
+        out_rows.append({**rec, "status": status, "pred": pred, "pred_value": pv, "latency": latency, "why": why, **both})
     by_kind: dict = {}
     for r in out_rows:
         by_kind.setdefault(r["kind"], Counter())[r["status"]] += 1
@@ -282,7 +306,8 @@ def main() -> None:
     interpret = interpret_audio if args.path == "realtime" else interpret_text
     runs = []
     for i in range(args.rounds):
-        run = replay(rows, interpret, destinations_for)
+        run = replay(rows, interpret, destinations_for,
+                     rule_text=transcript_for if args.path == "realtime" else parsed_text_for)
         c = run["counts"]
         print(f"[{args.path}] {i + 1}회차: ok {c.get('ok', 0)} reask {c.get('reask', 0)} wrong {c.get('wrong', 0)} "
               f"mismatch {c.get('mismatch', 0)} "

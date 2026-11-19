@@ -185,3 +185,36 @@ def test_transcript_rule_wins_on_the_audio_path(monkeypatch, rows_labeled, dests
     assert answer_replay.with_transcript_rule(heard, long, asked) is heard
     call = ReserveCall(facility="세미나실")
     assert answer_replay.with_transcript_rule(call, row, asked) is call
+
+
+def test_rows_keep_both_readings_and_the_source(monkeypatch, rows_labeled, dests):
+    """유료 측정 한 번으로 두 채점(대답 칸 · 의도 칸)이 다 나오게 행마다 둘 다 남긴다(검토 I1)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said = VicaIntent(intent="navigate", matched_destination_id="d1", answer="yes")
+    by_rule = replay(rows_labeled[:1], lambda row: (said, 0.5), lambda _p: dests)["rows"][0]      # "네" — 규칙이 정한 행
+    assert (by_rule["pred"], by_rule["pred_intent"], by_rule["pred_intent_value"]) == ("yes", "destination", "d1")
+    assert (by_rule["answer"], by_rule["answer_value"], by_rule["answer_src"]) == ("yes", "", "rule")
+    free = {**rows_labeled[2], "answer_text": "화장실로 가자"}
+    moved = VicaIntent(intent="navigate", matched_destination_id="d2", answer="destination", answer_value="d2")
+    by_llm = replay([free], lambda row: (moved, 0.5), lambda _p: dests)["rows"][0]
+    assert (by_llm["answer"], by_llm["answer_src"]) == ("destination", "llm")
+    plain = replay([free], lambda row: (VicaIntent(intent="deny"), 0.5), lambda _p: dests)["rows"][0]
+    assert (plain["pred"], plain["pred_intent"], plain["answer"], plain["answer_src"]) == ("no", "no", "", "")
+
+
+def test_audio_rule_needs_a_real_transcript(monkeypatch, rows_labeled, dests):
+    """받아쓴 글자(stt)가 없던 발화에 Realtime 이 들은 글자로 규칙을 대지 않는다 — 운영에는 없던 글자다(검토 M1)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    row = {**rows_labeled[1], "stt": "", "answer_text": "1분"}       # kind=minutes
+    asked = answer_replay.question_for(row, dests)
+    heard = VicaIntent(intent="wait", wait_minutes=15, answer="minutes", answer_value="15")
+    assert answer_replay.with_transcript_rule(heard, row, asked) is heard
+    assert answer_replay.transcript_for(row) == "" and answer_replay.transcript_for({**row, "stt": " 삼십분. "}) == "삼십분."
+
+
+def test_audio_minutes_rule_does_not_override_a_refusal(monkeypatch, rows_labeled, dests):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    row = {**rows_labeled[1], "stt": "십 분 말고 그냥 안내 끝내 줘"}
+    asked = answer_replay.question_for(row, dests)
+    refused = VicaIntent(intent="deny", answer="no")
+    assert answer_replay.with_transcript_rule(refused, row, asked) is refused
