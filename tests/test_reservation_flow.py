@@ -360,3 +360,11 @@ def test_leaving_idle_ends_the_stage_silently(flow):
     opened(flow)
     stop = VicaIntent(intent="unknown", need_confirm=False, safety_flag="emergency")
     assert flow.on_general(stop) is None and flow.active     # 긴급은 건드리지 않는다
+
+
+def test_finish_inside_a_draft_means_no_reservation(flow):
+    """11-19 gpt 재생 F4: 이름 질문에 "아니, 됐어."를 LLM 이 finish 로 읽었다. 예약 단계의 finish 는 예약을 그만두는 말이다."""
+    first(flow)
+    opened(flow)
+    out, passed = handle_result(flow, VicaIntent(intent="finish", need_confirm=False), "아니, 됐어.", gate="ok", tools_used=True)
+    assert out == FlowOutput(p.NOT_RESERVED, "") and passed is None and not flow.active

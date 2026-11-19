@@ -20,7 +20,10 @@ from .schema import VicaIntent
 
 NOT_YET = "(아직 없음)"
 # 진행 중인 예약을 버리는 다른 명령. 못 알아들은 말·질문은 버리지 않는다(잡음 한 번에 예약이 날아가면 안 된다).
-_OTHER_COMMANDS = frozenset({"navigate", "pause", "resume", "wait", "finish", "help"})
+_OTHER_COMMANDS = frozenset({"navigate", "pause", "resume", "wait", "help"})
+# 예약을 그만두는 말 — ⑥. finish 는 "됐어"류다: 예약은 쉬는 상태에서만 진행되어 마칠 안내가 없으므로
+# 예약 단계의 finish 는 예약을 그만두는 뜻이다(11-19 gpt 재생: 이름 질문에 "아니, 됐어." → finish).
+_DECLINES = frozenset({"deny", "cancel", "finish"})
 # 도구가 없는 경로에서 '예약'이 든 말에 문장 ⑨를 말하지 않는 의도 — 승낙·거절·명령은 그대로 보낸다.
 # navigate 는 말에 예약할 시설 이름이 있을 때만 ⑨로 바꾼다("예약했는데 화장실 가자"는 이동이다).
 _NOT_A_REQUEST = frozenset({"affirm", "deny", "cancel", "pause", "resume", "wait", "finish", "help"})
@@ -160,7 +163,7 @@ class ReservationFlow:
         if kind == "affirm" and self._confirming and self._seen:
             # 미션이 확인 질문을 실제로 연 뒤의 승낙만 저장한다 — 묻지 않은 질문의 "네"로 저장하지 않는다.
             return self._commit()
-        if kind in ("deny", "cancel"):
+        if kind in _DECLINES:
             self.drop()
             return FlowOutput(phrases.NOT_RESERVED, "")
         if kind in _OTHER_COMMANDS:

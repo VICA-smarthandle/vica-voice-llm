@@ -1,6 +1,8 @@
 """예약 묶음 38개(설계 2026-11-18 7절) — 도구 출력의 켜는 기준을 재는 발화.
 
-첫 요청 15(R1~R12 · E1~E3) · 그 밖 13(N1~N13) · 이어진 대답 10(F1~F10).
+첫 요청 15(R1~R12 · E1~E3) · 그 밖 13(N1~N13) · 이어진 대답 10(F1~F10) + F11.
+F11 은 11-19 gpt 측정 뒤에 더했다: F10 "아니 네 시로 해 줘."는 확인 문장의 끝 시각도 "네 시"라 뜻이 갈린다
+(모델은 끝 16:00 으로 읽었다). F10 은 기록으로 남기고, 뜻이 하나인 "아니 세 시로 해 줘."를 따로 잰다.
 R·N 은 11-18 측정(~/vica_data/tool_call_test_20261118/measure.py)의 발화 그대로다(R8 의 이름만 정현우).
 기준일은 NOW(2026-11-18 수요일) — "내일" = 11-19, "모레" = 11-20, "다음 주 월요일" = 11-23.
 """
@@ -82,5 +84,7 @@ CASES: list[Case] = [
     Case("F8", ASKED_CONFIRM, "그래.", {"say": p.DONE, "saved": 1, "active": False}),
     Case("F9", ASKED_CONFIRM, "아니요.", {"say": p.NOT_RESERVED, "saved": 0, "active": False}),
     Case("F10", ASKED_CONFIRM, "아니 네 시로 해 줘.", {"reserve": True, "name": "김민수", "start": "16:00", "end": "18:00",
+                                               "say": CONFIRM, "saved": 0}),
+    Case("F11", ASKED_CONFIRM, "아니 세 시로 해 줘.", {"reserve": True, "name": "김민수", "start": "15:00", "end": "17:00",
                                                "say": CONFIRM, "saved": 0}),
 ]
