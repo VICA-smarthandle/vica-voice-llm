@@ -198,7 +198,11 @@ class LlmIntentNode(Node):
         # 진행 중인 예약은 한 번에 하나. 저장되면 앱에 알릴 사건을 /vica/reservation/event 로 낸다(설계 5.5).
         self._reservation: ReservationFlow | None = None
         self._reservation_pub = None
-        if text_tools_on() or audio_tools_on():
+        if (text_tools_on() or audio_tools_on()) and not (VicaQuestionMsg is not None and self._hand_over):
+            # 예약 질문은 미션이 말하고, 그 질문이 열리고 닫히는 것을 질문 기록으로 본다. 둘 다 없는 옛
+            # vica_interfaces 에서는 진행 중인 예약을 버릴 때를 알 수 없어 만들지 않는다.
+            self.get_logger().error("시설 예약 끔 — 질문 넘김·질문 기록이 없는 옛 vica_interfaces")
+        if (text_tools_on() or audio_tools_on()) and VicaQuestionMsg is not None and self._hand_over:
             try:
                 facilities = default_facilities()
                 if not facilities:
@@ -212,6 +216,10 @@ class LlmIntentNode(Node):
             except Exception as exc:   # 시설 파일이 깨져도 음성 노드는 떠야 한다 — 예약만 끈다
                 self._reservation = None
                 self.get_logger().error(f"시설 예약 준비 실패({exc}) — 예약 없이 동작한다")
+            if self._intent_input == "audio" and not (text_tools_on() and audio_tools_on()):
+                # 소리 모드에서 Realtime 이 실패한 발화는 글자 경로가 받는다 — 한쪽만 켜지면 그 경로의 '예약' 말은 ⑨다.
+                self.get_logger().warning(
+                    "시설 예약: 소리 모드인데 VICA_TOOLS_TEXT·VICA_TOOLS_AUDIO 가 하나만 켜졌다 — 꺼진 경로의 예약 말은 받지 않는다")
 
         # ----- 클라우드→로컬 자동 전환 (2026-09-19 설계) ------------------------
         # 관리자는 파서와 같은 싱글턴이다. 주행 사건·로봇 상태를 흘려 넣고,
@@ -446,8 +454,7 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[예약] 저장 id={out.saved.id} {out.saved.facility} {out.saved.date} {out.saved.start}~{out.saved.end}")
         self.get_logger().info(f"[예약] kind={out.kind or '안내'} 문장='{out.say}'")
-        # 옛 vica_interfaces(ask_text 칸 없음)면 질문도 이 노드가 말한다 — _publish_intent 가 듣기 요청까지 낸다.
-        self._publish_intent(to_intent(out, hand_over=self._hand_over), text, scripted=True, link_text=link_text)
+        self._publish_intent(to_intent(out), text, scripted=True, link_text=link_text)
 
     def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False,
                         link_text: str = "", scripted: bool = False) -> None:
@@ -768,7 +775,7 @@ class LlmIntentNode(Node):
                     if flow is not None else "busy")
             flow_out, intent = handle_result(flow, intent, heard, gate=gate, tools_used=audio_tools_active())
         # 그림자 비교·멈춤 중복 방지가 읽는 칸 — 예약 흐름이 말하면 그 의도를, 아무것도 안 내면 None 을 둔다.
-        shown = to_intent(flow_out, hand_over=self._hand_over) if flow_out is not None else intent
+        shown = to_intent(flow_out) if flow_out is not None else intent
         self._audio_turn.update(handled=True, intent=shown, heard=heard, dt=dt)
         if flow_out is not None:
             self._reservation_say(flow_out, heard)

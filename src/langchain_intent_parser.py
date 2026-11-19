@@ -11,6 +11,7 @@ from typing import Optional, Sequence
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field, ValidationError
 
@@ -601,7 +602,21 @@ def _get_tool_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
         raise ValueError("예약할 시설 목록이 비어 있다(facilities.yaml)")
     llm = ChatOpenAI(model=model, temperature=0, timeout=timeout, max_retries=max_retries)
     tools = [_set_intent_tool(), reserve_tool(names)]
-    return llm.bind_tools(tools, tool_choice="required") | _draft_from_tool_message
+    # 발화마다 도구 하나 — 여러 개를 한꺼번에 부르지 못하게 한다.
+    bound = llm.bind_tools(tools, tool_choice="required", parallel_tool_calls=False)
+
+    def invoke(messages):
+        answer = bound.invoke(messages)          # 연결 실패·시간 초과는 그대로 올린다(전환 담당 모듈이 로컬로 받는다)
+        try:
+            return _draft_from_tool_message(answer)
+        except ValueError as exc:
+            # 형식 오류(도구 없음·모르는 이름·안 맞는 인자)는 연결 실패가 아니다. 구조화 출력(strict)과 달리
+            # 도구 호출은 서버가 형식을 강제하지 않는다 — 한 번의 형식 오류로 로컬 대피(최소 30초)까지 가지 않게
+            # 같은 발화를 한 번만 다시 부른다. 또 틀리면 실패로 올린다.
+            _log("warning", f"[LLM] 도구 응답 형식 오류({exc}) — 한 번 다시 부른다")
+            return _draft_from_tool_message(bound.invoke(messages))
+
+    return RunnableLambda(invoke)
 
 
 def text_tools_active() -> bool:

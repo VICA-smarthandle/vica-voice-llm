@@ -21,8 +21,12 @@ from .schema import VicaIntent
 NOT_YET = "(아직 없음)"
 # 진행 중인 예약을 버리는 다른 명령. 못 알아들은 말·질문은 버리지 않는다(잡음 한 번에 예약이 날아가면 안 된다).
 _OTHER_COMMANDS = frozenset({"navigate", "pause", "resume", "wait", "finish", "help"})
-# 도구가 없는 경로에서 '예약'이 든 말에 문장 ⑨를 말하지 않는 의도 — 승낙·거절과 서는 쪽 명령은 그대로 보낸다.
-_NOT_A_REQUEST = frozenset({"affirm", "deny", "cancel", "pause", "resume"})
+# 도구가 없는 경로에서 '예약'이 든 말에 문장 ⑨를 말하지 않는 의도 — 승낙·거절·명령은 그대로 보낸다.
+# navigate 는 말에 예약할 시설 이름이 있을 때만 ⑨로 바꾼다("예약했는데 화장실 가자"는 이동이다).
+_NOT_A_REQUEST = frozenset({"affirm", "deny", "cancel", "pause", "resume", "wait", "finish", "help"})
+# 넘긴 질문을 미션이 이 시간 안에 열지 않으면(질문 기록이 오지 않으면) 그 질문은 사용자에게 닿지 않은 것이다.
+# 미션은 넘겨받은 문장을 받는 즉시 말하고 질문 기록을 낸다(1초 안) — 넉넉히 10초.
+UNSEEN_DROP_SEC = 10.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,7 @@ class ReservationFlow:
         self._name = ""
         self._confirming = False
         self._seen = False                  # 넘긴 질문을 미션이 한 번 열었나
+        self._asked_at: Optional[datetime] = None
         self.asked_text = ""
 
     @property
@@ -90,8 +95,20 @@ class ReservationFlow:
         minutes = int(self._start[:2]) * 60 + int(self._start[3:5]) + self._facility.default_hours * 60
         return f"{minutes // 60:02d}:{minutes % 60:02d}" if minutes <= 24 * 60 - 1 else ""
 
+    def _expire(self) -> None:
+        """넘긴 질문이 열리지 않은 채 UNSEEN_DROP_SEC 가 지났으면 버린다. 그 질문은 사용자에게 닿지 않았다
+        (미션 재시작 중·미션이 그 의도에 직접 말함) — 남겨 두면 다음 사람의 "네"가 앞사람 예약을 저장한다."""
+        if (self._active and self._asked_at is not None and not self._seen
+                and (self._clock() - self._asked_at).total_seconds() > UNSEEN_DROP_SEC):
+            self.drop()
+
+    def names_facility(self, text: str) -> bool:
+        """글자에 예약할 수 있는 시설의 이름·별칭이 있는가."""
+        return self._facility_in(text) is not None
+
     def situation_line(self) -> str:
         """지시문의 [지금 상황]에 붙일 한 줄. 상태만 적는다 — 지시는 도구 설명에 있다."""
+        self._expire()
         if not self._active:
             return ""
         today = self._clock().date()
@@ -110,6 +127,7 @@ class ReservationFlow:
     # ----- 들어오는 것 -------------------------------------------------
     def on_call(self, call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]:
         """LLM 이 reserve_facility 를 불렀다. text 는 그 발화의 글자(받아쓴 글자 또는 heard_text)."""
+        self._expire()
         if not self._active:
             if gate == "mute":
                 return None
@@ -121,10 +139,12 @@ class ReservationFlow:
 
     def on_general(self, intent: VicaIntent) -> Optional[FlowOutput]:
         """진행 중에 일반 해석 결과가 왔다. 승낙·거절만 예약이 받는다."""
+        self._expire()
         if not self._active:
             return None
         kind = intent.intent
-        if kind == "affirm" and self._confirming:
+        if kind == "affirm" and self._confirming and self._seen:
+            # 미션이 확인 질문을 실제로 연 뒤의 승낙만 저장한다 — 묻지 않은 질문의 "네"로 저장하지 않는다.
             return self._commit()
         if kind in ("deny", "cancel"):
             self.drop()
@@ -176,6 +196,7 @@ class ReservationFlow:
         self.asked_text = text
         self._confirming = kind == "yesno"
         self._seen = False                  # 같은 문장을 다시 넘겨도 새 질문이다
+        self._asked_at = self._clock()
         return FlowOutput(text, kind)
 
     def _clear_time(self, today: date) -> None:
@@ -245,21 +266,20 @@ def handle_result(flow: Optional[ReservationFlow], result, text: str, *, gate: s
     out = flow.on_general(result)           # 진행 중인 예약이 받은 승낙·거절은 미션에 보내지 않는다
     if out is not None:
         return out, None
-    if (not tools_used and "예약" in (text or "") and result.intent not in _NOT_A_REQUEST
-            and result.safety_flag != "emergency"):
-        # 도구가 없는 경로(스위치 꺼짐·로컬 대피)로 온 예약 말 — 문장 ⑨(설계 5.1).
-        return (None, None) if gate == "mute" else (FlowOutput(phrases.UNAVAILABLE, ""), None)
+    if (not tools_used and gate != "mute" and "예약" in (text or "") and result.intent not in _NOT_A_REQUEST
+            and result.safety_flag != "emergency"
+            and (result.intent != "navigate" or flow.names_facility(text))):
+        # 도구가 없는 경로(스위치 꺼짐·로컬 대피)로 온 예약 요청 — 문장 ⑨(설계 5.1). 예약이 아닌 요청과
+        # 말하지 않는 상태(접근 질문·순찰)의 말은 가로채지 않는다 — 예전처럼 미션에 간다.
+        return FlowOutput(phrases.UNAVAILABLE, ""), None
     return None, result
 
 
-def to_intent(out: FlowOutput, hand_over: bool = True) -> VicaIntent:
-    """예약 흐름의 말 → VicaIntent. 질문은 미션이 말하고(ask_text), 안내는 음성이 말한다(reply).
-
-    hand_over 가 거짓(ask_text 칸이 없는 옛 vica_interfaces)이면 질문도 음성 노드가 말하게 reply 에 둔다.
-    """
+def to_intent(out: FlowOutput) -> VicaIntent:
+    """예약 흐름의 말 → VicaIntent. 질문은 미션이 말하고(ask_text), 안내는 음성이 말한다(reply)."""
     if out.kind:
-        return VicaIntent(intent="clarify", need_confirm=False, confidence=1.0,
-                          reply="" if hand_over else out.say, ask_text=out.say, ask_kind=out.kind)
+        return VicaIntent(intent="clarify", need_confirm=False, confidence=1.0, reply="",
+                          ask_text=out.say, ask_kind=out.kind)
     return VicaIntent(intent="question", need_confirm=False, confidence=1.0, reply=out.say)
 
 

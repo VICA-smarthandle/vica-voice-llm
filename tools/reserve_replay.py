@@ -77,6 +77,7 @@ def run_case(case: Case, interpret: Interpret) -> dict:
         history, asked = [], None
         for call, said in case.setup:
             asked = flow.on_call(call, said, "ok")
+            flow.on_question_record(asked.say)                        # 미션이 그 질문을 말하고 질문 기록을 열었다
             history += [HumanMessage(said), AIMessage(asked.say)]     # 글자 모드의 대화 기록 — 넘긴 질문이 로봇 줄
         question = (OpenQuestion(id="replay", kind=asked.kind, text=asked.say, option_ids=(), opened_at=0.0)
                     if asked is not None else None)

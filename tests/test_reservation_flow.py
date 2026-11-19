@@ -34,9 +34,15 @@ def first(flow, text="내일 오후 두 시에 세미나실 예약해 줘.", dat
     return call(flow, text, facility="세미나실", date=date, start_time="14:00")
 
 
+def opened(flow):
+    """미션이 방금 넘긴 질문을 열었다(질문 기록이 왔다). 승낙은 그 뒤에만 저장으로 이어진다."""
+    flow.on_question_record(flow.asked_text)
+
+
 def test_demo_script(flow):
     assert first(flow) == FlowOutput(p.ASK_NAME, "open")
     assert call(flow, "김민수", name="김민수") == FlowOutput(DEMO, "yesno")
+    opened(flow)
     out = flow.on_general(YES)
     assert out.say == p.DONE and out.kind == "open"
     assert (out.saved.facility, out.saved.date, out.saved.start, out.saved.end, out.saved.name) == (
@@ -59,6 +65,7 @@ def test_any_ordinary_name_goes_into_the_confirm_sentence(flow, name, said):
     first(flow)
     out = call(flow, said, name=name)
     assert out == FlowOutput(f"{name} 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?", "yesno")
+    opened(flow)
     assert flow.on_general(YES).saved.name == name
 
 
@@ -117,6 +124,7 @@ def test_gate(flow):
 def test_confirm_no_and_second_yes_does_not_save_twice(flow):
     first(flow)
     call(flow, "김민수", name="김민수")
+    opened(flow)
     assert flow.on_general(YES).saved is not None
     assert flow.on_general(YES) is None and len(flow.store.list()) == 1
     assert first(flow, "모레 오후 두 시에 세미나실 예약해 줘.", date="모레") == FlowOutput(p.ASK_NAME, "open")
@@ -128,6 +136,7 @@ def test_save_failure_says_unavailable_not_done(flow):
     first(flow)
     call(flow, "김민수", name="김민수")
     flow.store.path.write_text('[{"id": "r1", "facil', encoding="utf-8")
+    opened(flow)
     assert flow.on_general(YES) == FlowOutput(p.UNAVAILABLE, "") and not flow.active
 
 
@@ -199,6 +208,7 @@ def test_routing(flow):
     assert out == FlowOutput(p.ASK_NAME, "open") and passed is None
     out, passed = handle_result(flow, ReserveCall(name="김민수"), "김민수", gate="ok", tools_used=True)
     assert out == FlowOutput(DEMO, "yesno") and passed is None
+    opened(flow)
     out, passed = handle_result(flow, YES, "그래", gate="ok", tools_used=True)
     assert out.say == p.DONE and passed is None                   # 예약이 받은 승낙은 미션에 보내지 않는다
     assert handle_result(flow, nav, "화장실로 가자.", gate="ok", tools_used=True) == (None, nav)
@@ -207,7 +217,7 @@ def test_routing(flow):
 def test_reservation_word_without_tools_is_refused(flow):
     nav = VicaIntent(intent="navigate", destination_candidate="세미나실")
     assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="ok", tools_used=False) == (FlowOutput(p.UNAVAILABLE, ""), None)
-    assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, None)
+    assert handle_result(flow, nav, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, nav)   # 가로채지 않는다
     assert handle_result(flow, nav, "예약은 됐고 화장실 가자.", gate="ok", tools_used=True) == (None, nav)
     assert handle_result(flow, YES, "네 예약이요", gate="ok", tools_used=False) == (None, YES)
 
@@ -225,15 +235,6 @@ def test_decline_inside_a_draft_is_kept_from_the_mission(flow):
     assert out == FlowOutput(p.NOT_RESERVED, "") and passed is None and not flow.active
 
 
-def test_old_interfaces_get_the_question_as_a_spoken_reply():
-    """ask_text 칸이 없는 옛 vica_interfaces 에서는 질문도 음성 노드가 말한다 — reply 에 같은 문장을 둔다."""
-    ask = FlowOutput(p.ASK_NAME, "open")
-    assert to_intent(ask).reply == "" and to_intent(ask).ask_text == p.ASK_NAME
-    old = to_intent(ask, hand_over=False)
-    assert old.reply == p.ASK_NAME and old.intent == "clarify"
-    assert to_intent(FlowOutput(p.UNAVAILABLE, ""), hand_over=False) == to_intent(FlowOutput(p.UNAVAILABLE, ""))
-
-
 def test_snapshot_and_situation_join(flow):
     from src.reservation_flow import join_situation
     assert flow.snapshot() == {"active": False, "facility": "", "date": "", "start": "", "end": "", "name": "", "asked": ""}
@@ -243,3 +244,58 @@ def test_snapshot_and_situation_join(flow):
     assert join_situation("- 대화 단계: 쉼\n", "") == "- 대화 단계: 쉼\n"
     assert join_situation("- 대화 단계: 쉼\n", "[진행 중인 예약] 가") == "- 대화 단계: 쉼\n[진행 중인 예약] 가\n"
     assert join_situation("", "[진행 중인 예약] 가") == "[진행 중인 예약] 가\n"
+
+
+# ----- 독립 검토(11-19) 수리 --------------------------------------------------
+def test_yes_before_the_mission_opened_the_confirm_question_does_not_save(flow):
+    """I-1: 확인 질문 ②가 미션에 닿지 않았으면(질문 기록이 온 적 없음) '네'로 저장하지 않는다."""
+    first(flow)
+    call(flow, "김민수", name="김민수")                      # ②를 넘겼지만 미션은 아직 열지 않았다
+    out, passed = handle_result(flow, YES, "네", gate="ok", tools_used=True)
+    assert out is None and passed == YES and flow.store.list() == []
+    opened(flow)
+    out, passed = handle_result(flow, YES, "네", gate="ok", tools_used=True)
+    assert out.say == p.DONE and passed is None and len(flow.store.list()) == 1
+
+
+def test_question_the_mission_never_opened_expires(tmp_path):
+    """I-1: 넘긴 질문이 열리지 않은 채 시간이 지나면 진행 중인 예약을 버린다 — 다음 사람에게 붙지 않게."""
+    from datetime import timedelta
+
+    from src.reservation_flow import UNSEEN_DROP_SEC
+    clock = [NOW]
+    flow = ReservationFlow(ReservationStore(tmp_path / "r.json"), FACILITIES, clock=lambda: clock[0])
+    first(flow)
+    clock[0] = NOW + timedelta(seconds=UNSEEN_DROP_SEC - 1)
+    assert flow.situation_line() and flow.active
+    clock[0] = NOW + timedelta(seconds=UNSEEN_DROP_SEC + 1)
+    assert flow.situation_line() == "" and not flow.active
+    first(flow)                                              # 열린 적이 있으면 시간으로는 버리지 않는다(닫힘이 버린다)
+    opened(flow)
+    clock[0] += timedelta(minutes=5)
+    assert flow.on_general(VicaIntent(intent="unknown")) is None and flow.active
+
+
+def test_reservation_word_without_tools_only_blocks_reservation_requests(flow):
+    """I-3: 도구 없는 경로의 '예약' 낱말 규칙이 예약이 아닌 요청을 삼키지 않는다."""
+    go = VicaIntent(intent="navigate", destination_candidate="화장실", matched_destination_id="restroom")
+    assert handle_result(flow, go, "예약했는데 화장실 가자.", gate="ok", tools_used=False) == (None, go)
+    for kind in ("wait", "finish", "help"):
+        said = VicaIntent(intent=kind)
+        assert handle_result(flow, said, "예약 시간까지 좀 기다려 줘.", gate="ok", tools_used=False) == (None, said)
+    seminar = VicaIntent(intent="navigate", destination_candidate="세미나실")
+    assert handle_result(flow, seminar, "세미나룸 예약해 줘.", gate="ok", tools_used=False) == (FlowOutput(p.UNAVAILABLE, ""), None)
+    ask = VicaIntent(intent="unknown")
+    assert handle_result(flow, ask, "예약 좀 하고 싶은데.", gate="ok", tools_used=False) == (FlowOutput(p.UNAVAILABLE, ""), None)
+    # 말하지 않는 상태(접근 질문·순찰)에서는 가로채지 않는다 — 그 말은 예전처럼 미션에 간다
+    assert handle_result(flow, seminar, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, seminar)
+
+
+def test_noise_then_closed_question_is_the_known_gap(flow):
+    """I-2(사용자 결정 대기): 못 알아들은 말이 미션에 가면 미션이 질문을 닫고, 그 빈 기록에 진행 중인 예약이 버려진다."""
+    first(flow)
+    opened(flow)
+    out, passed = handle_result(flow, VicaIntent(intent="unknown"), "어 음", gate="ok", tools_used=True)
+    assert out is None and passed.intent == "unknown" and flow.active
+    flow.on_question_record("")                              # 미션이 그 의도를 받고 질문을 닫았다
+    assert not flow.active

@@ -81,7 +81,7 @@ def test_tool_llm_binds_both_tools_and_requires_one(monkeypatch, tmp_path):
     monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
     llm = parser._get_tool_llm("gpt-5.4-mini", timeout=6, max_retries=0)
     assert [t["function"]["name"] for t in bound["tools"]] == ["set_intent", "reserve_facility"]
-    assert bound["kwargs"] == {"tool_choice": "required"}
+    assert bound["kwargs"] == {"tool_choice": "required", "parallel_tool_calls": False}
     assert bound["init"] == {"model": "gpt-5.4-mini", "temperature": 0, "timeout": 6, "max_retries": 0}
     assert bound["tools"][1]["function"]["parameters"]["properties"]["facility"]["enum"] == ["세미나실", "상담실"]
     assert llm.invoke([]) == ReserveCall(facility="상담실", name="이서연")
@@ -99,3 +99,45 @@ def test_broken_facility_file_falls_back_to_structured_output(monkeypatch, tmp_p
     monkeypatch.setattr(parser, "_log", lambda level, text: logged.append((level, text)))
     assert parser._get_cloud_llm("gpt-5.4-mini") is structured
     assert logged and logged[0][0] == "error" and "도구 출력" in logged[0][1]
+
+
+def _tool_llm_answering(monkeypatch, tmp_path, answer):
+    """_get_tool_llm 을 가짜 ChatOpenAI 로 만든다. answer(messages) 가 모델 응답을 준다."""
+    import langchain_openai
+    from langchain_core.runnables import RunnableLambda
+
+    class FakeChat:
+        def __init__(self, **kwargs):
+            pass
+
+        def bind_tools(self, tools, **kwargs):
+            return RunnableLambda(answer)
+
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
+    monkeypatch.setattr(parser, "_log", lambda level, text: None)
+    return parser._get_tool_llm("gpt-5.4-mini")
+
+
+def test_malformed_tool_answer_is_asked_once_more(monkeypatch, tmp_path):
+    """I-4: 도구 응답의 형식 오류 한 번으로 로컬 대피까지 가지 않게, 같은 발화를 한 번만 다시 부른다."""
+    answers = [msg(("go_to", {"location": "화장실"})), msg(("set_intent", {"intent": "navigate", "destination_candidate": "화장실"}))]
+    llm = _tool_llm_answering(monkeypatch, tmp_path, lambda messages: answers.pop(0))
+    assert llm.invoke([]).intent == "navigate" and answers == []
+    answers[:] = [msg(), msg(("set_intent", {"intent": "fly"})), msg(("set_intent", {"intent": "unknown"}))]
+    with pytest.raises(ValueError):
+        llm.invoke([])
+    assert len(answers) == 1                                  # 두 번까지만 부른다
+
+
+def test_connection_failure_is_not_retried_here(monkeypatch, tmp_path):
+    calls = []
+
+    def down(messages):
+        calls.append(1)
+        raise ConnectionError("network down")
+
+    llm = _tool_llm_answering(monkeypatch, tmp_path, down)
+    with pytest.raises(ConnectionError):
+        llm.invoke([])
+    assert len(calls) == 1                                    # 연결 실패의 재시도·로컬 대피는 전환 담당 모듈 몫

@@ -81,3 +81,12 @@ def test_audio_log_and_turn_record_survive_a_reserve_call():
     assert rt_logs and all(any("ReserveCall" in test and not in_body for test, in_body in _branch_tests(node, c))
                            for c in rt_logs)
     assert "audio_tools_active()" in body
+
+
+def test_flow_needs_the_question_record_and_hand_over():
+    """질문 넘김·질문 기록이 없는 옛 vica_interfaces 에서는 흐름을 만들지 않는다 — 버릴 때를 알 수 없다(검토 I-1)."""
+    init = _method("__init__")
+    build = _calls(init, "ReservationFlow")[0]
+    tests = " ".join(test for test, in_body in _branch_tests(init, build) if in_body)
+    assert "VicaQuestionMsg is not None" in tests and "self._hand_over" in tests
+    assert "hand_over=" not in ast.unparse(_method("_reservation_say"))
