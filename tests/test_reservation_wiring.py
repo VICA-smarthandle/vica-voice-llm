@@ -56,3 +56,28 @@ def test_broken_facility_file_does_not_kill_the_node():
     build = _calls(init, "ReservationFlow")[0]
     tries = [n for n in ast.walk(init) if isinstance(n, ast.Try) and any(build is c for b in n.body for c in ast.walk(b))]
     assert tries and "self._reservation = None" in ast.unparse(tries[0].handlers[0])
+
+
+# ----- 소리 경로(작업 9) --------------------------------------------------
+def test_audio_reservation_is_under_the_text_first_guard():
+    body = ast.unparse(_method("_on_user_audio"))
+    guard = body.index("self._last_text_publish_t > turn_started", body.index("detect_emergency("))
+    assert guard < body.index("handle_result(")
+    assert _calls(_method("_on_user_audio"), "self._reservation_say")
+
+
+def test_audio_path_is_not_bypassed_for_reservation_answers():
+    body = ast.unparse(_method("_on_user_audio"))
+    assert "asked_text" not in body[:body.index("parse_intent_audio(")]      # 예약 질문이라고 소리 경로를 비키지 않는다
+
+
+def test_audio_log_and_turn_record_survive_a_reserve_call():
+    """[RT] 로그 줄과 그림자 비교가 읽는 turn['intent'] 는 ReserveCall 을 의도처럼 읽지 않는다."""
+    node = _method("_on_user_audio")
+    body = ast.unparse(node)
+    assert "intent=reserve_facility" in body
+    # 의도 칸을 읽는 [RT] 줄은 ReserveCall 이 아닌 갈래에만 있다
+    rt_logs = [c for c in _calls(node, "self.get_logger().info") if "nc={" in ast.unparse(c)]
+    assert rt_logs and all(any("ReserveCall" in test and not in_body for test, in_body in _branch_tests(node, c))
+                           for c in rt_logs)
+    assert "audio_tools_active()" in body

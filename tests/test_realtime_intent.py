@@ -385,3 +385,14 @@ class TestTools:
                                     "content": [{"type": "input_text", "text": "화장실로 가자."}]}
         assert req["input"][0]["role"] == "assistant" and req["instructions"] == "지시문"
         assert result.draft["intent"] == "navigate" and result.heard_text == "화장실로 가자."
+
+
+def test_audio_tools_active_follows_the_session_tools(monkeypatch, tmp_path):
+    from src.realtime_intent import audio_tools_active
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+    assert not audio_tools_active()
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    assert audio_tools_active()
+    (tmp_path / "facilities.yaml").write_text("[]", encoding="utf-8")
+    assert not audio_tools_active()

@@ -52,7 +52,7 @@ from .mission_phrases import WAIT_BEACON
 from .mission_question import (identity_answer, quiet_for_mission, reask_held_resume,
                                should_reask_resume_on_silence, spk_gate_question)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_turn_applies,
+from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_tools_active, audio_turn_applies,
                               get_realtime_client, pcm16_from_audio_msg)
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
@@ -742,18 +742,40 @@ class LlmIntentNode(Node):
         # 모델 전결(2026-09-20): 빈 말·환각·에코 판정도 모델 몫이다 — 사람 말이
         # 아니면 모델이 unknown + 빈 reply 로 답하고, 그건 침묵으로 발행된다.
         # 텍스트 경로가 이 발화를 다시 처리하지 않도록 handled 로 표시한다.
-        self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
         usage = info.get("usage") or {}
         audio_tok = usage.get("audio_tokens", 0)
         text_tok = usage.get("text_tokens", 0)
         out_tok = usage.get("output_tokens", 0)
         cached_tok = usage.get("cached_tokens", 0)
-        self.get_logger().info(
-            f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
-            f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
-            f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
-            f"cached={cached_tok} clip={clip_sec:.2f}s")
-        self._publish_intent(intent, heard, llm_first=True)
+        if isinstance(intent, ReserveCall):
+            given = " ".join(f"{k}={v}" for k, v in vars(intent).items() if v and k != "name") or "-"
+            self.get_logger().info(
+                f"[RT] heard='{heard}' intent=reserve_facility {given} name={'있음' if intent.name else '-'} "
+                f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
+                f"cached={cached_tok} clip={clip_sec:.2f}s")
+        else:
+            self.get_logger().info(
+                f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
+                f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
+                f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
+                f"cached={cached_tok} clip={clip_sec:.2f}s")
+        # 시설 예약(설계 2026-11-18 5.3): Realtime 이 reserve_facility 를 불렀거나, 진행 중인 예약이 이 대답을 받는다.
+        # 예약 질문이 열려 있어도 소리 경로는 평소대로 Realtime 이 해석한다 — 여기는 그 결과를 가르기만 한다.
+        flow_out: FlowOutput | None = None
+        if self._reservation is not None or isinstance(intent, ReserveCall):
+            flow = self._reservation
+            gate = (start_gate(self._robot_state.dialog_state, self._question, flow.asked_text)
+                    if flow is not None else "busy")
+            flow_out, intent = handle_result(flow, intent, heard, gate=gate, tools_used=audio_tools_active())
+        # 그림자 비교·멈춤 중복 방지가 읽는 칸 — 예약 흐름이 말하면 그 의도를, 아무것도 안 내면 None 을 둔다.
+        shown = to_intent(flow_out, hand_over=self._hand_over) if flow_out is not None else intent
+        self._audio_turn.update(handled=True, intent=shown, heard=heard, dt=dt)
+        if flow_out is not None:
+            self._reservation_say(flow_out, heard)
+        elif intent is not None:
+            self._publish_intent(intent, heard, llm_first=True)
+        else:
+            self.get_logger().info(f"[예약] 말하지 않는 상태 — 아무것도 내지 않음: heard='{heard}'")
 
     def _situation_block(self) -> str:
         """지시문 맨 뒤 [지금 상황]: 미션 대장(P1)이 오면 그것, 옛 미션이면 goal-event 상황판."""

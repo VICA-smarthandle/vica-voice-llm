@@ -87,6 +87,11 @@ def session_tools() -> tuple[list[dict], Any]:
     return [build_intent_tool(_INTENT_DESCRIPTION_WITH_RESERVE), reserve], "required"
 
 
+def audio_tools_active() -> bool:
+    """소리 경로가 지금 도구 둘(set_intent · reserve_facility)을 쓰는가."""
+    return len(session_tools()[0]) > 1
+
+
 def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 정한다. 반드시 이 함수로만 답한다.") -> dict:
     """_IntentDraft 와 같은 필드 + heard_text. 파서가 인자를 _IntentDraft 로 검증한다."""
     return {
