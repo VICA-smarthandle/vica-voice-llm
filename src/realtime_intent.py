@@ -20,6 +20,8 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
+from .tool_calls import audio_tools_on, reserve_tool
+
 SAMPLE_RATE_IN = 16000   # 웨이크워드 노드 클립
 SAMPLE_RATE_RT = 24000   # Realtime 입력 형식
 DEFAULT_MODEL = "gpt-realtime-2.1-mini"
@@ -59,12 +61,38 @@ def resample_pcm16(pcm16: bytes, src_rate: int = SAMPLE_RATE_IN, dst_rate: int =
     return np.interp(x_dst, x_src, src).astype("<i2").tobytes()
 
 
-def build_intent_tool() -> dict:
+# 도구가 둘일 때(VICA_TOOLS_AUDIO=on)의 set_intent 설명 — "반드시 이 함수로만 답한다"는 맞지 않는다.
+_INTENT_DESCRIPTION_WITH_RESERVE = "사용자 발화(소리)의 의도를 정한다. 시설 예약이 아닌 모든 말에 호출한다."
+
+
+def _facility_names() -> list[str]:
+    """예약할 수 있는 시설 이름. 시설 파일이 깨졌으면 빈 목록(예약 도구를 주지 않는다)."""
+    from .reservation_store import default_facilities   # 지연 import — 꺼져 있으면 읽지 않는다
+    try:
+        return [f.name for f in default_facilities()]
+    except Exception:
+        return []
+
+
+def session_tools() -> tuple[list[dict], Any]:
+    """(세션 tools, tool_choice). 기본은 set_intent 하나를 강제한다(2026-09-20).
+
+    VICA_TOOLS_AUDIO=on 이고 예약할 시설이 있으면 set_intent · reserve_facility 둘을 주고 하나를 반드시 부르게 한다
+    (설계 2026-11-18 5.1). 11-18 측정(글자 입력) 32개 중 31개. 시설 목록이 비면 꺼진 것과 같다 — 빈 enum 은 보내지 않는다.
+    """
+    names = _facility_names() if audio_tools_on() else []
+    if not names:
+        return [build_intent_tool()], {"type": "function", "name": TOOL_NAME}
+    reserve = {"type": "function", **reserve_tool(names, with_heard_text=True)["function"]}   # Realtime 은 평평한 꼴
+    return [build_intent_tool(_INTENT_DESCRIPTION_WITH_RESERVE), reserve], "required"
+
+
+def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 정한다. 반드시 이 함수로만 답한다.") -> dict:
     """_IntentDraft 와 같은 필드 + heard_text. 파서가 인자를 _IntentDraft 로 검증한다."""
     return {
         "type": "function",
         "name": TOOL_NAME,
-        "description": "사용자 발화(소리)의 의도를 정한다. 반드시 이 함수로만 답한다.",
+        "description": description,
         "parameters": {
             "type": "object",
             "properties": {
@@ -132,6 +160,7 @@ class RealtimeResult:
     heard_text: str
     latency_sec: float
     usage: dict = field(default_factory=dict)
+    tool: str = TOOL_NAME        # 모델이 부른 도구 — "set_intent" 또는 "reserve_facility"(draft 는 그 도구의 인자)
 
 
 def _default_connect(model: str):
@@ -181,6 +210,7 @@ class RealtimeIntentClient:
         return self._conn
 
     def _session_config(self) -> dict:
+        tools, tool_choice = session_tools()
         return {
             "type": "realtime",
             "output_modalities": ["text"],
@@ -189,8 +219,8 @@ class RealtimeIntentClient:
                 "noise_reduction": {"type": "far_field"},
                 "turn_detection": None,
             }},
-            "tools": [build_intent_tool()],
-            "tool_choice": {"type": "function", "name": TOOL_NAME},
+            "tools": tools,
+            "tool_choice": tool_choice,
         }
 
     def close(self) -> None:
@@ -210,7 +240,7 @@ class RealtimeIntentClient:
 
     # ----- 호출 --------------------------------------------------------
     def ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
-        """소리 + 이력 + 지시문 → set_intent 인자. 실패·timeout 이면 예외(연결은 버린다)."""
+        """소리 + 이력 + 지시문 → 도구 인자(set_intent, 켜져 있으면 reserve_facility 도). 실패·timeout 이면 예외(연결은 버린다)."""
         try:
             result = self._ask(pcm16_16k, history, instructions)
         except BaseException:
@@ -219,20 +249,33 @@ class RealtimeIntentClient:
         self.last_failure_at = None
         return result
 
-    def _ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
+    def ask_text(self, text: str, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
+        """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 넣는다. 운영 경로는 부르지 않는다.
+        들린 말(heard_text)이 비어 오면 넣은 글자를 쓴다."""
+        result = self._ask(b"", history, instructions, text=text)
+        if not result.heard_text:
+            result.heard_text = text
+        return result
+
+    def _ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str,
+             text: Optional[str] = None) -> RealtimeResult:
         with self._lock:
             started = time.monotonic()
             conn = self._ensure_conn()
-            audio_b64 = base64.b64encode(resample_pcm16(pcm16_16k)).decode("ascii")
             items = history_to_items(history)
-            items.append({"type": "message", "role": "user",
-                          "content": [{"type": "input_audio", "audio": audio_b64}]})
+            if text is None:
+                audio_b64 = base64.b64encode(resample_pcm16(pcm16_16k)).decode("ascii")
+                items.append({"type": "message", "role": "user",
+                              "content": [{"type": "input_audio", "audio": audio_b64}]})
+            else:
+                items.append({"type": "message", "role": "user",
+                              "content": [{"type": "input_text", "text": text}]})
             try:
                 conn.response.create(response={
                     "conversation": "none",
                     "output_modalities": ["text"],
                     "instructions": instructions,
-                    "tool_choice": {"type": "function", "name": TOOL_NAME},
+                    "tool_choice": session_tools()[1],
                     "input": items,
                 })
                 done = self._wait_done(conn)
@@ -242,10 +285,10 @@ class RealtimeIntentClient:
                 if err is exc:
                     raise
                 raise err from exc
-            draft, usage = self._parse_done(done)
+            tool, draft, usage = self._parse_done(done)
             heard = str(draft.pop("heard_text", "") or "")
             return RealtimeResult(draft=draft, heard_text=heard,
-                                  latency_sec=time.monotonic() - started, usage=usage)
+                                  latency_sec=time.monotonic() - started, usage=usage, tool=tool)
 
     def _wait_done(self, conn):
         """이벤트를 워커 스레드에서 읽고 timeout 이면 연결을 닫아 워커를 깨운다."""
@@ -279,7 +322,9 @@ class RealtimeIntentClient:
         return box["done"]
 
     @staticmethod
-    def _parse_done(done) -> tuple[dict, dict]:
+    def _parse_done(done) -> tuple[str, dict, dict]:
+        """response.done → (도구 이름, 인자, usage). 세션에 준 도구가 아니면 ValueError."""
+        allowed = {t["name"] for t in session_tools()[0]}
         resp = done.response
         status = getattr(resp, "status", None) or "completed"
         if status != "completed":
@@ -290,15 +335,16 @@ class RealtimeIntentClient:
             msg = getattr(err, "message", None) or ""
             raise RuntimeError(f"Realtime 응답 {status}: {why} {msg}".strip())
         for item in getattr(resp, "output", []) or []:
-            if getattr(item, "type", "") == "function_call" and getattr(item, "name", "") == TOOL_NAME:
+            name = getattr(item, "name", "")
+            if getattr(item, "type", "") == "function_call" and name in allowed:
                 try:
                     draft = json.loads(item.arguments or "{}")
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"set_intent 인자가 JSON 이 아니다: {exc}") from exc
+                    raise ValueError(f"{name} 인자가 JSON 이 아니다: {exc}") from exc
                 if not isinstance(draft, dict):
-                    raise ValueError("set_intent 인자가 객체가 아니다")
-                return draft, _usage_dict(getattr(resp, "usage", None))
-        raise ValueError("응답에 set_intent 호출이 없다")
+                    raise ValueError(f"{name} 인자가 객체가 아니다")
+                return name, draft, _usage_dict(getattr(resp, "usage", None))
+        raise ValueError("응답에 도구 호출이 없다")
 
 
 def _usage_dict(usage) -> dict:

@@ -1198,15 +1198,19 @@ def parse_intent_audio(
     robot_state: Optional[RobotState] = None,
     situation: str = "",
     directory_block: str = "",
-) -> tuple[VicaIntent, str, float, dict]:
+) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
     (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": "llm", "usage": ...}.
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
+    도구 출력이 켜져 있고(VICA_TOOLS_AUDIO=on) 모델이 reserve_facility 를 부르면 의도 대신 ReserveCall 을 돌려준다.
     """
     instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
     result = get_realtime_client().ask(pcm16_16k, history, instructions)
     heard = result.heard_text.strip()
+    if result.tool == RESERVE:
+        # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).
+        return reserve_call(result.draft), heard, result.latency_sec, {"src": "llm", "usage": result.usage}
     try:
         draft = _IntentDraft(**result.draft)
     except ValidationError as exc:

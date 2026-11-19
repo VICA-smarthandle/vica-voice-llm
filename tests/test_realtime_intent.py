@@ -310,3 +310,78 @@ def test_usage_dict_reports_cached_tokens():
         audio_tokens=20, text_tokens=3000, cached_tokens=2400))
     assert _usage_dict(usage) == {"audio_tokens": 20, "text_tokens": 3000, "cached_tokens": 2400, "output_tokens": 7}
     assert _usage_dict(None) == {}
+
+
+# ----- 도구 출력(설계 2026-11-18 5.1) — VICA_TOOLS_AUDIO ------------------------
+def fake_done(name: str, args: dict):
+    item = types.SimpleNamespace(type="function_call", name=name, arguments=json.dumps(args))
+    return FakeEvent("response.done", response=types.SimpleNamespace(output=[item], usage=None))
+
+
+class TestTools:
+    def test_off_keeps_the_forced_single_tool(self, monkeypatch):
+        monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+        cfg = RealtimeIntentClient(connect=lambda: None)._session_config()
+        assert [t["name"] for t in cfg["tools"]] == ["set_intent"]
+        assert cfg["tool_choice"] == {"type": "function", "name": "set_intent"}
+        assert cfg["tools"][0] == build_intent_tool()
+
+    def test_on_offers_both_and_requires_one(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+        monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+        cfg = RealtimeIntentClient(connect=lambda: None)._session_config()
+        assert [t["name"] for t in cfg["tools"]] == ["set_intent", "reserve_facility"]
+        assert cfg["tool_choice"] == "required" and "heard_text" in cfg["tools"][1]["parameters"]["properties"]
+        assert cfg["tools"][1]["type"] == "function" and "function" not in cfg["tools"][1]     # Realtime 은 평평한 꼴
+        assert cfg["tools"][1]["parameters"]["properties"]["facility"]["enum"] == ["세미나실", "상담실"]
+        # 도구가 둘이면 set_intent 설명의 "반드시 이 함수로만 답한다"는 맞지 않는다
+        assert "반드시 이 함수로만" not in cfg["tools"][0]["description"] and "예약" in cfg["tools"][0]["description"]
+        assert cfg["tools"][0]["parameters"] == build_intent_tool()["parameters"]
+
+    def test_parse_done_names_the_tool(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+        monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+        done = fake_done("reserve_facility", {"facility": "세미나실", "date": "내일", "heard_text": "내일 세미나실 예약해 줘"})
+        name, args, _usage = RealtimeIntentClient._parse_done(done)
+        assert name == "reserve_facility" and args["facility"] == "세미나실"
+        with pytest.raises(ValueError):
+            RealtimeIntentClient._parse_done(fake_done("go_to", {"location": "화장실"}))
+
+    def test_off_does_not_accept_the_reserve_tool(self, monkeypatch):
+        monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+        with pytest.raises(ValueError):
+            RealtimeIntentClient._parse_done(fake_done("reserve_facility", {"facility": "세미나실"}))
+        name, args, _usage = RealtimeIntentClient._parse_done(fake_done("set_intent", {"intent": "unknown"}))
+        assert name == "set_intent" and args == {"intent": "unknown"}
+
+    def test_ask_carries_the_tool_name(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+        monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+        client, conns = make_client([fake_done("reserve_facility", {"name": "김민수", "heard_text": "김민수"})])
+        result = client.ask(PCM, None, "지시문")
+        assert result.tool == "reserve_facility" and result.draft == {"name": "김민수"} and result.heard_text == "김민수"
+        assert conns[0].responses[0]["tool_choice"] == "required"
+
+    def test_result_tool_defaults_to_set_intent(self):
+        client, conns = make_client([done_event({"intent": "unknown", "heard_text": ""})])
+        assert client.ask(PCM, None, "x").tool == "set_intent"
+        assert RealtimeResult(draft={}, heard_text="", latency_sec=0.0).tool == "set_intent"
+
+    def test_broken_facility_file_keeps_the_single_tool(self, monkeypatch, tmp_path):
+        """시설 목록이 비면 빈 enum 을 보내지 않는다 — 꺼진 것과 같은 설정으로 돈다."""
+        (tmp_path / "facilities.yaml").write_text("facilities: [oops", encoding="utf-8")
+        monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+        monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+        cfg = RealtimeIntentClient(connect=lambda: None)._session_config()
+        assert [t["name"] for t in cfg["tools"]] == ["set_intent"]
+        assert cfg["tool_choice"] == {"type": "function", "name": "set_intent"}
+
+    def test_ask_text_sends_words_instead_of_sound(self):
+        """재생용: 소리 대신 글자 항목을 넣는다. 들린 말이 비어 오면 넣은 글자를 쓴다."""
+        client, conns = make_client([done_event({"intent": "navigate", "destination_candidate": "화장실"})])
+        result = client.ask_text("화장실로 가자.", [AIMessage("네?")], "지시문")
+        req = conns[0].responses[0]
+        assert req["input"][-1] == {"type": "message", "role": "user",
+                                    "content": [{"type": "input_text", "text": "화장실로 가자."}]}
+        assert req["input"][0]["role"] == "assistant" and req["instructions"] == "지시문"
+        assert result.draft["intent"] == "navigate" and result.heard_text == "화장실로 가자."

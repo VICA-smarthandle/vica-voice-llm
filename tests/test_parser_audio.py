@@ -273,3 +273,16 @@ class TestAudioPromptStyle:
 
     def test_reask_without_listing_examples(self):
         assert "예시를 늘어놓지 않는다" in parser.build_audio_prompt([DEST])
+
+
+def test_reserve_tool_result_is_handed_back(monkeypatch):
+    """Realtime 이 reserve_facility 를 부르면 의도 배달(deliver_audio_draft)을 거치지 않고 ReserveCall 을 돌려준다."""
+    import types
+
+    from src.reservation_flow import ReserveCall
+    result = RealtimeResult(draft={"facility": "세미나실", "date": "내일", "start_time": "14:00"},
+                            heard_text="내일 오후 두 시에 세미나실 예약해 줘", latency_sec=1.0, tool="reserve_facility")
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: types.SimpleNamespace(ask=lambda *a, **k: result))
+    out, heard, dt, info = parser.parse_intent_audio(b"\x00\x00", [DEST])
+    assert out == ReserveCall(facility="세미나실", date="내일", start_time="14:00")
+    assert heard == "내일 오후 두 시에 세미나실 예약해 줘" and info["src"] == "llm" and dt == 1.0
