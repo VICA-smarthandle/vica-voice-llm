@@ -227,3 +227,10 @@ def test_rows_keep_the_reply_sentence(rows_labeled, dests):
     assert row["reply"] == "어느 화장실로 갈까요?"
     empty = replay([{**rows_labeled[0], "answer_text": ""}], lambda row: (asked, 0.5), lambda _p: dests)["rows"][0]
     assert empty["reply"] == ""
+
+
+def test_model_tag_for_file_names():
+    """--model 로 다른 로컬 모델을 잴 때 결과 파일 이름에 붙일 꼬리표(11-19 사용자 "이미 설치된 gemma4로")."""
+    assert answer_replay.model_tag("midm2-mini") == "midm2-mini"
+    assert answer_replay.model_tag("hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M") == "gemma-4-E2B-it-GGUF-Q4_K_M"
+    assert answer_replay.model_tag("") == ""

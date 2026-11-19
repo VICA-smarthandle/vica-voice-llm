@@ -47,6 +47,12 @@ def _quantile(values: list[float], q: float) -> float:
 MODELS = {"midm": "midm2-mini", "gpt": "gpt-5.4-mini"}
 
 
+def model_tag(name: str) -> str:
+    """--model 로 준 모델 이름 → 결과 파일 이름에 붙일 꼬리표(마지막 '/' 뒤, 글자·숫자·'.'·'-'·'_' 만)."""
+    tail = (name or "").rsplit("/", 1)[-1].replace(":", "-")
+    return "".join(ch for ch in tail if ch.isalnum() or ch in ".-_")
+
+
 def path_env(path: str, local_rules: bool | None = None) -> dict:
     """경로별 환경 — 배포와 같은 스위치. midm = ⑬(오프라인, 로컬 규칙 켬), gpt = ⑫ 예비(규칙 끔)."""
     rules = (path == "midm") if local_rules is None else local_rules
@@ -248,6 +254,7 @@ def main() -> None:
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
     ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
+    ap.add_argument("--model", default="", help="글자 경로(midm·gpt)의 모델 이름을 바꿔 잰다 — 예: 다른 로컬 모델(Ollama 태그)")
     ap.add_argument("--pause", type=float, default=0.0,
                     help="API 를 부른 뒤 쉴 초 — Realtime 은 요청이 몰리면 멈춘다(11-19 사용자). 기본 0")
     args = ap.parse_args()
@@ -257,7 +264,7 @@ def main() -> None:
     os.environ.update(env)
     os.environ.update(tools_env(args.tools))
     os.environ.update(answer_env(args.answer))
-    model = MODELS.get(args.path)
+    model = args.model or MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
              f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {'켬' if args.answer else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
@@ -323,7 +330,8 @@ def main() -> None:
             print("오류가 5건 이어져 멈춤 — 경로(Ollama·인터넷)를 확인하세요", file=sys.stderr)
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
-    base = labels_path.parent / f"replay_{args.path}{'_tools' if args.tools else ''}{'_answer' if args.answer else ''}_{stamp}"
+    tag = f"-{model_tag(args.model)}" if args.model else ""
+    base = labels_path.parent / f"replay_{args.path}{tag}{'_tools' if args.tools else ''}{'_answer' if args.answer else ''}_{stamp}"
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")
