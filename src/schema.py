@@ -95,6 +95,12 @@ class VicaIntent(BaseModel):
     ask_text: str = ""
     ask_kind: str = ""
     ask_option_ids: list[str] = Field(default_factory=list)
+    # 대답 칸(설계 2026-11-18 answer-interpretation, 3-나-2) — answer_field.fill 이 채운다: 읽을 때 열려 있던 질문 id,
+    # 그 질문에 대한 대답(yes·no·destination·choice·minutes·other·unclear), 값(목적지 id · 분). 1단계에서는 로그·재생
+    # 채점에만 쓰고 메시지로는 나가지 않는다(ros_convert 는 싣지 않는다). 없으면 "".
+    question_id: str = ""
+    answer: str = ""
+    answer_value: str = ""
 
 
 class EmergencyEvent(BaseModel):
