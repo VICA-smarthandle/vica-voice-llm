@@ -38,6 +38,9 @@ from .replies import (
     choose_between,
 )
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
+from .reservation_flow import ReserveCall
+from .reservation_store import default_facilities
+from .tool_calls import RESERVE, SET_INTENT, reserve_call, reserve_tool, set_intent_tool, text_tools_on
 
 load_dotenv()
 
@@ -559,6 +562,51 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
     return llm.with_structured_output(_IntentDraft)
 
 
+def _set_intent_tool() -> dict:
+    """set_intent 도구. 인자는 지금 구조화 출력(_IntentDraft)의 칸과 설명 그대로다."""
+    return set_intent_tool(_IntentDraft.model_json_schema())
+
+
+def _draft_from_tool_message(msg) -> "_IntentDraft | ReserveCall":
+    """도구 호출 응답 → 해석 결과. 첫 호출만 본다(설계 2026-11-18 5.1).
+
+    호출이 없거나, 목록에 없는 도구 이름이거나, set_intent 인자가 _IntentDraft 와 안 맞으면 ValueError —
+    지금의 LLM 호출 실패와 같은 길(로컬 대피 또는 LLM_UNAVAILABLE)로 간다.
+    """
+    calls = getattr(msg, "tool_calls", None) or []
+    if not calls:
+        raise ValueError("도구 호출이 없다")
+    name, args = calls[0].get("name"), calls[0].get("args") or {}
+    if name == RESERVE:
+        return reserve_call(args)
+    if name == SET_INTENT:
+        try:
+            return _IntentDraft.model_validate(args)
+        except ValidationError as exc:
+            raise ValueError(f"set_intent 인자가 맞지 않다: {exc}") from exc
+    raise ValueError(f"목록에 없는 도구: {name}")
+
+
+def _get_tool_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
+    """도구 출력 LLM(openai 전용). 발화마다 set_intent 나 reserve_facility 하나를 부르게 한다.
+
+    2026-11-18 측정(~/vica_data/tool_call_test_20261118)에 쓴 방식 그대로다: bind_tools + tool_choice="required",
+    32개 중 32개. 로컬 모델에는 도구를 주지 않는다(같은 측정 16/32, 사용자 결정 D11).
+    """
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(model=model, temperature=0, timeout=timeout, max_retries=max_retries)
+    tools = [_set_intent_tool(), reserve_tool([f.name for f in default_facilities()])]
+    return llm.bind_tools(tools, tool_choice="required") | _draft_from_tool_message
+
+
+def _get_cloud_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
+    """클라우드 쪽 LLM 을 고른다 — openai 이고 VICA_TOOLS_TEXT=on 일 때만 도구 출력, 그 밖은 지금의 구조화 출력."""
+    if PROVIDER == "openai" and text_tools_on():
+        return _get_tool_llm(model, timeout=timeout, max_retries=max_retries)
+    return _get_structured_llm(model, timeout=timeout, max_retries=max_retries)
+
+
 def _build_local_structured():
     """로컬 Ollama 구조화 LLM. 09-19 실측: gemma4-e2b-text 8/8, 발화당 3.0초.
 
@@ -619,7 +667,7 @@ def get_backend_manager() -> LlmBackendManager:
         local = None
     fallback_on = local is not None
     try:
-        cloud_llm = _get_structured_llm(
+        cloud_llm = _get_cloud_llm(
             DEFAULT_MODEL,
             timeout=CLOUD_TIMEOUT_SEC if fallback_on else 15,
             max_retries=0 if fallback_on else 1,
@@ -883,10 +931,11 @@ def parse_intent(
     robot_state: Optional[RobotState] = None,
     model: Optional[str] = None,
     situation: str = "",
-) -> VicaIntent:
+) -> "VicaIntent | ReserveCall":
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)
 
     situation 은 LLM 노드의 [지금 상황] 블록(2026-10-07 글자 경로에도 붙임).
+    도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
@@ -909,7 +958,7 @@ def parse_intent(
     try:
         if model is not None:
             # 벤치·수동 지정 경로(scripts/bench_models.py): 그 모델 하나로 직접 부른다.
-            draft: _IntentDraft = _get_structured_llm(model).invoke(messages)
+            draft: _IntentDraft | ReserveCall = _get_cloud_llm(model).invoke(messages)
         else:
             draft = get_backend_manager().invoke(messages)
     except Exception as exc:
@@ -928,6 +977,9 @@ def parse_intent(
             confidence=0.0,
             need_confirm=False,
         )
+    if isinstance(draft, ReserveCall):
+        # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(_finalize 는 의도 전용).
+        return draft
     return _finalize(draft, destinations, pending=pending,
                      pending_command=pending_command, user_text=user_text, local=local,
                      robot_state=robot_state)

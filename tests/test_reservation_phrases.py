@@ -19,3 +19,16 @@ def test_fixed_sentences_are_the_confirmed_text():
 def test_confirm_sentence_is_the_demo_line():
     line = p.confirm_sentence("김민수", date(2026, 11, 19), "14:00", "16:00", "세미나실", date(2026, 11, 18))
     assert line == "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+
+
+def test_fixed_sentences_are_prewarmed_only_when_a_tool_switch_is_on(monkeypatch):
+    """스위치가 둘 다 꺼져 있으면 미리 합성 목록이 지금과 같다(TTS 기동 시간 그대로)."""
+    from src import mission_phrases as mp
+
+    monkeypatch.delenv("VICA_TOOLS_TEXT", raising=False)
+    monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+    off = mp.standalone_prewarm([])
+    assert not set(p.FIXED) & set(off)
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    on = mp.standalone_prewarm([])
+    assert on[:len(off)] == off and on[len(off):] == list(p.FIXED)

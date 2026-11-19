@@ -36,6 +36,9 @@ _DEFAULTS = {
     "VICA_STT_ENGINE": "whisper",
     "VICA_VERIFY_STT_ENGINE": "whisper",
     "VICA_SW_AEC": "off",   # 운영 .env 가 on 이어도 시험은 끈 채로 돈다
+    # LLM 도구 출력(2026-11-18) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_TOOLS_TEXT": "off",
+    "VICA_TOOLS_AUDIO": "off",
 }
 
 for _key, _value in _DEFAULTS.items():
