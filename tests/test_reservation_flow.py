@@ -368,3 +368,22 @@ def test_finish_inside_a_draft_means_no_reservation(flow):
     opened(flow)
     out, passed = handle_result(flow, VicaIntent(intent="finish", need_confirm=False), "아니, 됐어.", gate="ok", tools_used=True)
     assert out == FlowOutput(p.NOT_RESERVED, "") and passed is None and not flow.active
+
+
+# ----- 예약 도구 호출 기록(11-19 원인 실험 V4 — Realtime 대화 기록에 싣는다) --------------
+def test_tool_trail_records_each_reserve_call_and_its_question(flow):
+    assert flow.tool_trail() == []
+    first(flow)
+    call(flow, "김민수입니다", name="김민수")
+    assert flow.tool_trail() == [
+        {"args": {"facility": "세미나실", "date": "내일", "start_time": "14:00"},
+         "heard": "내일 오후 두 시에 세미나실 예약해 줘.", "asked": p.ASK_NAME},
+        {"args": {"name": "김민수"}, "heard": "김민수입니다", "asked": DEMO},
+    ]
+    flow.drop()
+    assert flow.tool_trail() == []
+
+
+def test_tool_trail_skips_calls_that_end_the_draft(flow):
+    assert flow.on_call(ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", "busy") == FlowOutput(p.UNAVAILABLE, "")
+    assert flow.tool_trail() == []

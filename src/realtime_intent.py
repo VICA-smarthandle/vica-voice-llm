@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional, Sequence
 import numpy as np
 
 from . import answer_field
-from .tool_calls import audio_tools_on, reserve_tool
+from .tool_calls import RESERVE, audio_tools_on, reserve_tool
 
 SAMPLE_RATE_IN = 16000   # 웨이크워드 노드 클립
 SAMPLE_RATE_RT = 24000   # Realtime 입력 형식
@@ -124,8 +124,40 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
     return tool
 
 
-def history_to_items(history: Optional[Sequence[Any]]) -> list[dict]:
-    """LangChain 이력 → Realtime 대화 항목. Human→user/input_text, AI→assistant/output_text."""
+def _trail_items(n: int, entry: dict) -> list[dict]:
+    """예약 도구 호출 기록 하나 → function_call + function_call_output 항목."""
+    call_id = f"reserve_{n}"
+    args = {**entry.get("args", {}), "heard_text": entry.get("heard", "")}
+    return [{"type": "function_call", "call_id": call_id, "name": RESERVE,
+             "arguments": json.dumps(args, ensure_ascii=False)},
+            {"type": "function_call_output", "call_id": call_id,
+             "output": json.dumps({"status": "asked", "question": entry.get("asked", "")}, ensure_ascii=False)}]
+
+
+def history_to_items(history: Optional[Sequence[Any]], trail: Optional[Sequence[dict]] = None) -> list[dict]:
+    """LangChain 이력 → Realtime 대화 항목. Human→user/input_text, AI→assistant/output_text.
+
+    trail(예약 도구 호출 기록, ReservationFlow.tool_trail)이 있으면 각 호출을 그 결과로 물은 질문(assistant 줄) 바로
+    앞에 function_call·function_call_output 으로 넣는다. 그 질문이 기록에 아직 없으면 맨 끝에 둔다.
+    """
+    items = _message_items(history)
+    if not trail:
+        return items
+    at, tail = 0, []
+    for n, entry in enumerate(trail):
+        found = next((i for i in range(at, len(items))
+                      if items[i].get("role") == "assistant"
+                      and items[i]["content"][0]["text"] == entry.get("asked")), None)
+        if found is None:
+            tail += _trail_items(n, entry)
+            continue
+        extra = _trail_items(n, entry)
+        items[found:found] = extra
+        at = found + len(extra) + 1
+    return items + tail
+
+
+def _message_items(history: Optional[Sequence[Any]]) -> list[dict]:
     items: list[dict] = []
     for msg in history or []:
         role = getattr(msg, "type", "")
@@ -253,30 +285,34 @@ class RealtimeIntentClient:
             return time.monotonic() - started
 
     # ----- 호출 --------------------------------------------------------
-    def ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
+    def ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str,
+            tool_trail: Optional[Sequence[dict]] = None) -> RealtimeResult:
         """소리 + 이력 + 지시문 → 도구 인자(set_intent, 켜져 있으면 reserve_facility 도). 실패·timeout 이면 예외(연결은 버린다)."""
         try:
-            result = self._ask(pcm16_16k, history, instructions)
+            result = self._ask(pcm16_16k, history, instructions, tool_trail=tool_trail)
         except BaseException:
             self.last_failure_at = time.monotonic()
             raise
         self.last_failure_at = None
         return result
 
-    def ask_text(self, text: str, history: Optional[Sequence[Any]], instructions: str) -> RealtimeResult:
+    def ask_text(self, text: str, history: Optional[Sequence[Any]], instructions: str,
+                 tool_trail: Optional[Sequence[dict]] = None) -> RealtimeResult:
         """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 넣는다. 운영 경로는 부르지 않는다.
         들린 말(heard_text)이 비어 오면 넣은 글자를 쓴다."""
-        result = self._ask(b"", history, instructions, text=text)
+        result = self._ask(b"", history, instructions, text=text, tool_trail=tool_trail)
         if not result.heard_text:
             result.heard_text = text
         return result
 
     def _ask(self, pcm16_16k: bytes, history: Optional[Sequence[Any]], instructions: str,
-             text: Optional[str] = None) -> RealtimeResult:
+             text: Optional[str] = None, tool_trail: Optional[Sequence[dict]] = None) -> RealtimeResult:
         with self._lock:
             started = time.monotonic()
             conn = self._ensure_conn()
-            items = history_to_items(history)
+            # 예약 도구가 세션에 없으면 그 호출 기록도 넣지 않는다 — 모르는 함수의 기록이 된다.
+            trail = tool_trail if tool_trail and audio_tools_active() else None
+            items = history_to_items(history, trail)
             if text is None:
                 audio_b64 = base64.b64encode(resample_pcm16(pcm16_16k)).decode("ascii")
                 items.append({"type": "message", "role": "user",

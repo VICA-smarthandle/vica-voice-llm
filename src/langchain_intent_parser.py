@@ -24,7 +24,7 @@ from .handle_mode import (
 from . import answer_field, local_rules
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
-from .realtime_intent import get_realtime_client
+from .realtime_intent import audio_tools_active, get_realtime_client
 from .replies import (
     ALREADY_GOING,
     ASK_DESTINATION,
@@ -1094,6 +1094,23 @@ def parse_intent(
 # ---------------------------------------------------------------------------
 
 
+# 소리 지시문의 예약 부분(2026-11-19, 사용자 승인) — VICA_TOOLS_AUDIO=on 이고 세션에 reserve_facility 가 있을 때만
+# 들어간다. 꺼져 있으면 지시문은 글자 하나까지 예전 그대로다. 원인 실험(~/vica_data/tool_call_test_20261118/README.md):
+# 이 규칙이 없으면 "아니 세 시로 해 줘"·"모레로 바꿔 줘"를 목적지 정정으로 읽었다(0/4 → 4/4).
+# 예시 문장은 측정 묶음(tools/reserve_cases.py)과 겹치지 않게 골랐다.
+AUDIO_FIRST_LINE = "다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다."
+AUDIO_FIRST_LINE_WITH_RESERVE = ("다음에 무엇을 할지와 무슨 말을 할지를 함수 하나(set_intent 또는 reserve_facility)를 "
+                                 "한 번 호출해 정한다.")
+AUDIO_RESERVE_RULES = """
+[시설 예약] 시설 예약은 reserve_facility 함수로 한다. [지금 상황]에 '[진행 중인 예약]' 줄이 있으면 지금은 예약
+대화 중이고, 로봇의 마지막 말은 그 예약의 질문이다.
+- 그 질문에 값으로 답하면(이름·날짜·시각·시설) reserve_facility 에 이번에 말한 값만 넣어 호출한다.
+- 값을 바꿔 달라는 말("아니 다섯 시로 해 줘", "다음 주 화요일로 바꿔 줘")도 reserve_facility 에 바뀐 값만 넣어 호출한다.
+- "…예약할까요?"에 긍정만 하면 set_intent 의 affirm, 부정만 하면 deny 다(reply=""). 이때는 reserve_facility 를 부르지 않는다.
+- 예약 대화에 나오는 시설 이름은 가려는 목적지가 아니다 — destination_candidate 에 넣지 않는다.
+"""
+
+
 def build_audio_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
     situation: str = "", directory_block: str = "",
@@ -1121,8 +1138,11 @@ def build_audio_prompt(
     # 대장 블록(ledger_view)이 왔으면 층이 거기 있으므로 옛 상태 블록은 뺀다. 옛 상황판은 같은
     # "[지금 상황]" 머리글을 쓰지만 층 줄이 없으니 이 판정에 안 걸린다.
     state_block = "" if FLOOR_LABEL in situation else _format_robot_state(robot_state)
+    reserve_on = audio_tools_active()
+    first_line = AUDIO_FIRST_LINE_WITH_RESERVE if reserve_on else AUDIO_FIRST_LINE
+    reserve_rules = AUDIO_RESERVE_RULES if reserve_on else ""
     return f"""너는 시각장애인 안내 로봇 '비카(VICA)'다. 차분하고 짧게 말하는 안내원처럼 말하고, 사용자의
-목소리를 직접 듣고, 다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다.
+목소리를 직접 듣고, {first_line}
 코드는 네 결정을 고치지 않고 그대로 로봇 본체(미션 관리자)에 전달한다. 확인 질문·정정·
 되묻기·침묵·말투까지 네가 책임진다.
 
@@ -1263,7 +1283,7 @@ reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-
 "목록에 408호는 없어요?" — 질문 대답 30개 중 18개가 "?"로 끝났다).
 reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel)는 로봇 본체가 이어서
 말하므로 네가 말을 보태지 않는다.
-{state_block}{situation}"""
+{reserve_rules}{state_block}{situation}"""
 
 
 def parse_intent_audio(
@@ -1274,6 +1294,7 @@ def parse_intent_audio(
     situation: str = "",
     directory_block: str = "",
     question: Optional[OpenQuestion] = None,
+    tool_trail: Optional[list[dict]] = None,
 ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
@@ -1284,7 +1305,10 @@ def parse_intent_audio(
     """
     instructions = build_audio_prompt(destinations, robot_state,
                                       answer_field.with_question(situation, question), directory_block)
-    result = get_realtime_client().ask(pcm16_16k, history, instructions)
+    # tool_trail: 진행 중인 예약에서 부른 reserve_facility 기록(ReservationFlow.tool_trail) — 대화 기록에 싣는다.
+    # 없으면 예전과 같은 호출이다(인자를 넘기지 않는다).
+    result = get_realtime_client().ask(pcm16_16k, history, instructions,
+                                       **({"tool_trail": tool_trail} if tool_trail else {}))
     return _deliver_realtime_result(result, destinations, robot_state, question)
 
 
@@ -1296,12 +1320,14 @@ def parse_intent_realtime_text(
     situation: str = "",
     directory_block: str = "",
     question: Optional[OpenQuestion] = None,
+    tool_trail: Optional[list[dict]] = None,
 ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
     parse_intent_audio 와 같다. 운영 경로는 부르지 않는다."""
     instructions = build_audio_prompt(destinations, robot_state,
                                       answer_field.with_question(situation, question), directory_block)
-    result = get_realtime_client().ask_text(text, history, instructions)
+    result = get_realtime_client().ask_text(text, history, instructions,
+                                            **({"tool_trail": tool_trail} if tool_trail else {}))
     return _deliver_realtime_result(result, destinations, robot_state, question)
 
 

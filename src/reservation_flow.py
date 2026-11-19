@@ -36,6 +36,8 @@ RETRY_LIMIT = 1
 # 넘긴 질문 뒤 이 시간 동안 아무 일도 없으면(대답도, 듣기 창의 빈손 종료 신호도 없음) 말없이 버린다 —
 # 질문 말하기 + 듣기 창 최대 15초 + 해석을 넉넉히 덮는 값. 남겨 두면 다음 사람의 말이 앞사람 예약에 붙는다.
 IDLE_DROP_SEC = 60.0
+# 대화 기록에 실을 예약 도구 호출 기록의 최대 개수 — 예약 하나는 보통 2~3번이다.
+TRAIL_KEEP = 6
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ class ReservationFlow:
         self._seen = False                  # 넘긴 질문을 미션이 한 번 열었나
         self._asked_at: Optional[datetime] = None
         self._retries = 0                   # 지금 질문을 다시 물은 횟수
+        self._trail: list[dict] = []        # 이 예약에서 LLM 이 부른 reserve_facility 와 그 결과(물은 질문)
         self.asked_text = ""
 
     @property
@@ -137,8 +140,23 @@ class ReservationFlow:
                 "end": self._end() if self._start else "", "name": self._name, "asked": self.asked_text}
 
     # ----- 들어오는 것 -------------------------------------------------
+    def tool_trail(self) -> list[dict]:
+        """이 예약에서 LLM 이 부른 reserve_facility 기록 — {"args", "heard", "asked"}. Realtime 대화 기록에 싣는다.
+
+        11-19 원인 실험: 대화 기록에 예약 도구를 부른 흔적이 없으면 Realtime 은 확인의 "그래."에 [진행 중인 예약] 줄의
+        값으로 예약 도구를 다시 불렀다(승낙 5/8). 기록을 넣으면 8/8(~/vica_data/tool_call_test_20261118/README.md).
+        """
+        return [dict(t) for t in self._trail]
+
     def on_call(self, call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]:
         """LLM 이 reserve_facility 를 불렀다. text 는 그 발화의 글자(받아쓴 글자 또는 heard_text)."""
+        out = self._on_call(call, text, gate)
+        if out is not None and out.kind and self._active:
+            self._trail.append({"args": {k: v for k, v in vars(call).items() if v}, "heard": text, "asked": out.say})
+            del self._trail[:-TRAIL_KEEP]
+        return out
+
+    def _on_call(self, call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]:
         self._expire()
         if not self._active:
             if gate == "mute":

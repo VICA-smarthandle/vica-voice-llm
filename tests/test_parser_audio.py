@@ -345,3 +345,37 @@ def test_audio_prompt_carries_the_question_line(monkeypatch):
     monkeypatch.setenv("VICA_ANSWER", "on")
     parser.parse_intent_audio(b"", [], question=_minutes_q())
     assert seen["instructions"].endswith(af.with_question("", _minutes_q()))
+
+
+def test_audio_prompt_gets_reservation_rules_only_when_the_reserve_tool_is_on(monkeypatch, tmp_path):
+    """11-19 원인 실험 V2: 소리 지시문에 예약 대화 규칙이 없어 값 바꾸기를 목적지 정정으로 읽었다(0/4 → 4/4).
+    스위치가 꺼져 있으면 지시문은 글자 하나까지 그대로다."""
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+    off = parser.build_audio_prompt([DEST], None, "[지금 상황] 끝\n")
+    assert "set_intent 함수 한 번으로 정한다" in off and "[시설 예약]" not in off
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    on = parser.build_audio_prompt([DEST], None, "[지금 상황] 끝\n")
+    assert "set_intent 함수 한 번으로" not in on and "reserve_facility" in on.split("\n")[1]
+    assert on.endswith("[지금 상황] 끝\n")                     # 바뀌는 상황은 맨 뒤 그대로(캐시)
+    rules = parser.AUDIO_RESERVE_RULES
+    assert rules in on and "affirm" in rules and "destination_candidate" in rules
+    assert on.replace(rules, "").replace(parser.AUDIO_FIRST_LINE_WITH_RESERVE, parser.AUDIO_FIRST_LINE) == off
+
+
+def test_parse_intent_audio_passes_the_trail_to_realtime(rt):
+    client = rt({"intent": "affirm"}, "그래")
+    trail = [{"args": {"name": "김민수"}, "heard": "김민수", "asked": "확인?"}]
+    seen = {}
+    original = client.ask
+
+    def ask(pcm, history, instructions, **kw):
+        seen.update(kw)
+        return original(pcm, history, instructions)
+
+    client.ask = ask
+    parse_intent_audio(PCM, [DEST], tool_trail=trail)
+    assert seen == {"tool_trail": trail}
+    seen.clear()
+    parse_intent_audio(PCM, [DEST])
+    assert seen == {}                                          # 기록이 없으면 예전과 같은 호출

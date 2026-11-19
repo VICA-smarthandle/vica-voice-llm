@@ -720,7 +720,8 @@ class LlmIntentNode(Node):
                 situation=self._situation_block(),
                 directory_block=format_directory_block(
                     self._directory, self._robot_state.current_building, self._robot_state.current_floor),
-                question=question)
+                question=question,
+                tool_trail=self._reservation.tool_trail() if self._reservation is not None else None)
         except Exception as exc:
             # 연결 오류(접속 실패·끊김)면 이 발화부터 글자 경로를 바로 로컬 LLM 으로 — 클라우드 글자 LLM 도
             # 같은 인터넷이라 VICA_LLM_CLOUD_TIMEOUT 기다려 실패할 뿐이다(2026-10-24 사용자). 응답 지연·그 밖의

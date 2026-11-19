@@ -64,6 +64,13 @@
 - D14 (11-19) "성함을 말씀해 주세요 한 번. 못 알아들으면 또. 그래도 못 알아들으면 '예약이 취소되었습니다'로. 이미 '내일 오후
   두 시에 세미나실 예약해 줘'에서 예약 단계에 접어들었다고 보는 편이 합당하다." 한 질문은 두 번까지 묻고, 그래도 대답을 못
   받으면 문장 ⑩을 말하고 끝낸다. 예약 단계는 말없이 끝나지 않는다(독립 검토 I-2 의 결정).
+- D15 (11-19) Realtime 원인 실험 뒤 승인("네"): ① Realtime 대화 기록에 그 예약에서 부른 reserve_facility 와 결과(물은 질문)를
+  function_call·function_call_output 으로 싣는다. ② Realtime 지시문(`build_audio_prompt`)에 예약 대화 규칙 5줄을 더하고
+  첫 문단의 "set_intent 함수 한 번으로"를 "함수 하나(set_intent 또는 reserve_facility)를 한 번 호출해"로 고친다.
+  둘 다 VICA_TOOLS_AUDIO=on 이고 세션에 reserve_facility 가 있을 때만 — 꺼져 있으면 지시문·기록이 글자 하나까지 그대로다.
+  글자 경로 지시문(`_build_system_prompt`)은 그대로 둔다(gpt 는 [진행 중인 예약] 한 줄로 이어진 대답 10/11).
+  근거: 원인 실험 표(`~/vica_data/tool_call_test_20261118/README.md`) — 둘을 합치면 값 대답 15/15 · 승낙 12/12 · 거절 3/3 ·
+  값 바꾸기 4/6(지금 그대로 7/10 · 5/8 · 2/2 · 0/4).
 
 내 판단(사용자가 다르게 정하면 고친다)
 
@@ -129,6 +136,7 @@
   확인 뒤 시스템이 한다.
 - 지시문(`_build_system_prompt`·`build_audio_prompt`)은 고치지 않는다. 지시문은 로컬 폴백도 같이 쓰므로, 거기에 "도구를
   호출한다"를 넣으면 도구가 없는 로컬의 해석이 흔들린다.
+  (11-19 D15: Realtime 지시문은 VICA_TOOLS_AUDIO=on 일 때만 예약 규칙을 싣는다 — 로컬 폴백은 글자 경로 지시문을 쓰므로 영향 없음.)
 - 저장(commit)은 도구로 주지 않는다. LLM 이 부를 수 있는 것은 예약 '요청'까지다.
 - 경로별 구현
   - gpt-5.4-mini: `ChatOpenAI.bind_tools([...], tool_choice="required")`. 측정에 쓴 방식(`measure_cloud.py`).

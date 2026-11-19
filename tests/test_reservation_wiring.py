@@ -102,3 +102,8 @@ def test_empty_listening_window_reaches_the_flow():
 
 def test_silence_reask_adds_no_empty_user_line():
     assert "scripted and (not text)" in ast.unparse(_method("_publish_intent"))
+
+
+def test_audio_path_sends_the_reserve_trail():
+    call = _calls(_method("_on_user_audio"), "parse_intent_audio")[0]
+    assert "tool_trail" in [k.arg for k in call.keywords]

@@ -411,3 +411,39 @@ def test_tool_has_the_answer_field_when_on(monkeypatch):
     assert tool["parameters"]["properties"]["answer"] == {
         "type": "string", "enum": ["", *af.ANSWERS], "description": af.ANSWER_DESCRIPTION}
     assert tool["parameters"]["required"] == ["intent", "heard_text"]
+
+
+# ----- 예약 도구 호출 기록(11-19 원인 실험) ------------------------------------------
+TRAIL = [{"args": {"facility": "세미나실", "date": "내일", "start_time": "14:00"},
+          "heard": "내일 오후 두 시에 세미나실 예약해 줘.", "asked": "성함을 말씀해 주세요."}]
+
+
+def test_history_items_carry_the_reserve_call_before_its_question():
+    """Realtime 은 대화 기록에 예약 도구를 부른 흔적이 없으면 승낙에 예약 도구를 다시 부른다(V0 5/8 → V4 8/8)."""
+    history = [HumanMessage("내일 오후 두 시에 세미나실 예약해 줘."), AIMessage("성함을 말씀해 주세요.")]
+    items = history_to_items(history, TRAIL)
+    assert [i["type"] for i in items] == ["message", "function_call", "function_call_output", "message"]
+    call, output = items[1], items[2]
+    assert call["name"] == "reserve_facility" and call["call_id"] == output["call_id"]
+    assert json.loads(call["arguments"]) == {"facility": "세미나실", "date": "내일", "start_time": "14:00",
+                                             "heard_text": "내일 오후 두 시에 세미나실 예약해 줘."}
+    assert json.loads(output["output"]) == {"status": "asked", "question": "성함을 말씀해 주세요."}
+    assert items[3]["role"] == "assistant"
+    assert history_to_items(history) == history_to_items(history, None) == [items[0], items[3]]
+
+
+def test_trail_without_its_question_in_history_goes_last():
+    """소리 모드에서 질문 문장이 아직 기록에 안 들어왔으면(미션이 말하는 중) 맨 끝에 둔다."""
+    items = history_to_items([HumanMessage("내일 오후 두 시에 세미나실 예약해 줘.")], TRAIL)
+    assert [i["type"] for i in items] == ["message", "function_call", "function_call_output"]
+
+
+def test_ask_sends_the_trail_only_when_the_session_has_the_reserve_tool(monkeypatch, tmp_path):
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    client, conns = make_client([done_event({"intent": "affirm", "heard_text": "그래"})] * 2)
+    client.ask(PCM, [AIMessage("성함을 말씀해 주세요.")], "x", tool_trail=TRAIL)
+    assert any(i["type"] == "function_call" for i in conns[0].responses[0]["input"])
+    monkeypatch.delenv("VICA_TOOLS_AUDIO")
+    client.ask(PCM, [AIMessage("성함을 말씀해 주세요.")], "x", tool_trail=TRAIL)
+    assert not any(i["type"] == "function_call" for i in conns[0].responses[1]["input"])

@@ -12,7 +12,7 @@ def by_id(case_id):
 
 
 def fake(result):
-    return lambda text, history, situation: (result, 0.5)
+    return lambda text, history, situation, *_: (result, 0.5)
 
 
 def test_case_set_shape():
@@ -53,7 +53,7 @@ def test_spoken_end_time_is_part_of_the_answer():
 def test_follow_up_gets_the_draft_line_and_the_asked_question():
     seen = {}
 
-    def interpret(text, history, situation):
+    def interpret(text, history, situation, *_):
         seen.update(text=text, history=history, situation=situation)
         return ReserveCall(name="김민수"), 0.1
 
@@ -94,14 +94,25 @@ def test_llm_failure_is_an_error_row_not_a_wrong_answer():
 
 def test_flow_checks_values_against_the_heard_text():
     """Realtime 재생: 값의 근거는 넣은 글자가 아니라 모델이 적은 들린 말(heard_text)에서 찾는다 — 운영과 같다."""
-    assert run_case(by_id("F1"), lambda t, h, s: (ReserveCall(name="김민수"), 0.3, "김민수"))["ok"]
-    row = run_case(by_id("F1"), lambda t, h, s: (ReserveCall(name="김민수"), 0.3, "네"))
+    assert run_case(by_id("F1"), lambda t, h, s, *_: (ReserveCall(name="김민수"), 0.3, "김민수"))["ok"]
+    row = run_case(by_id("F1"), lambda t, h, s, *_: (ReserveCall(name="김민수"), 0.3, "네"))
     assert not row["ok"] and row["heard"] == "네"
 
 
 def test_interpreter_exception_is_an_error_row():
-    def boom(text, history, situation):
+    def boom(text, history, situation, *_):
         raise TimeoutError("Realtime 응답 8초 초과")
 
     row = run_case(by_id("R1"), boom)
     assert row["error"] and not row["ok"] and "TimeoutError" in row["why"]
+
+
+def test_realtime_replay_gets_the_tool_trail():
+    seen = {}
+
+    def interpret(text, history, situation, trail):
+        seen["trail"] = trail
+        return ReserveCall(name="김민수"), 0.2
+
+    run_case(by_id("F1"), interpret)
+    assert [t["asked"] for t in seen["trail"]] == [p.ASK_NAME]

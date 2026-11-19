@@ -41,7 +41,7 @@ DESTINATIONS = [DestinationData(id=f"d{i}", name=name, confirm_prompt=f"{name}�
                 for i, name in enumerate(DESTINATION_NAMES)]
 STATE = RobotState(dialog_state="idle")
 
-# (글자, 대화 기록, [지금 상황]) → (VicaIntent | ReserveCall, 걸린 초[, 모델이 적은 들린 말])
+# (글자, 대화 기록, [지금 상황], 예약 도구 호출 기록) → (VicaIntent | ReserveCall, 걸린 초[, 모델이 적은 들린 말])
 Interpret = Callable[[str, list, str], tuple]
 
 
@@ -86,7 +86,7 @@ def run_case(case: Case, interpret: Interpret) -> dict:
         failed = {"id": case.id, "text": case.text, "heard": "", "wall_s": 0.0, "reserve_called": False,
                   "ok": False, "error": True, "result": "", "say": "", "passed": ""}
         try:
-            result, wall, *rest = interpret(case.text, history, situation)
+            result, wall, *rest = interpret(case.text, history, situation, flow.tool_trail())
         except Exception as exc:  # noqa: BLE001 — 경로 오류는 행 결과로 남긴다
             return {**failed, "why": f"{type(exc).__name__}: {exc}"}
         heard = rest[0] if rest else case.text      # Realtime 은 모델이 적은 들린 말로 값의 근거를 본다(운영과 같다)
@@ -127,8 +127,8 @@ def summary_line(s: dict) -> str:
 def _gpt_interpreter() -> Interpret:
     from src.langchain_intent_parser import DEFAULT_MODEL, parse_intent
 
-    def interpret(text: str, history: list, situation: str):
-        t0 = time.monotonic()
+    def interpret(text: str, history: list, situation: str, _trail: list):
+        t0 = time.monotonic()                   # 글자 경로는 도구 호출 기록을 싣지 않는다(11-19 gpt 10/11)
         result = parse_intent(text, DESTINATIONS, history=history, robot_state=STATE, model=DEFAULT_MODEL,
                               situation=situation)
         return result, time.monotonic() - t0
@@ -139,9 +139,9 @@ def _realtime_interpreter() -> Interpret:
     from src.langchain_intent_parser import parse_intent_realtime_text
     from tools.answer_replay import call_with_retry
 
-    def interpret(text: str, history: list, situation: str):
+    def interpret(text: str, history: list, situation: str, trail: list):
         result, heard, latency, _info = call_with_retry(lambda: parse_intent_realtime_text(
-            text, DESTINATIONS, history=history, robot_state=STATE, situation=situation))
+            text, DESTINATIONS, history=history, robot_state=STATE, situation=situation, tool_trail=trail))
         return result, latency, heard
     return interpret
 
@@ -150,6 +150,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", choices=("gpt", "realtime"), required=True)
     ap.add_argument("--only", default="", help="쉼표로 나눈 id 머리글자·id (예: F 또는 R1,E3)")
+    ap.add_argument("--pause", type=float, default=1.0,
+                    help="발화 사이에 쉴 초 — Realtime 은 요청이 몰리면 멈춘다(11-19 사용자)")
     args = ap.parse_args()
 
     # 해석기를 import 하기 전에 경로를 고정한다(import 때 .env 를 읽고 설정을 굳힌다) — 208행 재생과 같은 스위치.
@@ -166,6 +168,7 @@ def main() -> None:
     for case in cases:
         row = run_case(case, interpret)
         rows.append(row)
+        time.sleep(args.pause)
         mark = "오류" if row["error"] else ("맞음" if row["ok"] else "틀림")
         print(f"{case.id:>3} {mark} {row['wall_s']:5.2f}s | {case.text} → {row['result']}"
               + (f" | {row['why']}" if row["why"] else ""), flush=True)

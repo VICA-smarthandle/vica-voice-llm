@@ -245,6 +245,8 @@ def main() -> None:
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
     ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
+    ap.add_argument("--pause", type=float, default=0.0,
+                    help="API 를 부른 뒤 쉴 초 — Realtime 은 요청이 몰리면 멈춘다(11-19 사용자). 기본 0")
     args = ap.parse_args()
 
     # src 의 parser 를 부르기 전에 경로를 고정한다 — import 때 .env 를 읽고 설정을 굳힌다(load_dotenv 는 있는 값을 안 덮음).
@@ -301,6 +303,7 @@ def main() -> None:
         asked = question_for(row, dests)
         intent, _heard, latency, _info = call_with_retry(
             lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state, question=asked))
+        time.sleep(args.pause)
         return with_transcript_rule(intent, row, asked), latency
 
     interpret = interpret_audio if args.path == "realtime" else interpret_text
