@@ -90,3 +90,15 @@ def test_flow_needs_the_question_record_and_hand_over():
     tests = " ".join(test for test, in_body in _branch_tests(init, build) if in_body)
     assert "VicaQuestionMsg is not None" in tests and "self._hand_over" in tests
     assert "hand_over=" not in ast.unparse(_method("_reservation_say"))
+
+
+def test_empty_listening_window_reaches_the_flow():
+    """듣기 창이 빈손으로 닫히면 예약 흐름이 같은 질문을 다시 넘기거나 취소를 말한다. 호출 기각(empty:wake-…)은 세지 않는다."""
+    node = _method("_on_listen_state_for_resume")
+    body = ast.unparse(node)
+    assert "on_silence(" in body and "empty:wake-" in body
+    assert _calls(node, "self._reservation_say")
+
+
+def test_silence_reask_adds_no_empty_user_line():
+    assert "scripted and (not text)" in ast.unparse(_method("_publish_intent"))

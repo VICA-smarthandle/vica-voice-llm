@@ -582,18 +582,30 @@ class LlmIntentNode(Node):
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
+        human = [] if scripted and not text else [HumanMessage(text)]   # 대답 없음으로 다시 묻는 예약 질문 — 사용자 줄 없음
         if self._spoken_history or silenced:
             # 2-3 에서 지운 대답은 기록에 빈 줄로 남기지 않는다 — 물어 둔 질문이 마지막 로봇
             # 말로 남아야 다음 "네"가 그 질문의 답이 된다.
-            self._history.extend([HumanMessage(text)])
+            self._history.extend(human)
         else:
-            self._history.extend([HumanMessage(text), AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말
+            self._history.extend([*human, AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말
 
     def _on_listen_state_for_resume(self, msg: String) -> None:
         """듣기 창이 빈손으로 닫혔다. 마지막 로봇 말이 음성이 쥔 "다시 출발할까요?"이고 아직
         다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다."""
-        if not (msg.data or "").startswith("empty"):
+        state = msg.data or ""
+        if not state.startswith("empty"):
             return
+        # 시설 예약(2026-11-19 사용자): 예약 질문에 대답이 없으면 같은 질문을 한 번 다시 넘기고, 그래도 없으면
+        # "예약이 취소되었습니다."를 말한다. 호출 기각(empty:wake-…)은 대답 창이 닫힌 것이 아니라 세지 않는다.
+        if (self._reservation is not None and self._reservation.active
+                and not state.startswith("empty:wake-")):
+            gate = start_gate(self._robot_state.dialog_state, self._question, self._reservation.asked_text)
+            out = self._reservation.on_silence(gate)
+            if out is not None:
+                self.get_logger().info(f"[예약] 대답 없음({state[:24]}) — {'다시 묻는다' if out.kind else '취소'}")
+                self._reservation_say(out, "")
+                return
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         if not should_reask_resume_on_silence(self._history.messages, last_text,
                                               time.time() - last_t):

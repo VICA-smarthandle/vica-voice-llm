@@ -141,24 +141,29 @@ def test_save_failure_says_unavailable_not_done(flow):
 
 
 def test_general_result_while_active(flow):
-    first(flow)                                                   # 이름을 기다리는 중
+    """예약 단계에서 못 알아들은 말·질문·엉뚱한 승낙은 미션에 가지 않는다 — 같은 질문을 한 번 다시 묻는다(11-19 사용자)."""
     for kind in ("unknown", "question", "clarify", "affirm"):
-        assert flow.on_general(VicaIntent(intent=kind, need_confirm=False)) is None and flow.active
+        first(flow)                                               # 이름을 기다리는 중
+        opened(flow)
+        assert flow.on_general(VicaIntent(intent=kind, need_confirm=False)) == FlowOutput(p.ASK_NAME, "open")
+        assert flow.active
+        flow.drop()
+    first(flow)
     assert flow.on_general(VicaIntent(intent="navigate", destination_candidate="화장실")) is None and not flow.active
     first(flow)
     assert flow.on_general(VicaIntent(intent="cancel", need_confirm=False)) == FlowOutput(p.NOT_RESERVED, "")
 
 
-def test_question_closing_drops_the_draft(flow):
+def test_closed_question_keeps_the_draft_but_another_question_drops_it(flow):
     first(flow)
     flow.on_question_record("")                 # 앞 질문("네?")이 닫힘 — 내 질문은 아직 열린 적 없다
     assert flow.active
     flow.on_question_record(p.ASK_NAME)         # 미션이 내 질문을 열었다
-    call(flow, "김민수", name="김민수")          # 새 질문(②)을 넘겼다
-    flow.on_question_record("")                 # ①이 닫힘 — ②는 아직 안 열렸다
+    flow.on_question_record("")                 # 내 질문이 닫혔다(침묵·대답) — 버리지 않는다. 다시 물을지는 on_silence·on_general 몫
     assert flow.active
+    call(flow, "김민수", name="김민수")          # 새 질문(②)을 넘겼다
     flow.on_question_record(DEMO)
-    flow.on_question_record("네?")              # 대답 없이 다시 불렀다
+    flow.on_question_record("네?")              # 대답 없이 다시 불렀다 — 다른 질문이 열림
     assert not flow.active
 
 
@@ -170,7 +175,7 @@ def test_same_question_asked_again_survives_the_old_one_closing(flow):
     assert flow.active
     flow.on_question_record(p.ASK_NAME)         # 새 ①이 열림
     flow.on_question_record("")
-    assert not flow.active
+    assert flow.active                          # 닫힘만으로는 버리지 않는다(11-19)
 
 
 def test_same_call_twice_asks_the_same_question(flow):
@@ -252,7 +257,7 @@ def test_yes_before_the_mission_opened_the_confirm_question_does_not_save(flow):
     first(flow)
     call(flow, "김민수", name="김민수")                      # ②를 넘겼지만 미션은 아직 열지 않았다
     out, passed = handle_result(flow, YES, "네", gate="ok", tools_used=True)
-    assert out is None and passed == YES and flow.store.list() == []
+    assert out == FlowOutput(DEMO, "yesno") and passed is None and flow.store.list() == []   # 저장 대신 확인을 다시 묻는다
     opened(flow)
     out, passed = handle_result(flow, YES, "네", gate="ok", tools_used=True)
     assert out.say == p.DONE and passed is None and len(flow.store.list()) == 1
@@ -270,10 +275,14 @@ def test_question_the_mission_never_opened_expires(tmp_path):
     assert flow.situation_line() and flow.active
     clock[0] = NOW + timedelta(seconds=UNSEEN_DROP_SEC + 1)
     assert flow.situation_line() == "" and not flow.active
-    first(flow)                                              # 열린 적이 있으면 시간으로는 버리지 않는다(닫힘이 버린다)
+    from src.reservation_flow import IDLE_DROP_SEC
+    first(flow)                                              # 열린 질문도 오래 아무 일이 없으면 말없이 버린다
     opened(flow)
-    clock[0] += timedelta(minutes=5)
-    assert flow.on_general(VicaIntent(intent="unknown")) is None and flow.active
+    asked = clock[0]
+    clock[0] = asked + timedelta(seconds=IDLE_DROP_SEC - 1)
+    assert flow.situation_line() and flow.active
+    clock[0] = asked + timedelta(seconds=IDLE_DROP_SEC + 1)
+    assert flow.on_general(YES) is None and not flow.active
 
 
 def test_reservation_word_without_tools_only_blocks_reservation_requests(flow):
@@ -291,11 +300,63 @@ def test_reservation_word_without_tools_only_blocks_reservation_requests(flow):
     assert handle_result(flow, seminar, "세미나실 예약해 줘.", gate="mute", tools_used=False) == (None, seminar)
 
 
-def test_noise_then_closed_question_is_the_known_gap(flow):
-    """I-2(사용자 결정 대기): 못 알아들은 말이 미션에 가면 미션이 질문을 닫고, 그 빈 기록에 진행 중인 예약이 버려진다."""
+NOISE = VicaIntent(intent="unknown", need_confirm=False)
+
+
+def test_question_twice_then_cancelled(flow):
+    """I-2(11-19 사용자): 한 질문은 두 번까지 묻는다. 그래도 못 알아들으면 "예약이 취소되었습니다."."""
+    assert first(flow) == FlowOutput(p.ASK_NAME, "open")
+    opened(flow)
+    out, passed = handle_result(flow, NOISE, "어 음", gate="ok", tools_used=True)
+    assert out == FlowOutput(p.ASK_NAME, "open") and passed is None and flow.active     # 미션에 보내지 않고 한 번 더
+    flow.on_question_record("")                              # 미션이 앞 질문을 닫고
+    opened(flow)                                             # 같은 질문을 다시 열었다
+    out, passed = handle_result(flow, NOISE, "음", gate="ok", tools_used=True)
+    assert out == FlowOutput(p.CANCELLED, "") and passed is None
+    assert not flow.active and flow.store.list() == []
+
+
+def test_retry_count_starts_over_with_each_new_question(flow):
     first(flow)
     opened(flow)
-    out, passed = handle_result(flow, VicaIntent(intent="unknown"), "어 음", gate="ok", tools_used=True)
-    assert out is None and passed.intent == "unknown" and flow.active
-    flow.on_question_record("")                              # 미션이 그 의도를 받고 질문을 닫았다
-    assert not flow.active
+    assert flow.on_general(NOISE) == FlowOutput(p.ASK_NAME, "open")           # ① 두 번째
+    opened(flow)
+    assert call(flow, "김민수", name="김민수") == FlowOutput(DEMO, "yesno")    # 대답함 → ②
+    opened(flow)
+    assert flow.on_general(NOISE) == FlowOutput(DEMO, "yesno")                # ②는 새 질문이라 다시 한 번
+    opened(flow)
+    assert flow.on_general(YES).say == p.DONE
+
+
+def test_reserve_call_without_a_new_value_counts_as_not_understood(flow):
+    first(flow)
+    opened(flow)
+    assert call(flow, "음", name="홍길동") == FlowOutput(p.ASK_NAME, "open")    # 지어낸 이름 — 받은 값이 없다
+    opened(flow)
+    assert call(flow, "어", name="홍길동") == FlowOutput(p.CANCELLED, "") and not flow.active
+
+
+def test_silence_follows_the_same_rule(flow):
+    """듣기 창이 빈손으로 닫혀도(대답 없음·잡음 기각) 같은 규칙이다."""
+    first(flow)
+    assert flow.on_silence("ok") is None and flow.active     # 미션이 아직 묻지 않았다 — 그 질문의 침묵이 아니다
+    opened(flow)
+    assert flow.on_silence("ok") == FlowOutput(p.ASK_NAME, "open")
+    opened(flow)
+    assert flow.on_silence("ok") == FlowOutput(p.CANCELLED, "") and not flow.active
+    assert flow.on_silence("ok") is None                     # 진행 중인 예약이 없으면 아무것도 하지 않는다
+    first(flow)
+    opened(flow)
+    assert flow.on_silence("busy") is None and not flow.active   # 미션이 쉬는 상태를 떠났다 — 말없이 버린다
+
+
+def test_leaving_idle_ends_the_stage_silently(flow):
+    """진행 중에 미션이 쉬는 상태를 떠났거나 다른 질문이 열렸으면(gate) 예약 단계는 끝났다 — 그 말은 평소대로 간다."""
+    first(flow)
+    opened(flow)
+    out, passed = handle_result(flow, NOISE, "어", gate="busy", tools_used=True)
+    assert out is None and passed == NOISE and not flow.active
+    first(flow)
+    opened(flow)
+    stop = VicaIntent(intent="unknown", need_confirm=False, safety_flag="emergency")
+    assert flow.on_general(stop) is None and flow.active     # 긴급은 건드리지 않는다

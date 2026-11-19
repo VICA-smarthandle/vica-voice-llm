@@ -46,7 +46,9 @@
 5. 도구 호출이 없거나 두 개 오거나 인자가 빈 `reserve_facility({})` 여도 죽지 않는다 — 없으면 실패 처리, 두 개면 첫 호출, 빈 인자면 ⑦부터. → Task 5 `test_tool_message_shapes`, Task 4 `test_empty_call_asks_facility_first`
 6. 같은 첫 요청을 소리·글자 두 경로가 모두 받아도 "성함을 말씀해 주세요."가 한 번만 나간다. → Task 9 `test_audio_reservation_is_under_the_text_first_guard`
 7. 도구가 없는 경로(스위치 꺼짐·로컬 폴백)에서 "예약해 줘"가 엉뚱한 이동이 되지 않고 ⑨가 된다. → Task 6 `test_reservation_word_without_tools_is_refused`
-8. 예약 질문 중에 잡음이 못 알아들은 말로 읽혀도 진행 중인 예약이 날아가지 않는다. → Task 4 `test_general_result_while_active`
+8. 예약 질문 중에 잡음이 못 알아들은 말로 읽혀도 진행 중인 예약이 말없이 날아가지 않는다 — 같은 질문을 한 번 다시 묻고,
+   또 못 받으면 "예약이 취소되었습니다."(설계 D14, 11-19 사용자). → `test_question_twice_then_cancelled`·
+   `test_silence_follows_the_same_rule`·`test_general_result_while_active`
 
 ---
 

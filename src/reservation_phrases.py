@@ -17,7 +17,8 @@ NOT_RESERVED = "예약하지 않았습니다."                                  
 ASK_WHERE = "어디로 예약할까요?"                                             # ⑦ 시설이 없음
 BAD_TIME = "그 시간에는 예약할 수 없습니다. 다른 시간을 말씀해 주세요."        # ⑧ 지난 시각·운영 시간 밖
 UNAVAILABLE = "지금은 예약을 받을 수 없습니다."                              # ⑨ 쉬는 상태가 아님·도구 없는 경로·저장 실패
-FIXED = (ASK_NAME, DONE, TAKEN, ASK_WHEN, NOT_RESERVED, ASK_WHERE, BAD_TIME, UNAVAILABLE)
+CANCELLED = "예약이 취소되었습니다."                                        # ⑩ 같은 질문을 두 번 물어도 대답을 못 받음(11-19 사용자)
+FIXED = (ASK_NAME, DONE, TAKEN, ASK_WHEN, NOT_RESERVED, ASK_WHERE, BAD_TIME, UNAVAILABLE, CANCELLED)
 
 
 def confirm_sentence(name: str, day: date, start: str, end: str, facility: str, today: date) -> str:

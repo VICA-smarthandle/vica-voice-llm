@@ -13,7 +13,8 @@ def test_fixed_sentences_are_the_confirmed_text():
     assert p.ASK_WHERE == "어디로 예약할까요?"
     assert p.BAD_TIME == "그 시간에는 예약할 수 없습니다. 다른 시간을 말씀해 주세요."
     assert p.UNAVAILABLE == "지금은 예약을 받을 수 없습니다."
-    assert len(p.FIXED) == 8 and len(set(p.FIXED)) == 8
+    assert p.CANCELLED == "예약이 취소되었습니다."          # ⑩ 11-19 사용자
+    assert len(p.FIXED) == 9 and len(set(p.FIXED)) == 9
 
 
 def test_confirm_sentence_is_the_demo_line():

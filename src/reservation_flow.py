@@ -27,6 +27,12 @@ _NOT_A_REQUEST = frozenset({"affirm", "deny", "cancel", "pause", "resume", "wait
 # 넘긴 질문을 미션이 이 시간 안에 열지 않으면(질문 기록이 오지 않으면) 그 질문은 사용자에게 닿지 않은 것이다.
 # 미션은 넘겨받은 문장을 받는 즉시 말하고 질문 기록을 낸다(1초 안) — 넉넉히 10초.
 UNSEEN_DROP_SEC = 10.0
+# 한 질문은 두 번까지 묻는다(2026-11-19 사용자). 대답을 못 받으면(못 알아들은 말·대답 없음) 같은 질문을 한 번 다시
+# 넘기고, 그래도 못 받으면 문장 ⑩을 말하고 끝낸다. "예약해 줘"로 예약 단계에 들어온 것이라 말없이 끝내지 않는다.
+RETRY_LIMIT = 1
+# 넘긴 질문 뒤 이 시간 동안 아무 일도 없으면(대답도, 듣기 창의 빈손 종료 신호도 없음) 말없이 버린다 —
+# 질문 말하기 + 듣기 창 최대 15초 + 해석을 넉넉히 덮는 값. 남겨 두면 다음 사람의 말이 앞사람 예약에 붙는다.
+IDLE_DROP_SEC = 60.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,7 @@ class ReservationFlow:
         self._confirming = False
         self._seen = False                  # 넘긴 질문을 미션이 한 번 열었나
         self._asked_at: Optional[datetime] = None
+        self._retries = 0                   # 지금 질문을 다시 물은 횟수
         self.asked_text = ""
 
     @property
@@ -98,8 +105,10 @@ class ReservationFlow:
     def _expire(self) -> None:
         """넘긴 질문이 열리지 않은 채 UNSEEN_DROP_SEC 가 지났으면 버린다. 그 질문은 사용자에게 닿지 않았다
         (미션 재시작 중·미션이 그 의도에 직접 말함) — 남겨 두면 다음 사람의 "네"가 앞사람 예약을 저장한다."""
-        if (self._active and self._asked_at is not None and not self._seen
-                and (self._clock() - self._asked_at).total_seconds() > UNSEEN_DROP_SEC):
+        if not self._active or self._asked_at is None:
+            return
+        waited = (self._clock() - self._asked_at).total_seconds()
+        if waited > IDLE_DROP_SEC or (not self._seen and waited > UNSEEN_DROP_SEC):
             self.drop()
 
     def names_facility(self, text: str) -> bool:
@@ -134,13 +143,18 @@ class ReservationFlow:
             if gate != "ok":
                 return FlowOutput(phrases.UNAVAILABLE, "")
             self._active = True
+            self._merge(call, text)
+            return self._advance()
+        before = self._values()
         self._merge(call, text)
+        if self._values() == before:
+            return self._retry()            # 새로 받은 값이 없다 — 대답을 못 알아들은 것과 같다
         return self._advance()
 
     def on_general(self, intent: VicaIntent) -> Optional[FlowOutput]:
         """진행 중에 일반 해석 결과가 왔다. 승낙·거절만 예약이 받는다."""
         self._expire()
-        if not self._active:
+        if not self._active or intent.safety_flag == "emergency":
             return None
         kind = intent.intent
         if kind == "affirm" and self._confirming and self._seen:
@@ -151,15 +165,32 @@ class ReservationFlow:
             return FlowOutput(phrases.NOT_RESERVED, "")
         if kind in _OTHER_COMMANDS:
             self.drop()
-        return None
+            return None
+        return self._retry()                # 못 알아들은 말·질문·지금 질문과 맞지 않는 승낙
+
+    def on_silence(self, gate: str) -> Optional[FlowOutput]:
+        """듣기 창이 빈손으로 닫혔다(대답 없음·잡음 기각). 미션이 연 질문의 침묵만 센다."""
+        self._expire()
+        if not self._active:
+            return None
+        if gate != "ok":
+            self.drop()                     # 미션이 쉬는 상태를 떠났거나 다른 질문이 열렸다 — 말없이 끝낸다
+            return None
+        if not self._seen:
+            return None
+        return self._retry()
 
     def on_question_record(self, text: str) -> None:
-        """미션의 질문 기록이 바뀌었다("" = 열린 질문 없음). 내가 넘긴 질문이 열렸다가 사라지면 버린다."""
+        """미션의 질문 기록이 바뀌었다("" = 열린 질문 없음).
+
+        내 질문이 열리면 표시하고(_seen), 내 질문이 열린 뒤 다른 질문이 열리면("비카야" → "네?" 등) 버린다.
+        내 질문이 닫힌 것("")만으로는 버리지 않는다 — 다시 물을지 끝낼지는 on_general·on_silence 가 정한다.
+        """
         if not self._active or not self.asked_text:
             return
         if text == self.asked_text:
             self._seen = True
-        elif self._seen:
+        elif text and self._seen:
             self.drop()
 
     # ----- 안쪽 --------------------------------------------------------
@@ -192,7 +223,22 @@ class ReservationFlow:
         if end is not None:
             self._end_said = end
 
+    def _values(self) -> tuple:
+        return (self._facility, self._day, self._start, self._end_said, self._name)
+
+    def _retry(self) -> FlowOutput:
+        """지금 질문의 대답을 못 받았다. 한 번은 같은 질문을 다시 넘기고, 그다음은 ⑩을 말하고 끝낸다."""
+        if self._retries >= RETRY_LIMIT:
+            self.drop()
+            return FlowOutput(phrases.CANCELLED, "")
+        retries = self._retries + 1
+        out = self._ask(self.asked_text, "yesno" if self._confirming else "open")
+        self._retries = retries
+        return out
+
     def _ask(self, text: str, kind: str) -> FlowOutput:
+        if text != self.asked_text:
+            self._retries = 0               # 새 질문이다
         self.asked_text = text
         self._confirming = kind == "yesno"
         self._seen = False                  # 같은 문장을 다시 넘겨도 새 질문이다
@@ -259,11 +305,13 @@ def handle_result(flow: Optional[ReservationFlow], result, text: str, *, gate: s
     둘 다 None 이면 아무것도 내지 않는다. gate 는 start_gate 의 값, tools_used 는 이 발화를 해석한 경로에
     도구가 있었는가(스위치가 꺼진 경로·로컬 대피 중이면 거짓).
     """
+    if flow is not None and flow.active and gate != "ok":
+        flow.drop()                         # 미션이 쉬는 상태를 떠났거나 다른 질문이 열렸다 — 예약 단계는 말없이 끝난다
     if isinstance(result, ReserveCall):
         return (flow.on_call(result, text, gate) if flow is not None else None), None
     if flow is None:
         return None, result
-    out = flow.on_general(result)           # 진행 중인 예약이 받은 승낙·거절은 미션에 보내지 않는다
+    out = flow.on_general(result)           # 진행 중에는 승낙·거절·못 알아들은 말을 예약이 받는다(미션에 안 보냄)
     if out is not None:
         return out, None
     if (not tools_used and gate != "mute" and "예약" in (text or "") and result.intent not in _NOT_A_REQUEST
