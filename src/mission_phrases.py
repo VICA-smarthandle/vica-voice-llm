@@ -42,6 +42,13 @@ SPK_REASK = "확인을 위해 한 번 더 말씀해 주세요"
 SPK_IDENTITY = "아까 {dest}에 가자고 하신 사용자님이신가요?"
 # 비상 정지 중 "비카야" — "네?" 없이 이 한 마디만(호출 반응표).
 ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
+# 도크에 들어가 있을 때(들어가는 중 포함) "비카야"에 하는 말(2026-11-18 사용자 지정 문구, "일단 그렇게, 나중에
+# 바꿀거야"). 미션 MSG_DOCK_WAKE 와 같은 글자. 바뀔 문구라 녹음으로 굽지 않고 미리 합성만 한다(standalone_prewarm).
+DOCK_WAKE = "비카가 밥 먹고 있어요. 밥 먹을때는 개도 안 건드린다는 속담이 있죠"
+# 앱 '도킹 시작'으로 도크로 가기 시작할 때(2026-11-19 사용자 지정 문구). 미션 MSG_DOCK_GO 와 같은 글자.
+DOCK_GO = "도킹 위치로 복귀합니다"
+# 도크에서 나오다 멈춘 상태(중지·비상정지)에서 "비카야"에 하는 말(2026-11-19 사용자 지정 문구). 미션 MSG_DOCK_WAIT 와 같은 글자.
+DOCK_WAIT = "비카가 아직 밥을 덜 먹었어요. 조금만 기다려주세요"
 # 주행 중 장애물 안내(2026-10-09 미션에 넣음). 미션 MSG_OBSTACLE_* 와 같은 글자. 2026-10-10 사용자 결정으로
 # 로봇이 실제로 한 일(비켜 감·감속·정지) 셋으로 나누고 문구를 바꿨다. 정지 문장을 말하는 동안은 귀가 마이크를
 # 닫는다(wakeword_monitor.MIC_OFF_PHRASES — '정지'가 긴급어다).
@@ -182,6 +189,9 @@ def standalone_prewarm(destinations: Iterable) -> list[str]:
     phrases = [d.confirm_prompt for d in dests]
     phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
     phrases += list(HELP_SENTENCES)
+    phrases.append(DOCK_WAKE)   # 도킹 중 호출(2026-11-18) — 늦으면 0.9초쯤 더 걸려 미리 합성한다
+    phrases.append(DOCK_WAIT)   # 나오다 멈춘 상태의 호출(2026-11-19)
+    phrases.append(DOCK_GO)     # 도킹 시작 안내(2026-11-19)
     # 예약 문장(2026-11-18) — 도구 출력 스위치가 하나라도 켜졌을 때만. 꺼져 있으면 목록이 예전과 같다.
     # TTS 노드는 .env 를 읽지 않아 스위치를 파일에서도 본다(any_tools_on).
     from .tool_calls import any_tools_on
