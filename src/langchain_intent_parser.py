@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from typing import Optional, Sequence
 
 from dotenv import load_dotenv
@@ -20,7 +21,7 @@ from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
-from . import local_rules
+from . import answer_field, local_rules
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import get_realtime_client
@@ -38,6 +39,7 @@ from .replies import (
     WAKE_GREETING,
     choose_between,
 )
+from .question_record import OpenQuestion
 from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
 from .reservation_flow import ReserveCall
 from .reservation_store import default_facilities
@@ -121,6 +123,27 @@ class _IntentDraft(BaseModel):
     )
 
 
+class _AnswerDraft(_IntentDraft):
+    """VICA_ANSWER=on 일 때의 출력 — _IntentDraft 에 대답 칸 하나를 더한다(설계 2026-11-18 answer-interpretation 4.1).
+
+    형은 str 이다: 외부 API(도구 호출·Realtime)는 형식을 강제하지 않아 허용 밖의 값이 올 수 있다 — 검증에서 죽지 않고
+    answer_field.fill 이 unclear 로 바꾼다. 로컬은 질문 종류마다 값을 좁힌 스키마를 쓴다(_ollama_structured).
+    """
+
+    answer: str = Field(default="", description=answer_field.ANSWER_DESCRIPTION,
+                        json_schema_extra={"enum": ["", *answer_field.ANSWERS]})
+
+
+def _draft_cls() -> type[_IntentDraft]:
+    """LLM 출력 스키마 — 대답 칸 스위치가 켜졌으면 _AnswerDraft, 아니면 지금의 _IntentDraft."""
+    return _AnswerDraft if answer_field.on() else _IntentDraft
+
+
+# 이번 해석 호출의 열린 질문 종류(로컬 스키마 고르기). 호출마다 parse_intent 가 넣고 지운다 — 그림자 비교 스레드·
+# 워밍업이 동시에 불러도 섞이지 않게 ContextVar 다.
+_ANSWER_KIND: ContextVar[str] = ContextVar("vica_answer_kind", default="")
+
+
 # 손잡이 사용법 사실 (2026-09-30). 사용자가 "손잡이 어디 있어요?", "손 놓으면
 # 어떻게 돼요?", "좀 천천히 가 주세요"라고 물을 때 답할 근거다 — 지시문에 손잡이
 # 이야기가 한 줄도 없어 LLM 이 지어내거나 모른다고 했다. 말투는 지시하지 않는다
@@ -154,9 +177,11 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 
 def _build_system_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
-    local: bool = False, situation: str = "",
+    local: bool = False, situation: str = "", question: Optional[OpenQuestion] = None,
 ) -> str:
     """글자 경로 지시문. situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
+
+    question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 맨 끝 [지금 상황]에 한 줄로 붙는다(answer_field.with_question).
 
     2026-10-07 부터 글자 경로에도 메모를 붙인다(사용자 결정) — 와이파이가 끊겨 글자 경로
     (받아쓰기 → gpt/로컬)로 넘어가도 "어디서 기다린다고?"·"화장실 어디야?"에 답하게.
@@ -238,7 +263,8 @@ def _build_system_prompt(
   맞아, 그래, 좋아)하면: intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true
   로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
-- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "") + ledger
+- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "") + (
+        answer_field.with_question(ledger, question))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -539,7 +565,7 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
             max_retries=max_retries,
         )
         # strict=True: 스키마를 서버가 문법 수준에서 강제한다 (실측 준수 18/18).
-        return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
+        return llm.with_structured_output(_draft_cls(), method="json_schema", strict=True)
 
     api_key = os.environ.get("OLLAMA_API_KEY", "")
     kwargs = {
@@ -560,12 +586,31 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
         client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
     kwargs["client_kwargs"] = client_kwargs
     llm = ChatOllama(**kwargs)
-    return llm.with_structured_output(_IntentDraft)
+    return _ollama_structured(llm)
+
+
+def _ollama_structured(llm):
+    """로컬(Ollama) 구조화 출력. 대답 칸이 꺼졌으면 지금 그대로 _IntentDraft 하나다.
+
+    켜졌으면 호출 때의 열린 질문 종류(_ANSWER_KIND)로 answer 값을 좁힌 스키마를 고른다 — 구조화 출력이라 그 값만
+    나온다(설계 2026-11-18 4.1). 열린 질문이 없으면 칸 없는 _IntentDraft 그대로라 토큰이 늘지 않는다. 종류마다 한 번 만든다.
+    """
+    if not answer_field.on():
+        return llm.with_structured_output(_IntentDraft)
+    by_kind: dict = {}
+
+    def invoke(messages):
+        kind = _ANSWER_KIND.get()
+        if kind not in by_kind:
+            by_kind[kind] = llm.with_structured_output(answer_field.narrowed(_IntentDraft, kind))
+        return by_kind[kind].invoke(messages)
+
+    return RunnableLambda(invoke)
 
 
 def _set_intent_tool() -> dict:
     """set_intent 도구. 인자는 지금 구조화 출력(_IntentDraft)의 칸과 설명 그대로다."""
-    return set_intent_tool(_IntentDraft.model_json_schema())
+    return set_intent_tool(_draft_cls().model_json_schema())
 
 
 def _draft_from_tool_message(msg) -> "_IntentDraft | ReserveCall":
@@ -582,7 +627,7 @@ def _draft_from_tool_message(msg) -> "_IntentDraft | ReserveCall":
         return reserve_call(args)
     if name == SET_INTENT:
         try:
-            return _IntentDraft.model_validate(args)
+            return _draft_cls().model_validate(args)
         except ValidationError as exc:
             raise ValueError(f"set_intent 인자가 맞지 않다: {exc}") from exc
     raise ValueError(f"목록에 없는 도구: {name}")
@@ -653,7 +698,7 @@ def _build_local_structured():
         client_kwargs={"timeout": LOCAL_TIMEOUT_SEC},
         **extra,
     )
-    return llm.with_structured_output(_IntentDraft)
+    return _ollama_structured(llm)
 
 
 def _cloud_probe() -> ProbeResult:
@@ -961,30 +1006,36 @@ def parse_intent(
     robot_state: Optional[RobotState] = None,
     model: Optional[str] = None,
     situation: str = "",
+    question: Optional[OpenQuestion] = None,
 ) -> "VicaIntent | ReserveCall":
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)
 
     situation 은 LLM 노드의 [지금 상황] 블록(2026-10-07 글자 경로에도 붙임).
     도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
+    question 은 이 말이 들어올 때 열려 있던 질문(질문 기록). 대답 칸이 켜졌으면(VICA_ANSWER=on) 돌려주는 의도에
+    question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 먼저, 그 밖은 LLM 이 낸 값이다(설계
+    2026-11-18 4.3). 의도 칸은 지금 길 그대로 정한다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
+    ruled = answer_field.short_answer(user_text, question, local)
     shortcut = _shortcut_intent(user_text, history, destinations,
                                 dialog_state=dialog_state, local=local)
     if shortcut is not None:
-        return shortcut
+        return answer_field.fill(shortcut, question, ruled)
     answer = _mission_question_answer(user_text, history, robot_state, local)
     if answer is not None:
-        return answer
+        return answer_field.fill(answer, question, ruled)
     pending_command = _pending_command(history)
     pending = _pending_for(history, destinations, local, dialog_state)
 
     messages: list[BaseMessage] = [SystemMessage(
-        _build_system_prompt(destinations, robot_state, local=local, situation=situation))]
+        _build_system_prompt(destinations, robot_state, local=local, situation=situation, question=question))]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(user_text))
 
+    kind_token = _ANSWER_KIND.set(question.kind if question is not None and answer_field.on() else "")
     try:
         if model is not None:
             # 벤치·수동 지정 경로(scripts/bench_models.py): 그 모델 하나로 직접 부른다.
@@ -1001,18 +1052,21 @@ def parse_intent(
             _log("error", f"[LLM] 호출 실패(클라우드만, 폴백 꺼짐): {exc}")
         else:
             _log("error", f"[LLM] 호출 실패(로컬까지): {exc}")
-        return VicaIntent(
+        return answer_field.fill(VicaIntent(
             intent="unknown",
             reply=LLM_UNAVAILABLE,
             confidence=0.0,
             need_confirm=False,
-        )
+        ), question, ruled)
+    finally:
+        _ANSWER_KIND.reset(kind_token)
     if isinstance(draft, ReserveCall):
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(_finalize 는 의도 전용).
         return draft
-    return _finalize(draft, destinations, pending=pending,
-                     pending_command=pending_command, user_text=user_text, local=local,
-                     robot_state=robot_state)
+    result = _finalize(draft, destinations, pending=pending,
+                       pending_command=pending_command, user_text=user_text, local=local,
+                       robot_state=robot_state)
+    return answer_field.fill(result, question, ruled, getattr(draft, "answer", "") or "")
 
 
 # ---------------------------------------------------------------------------
