@@ -303,3 +303,45 @@ def test_text_replay_goes_through_the_same_delivery(monkeypatch):
     assert out.intent == "navigate" and out.matched_destination_id == DEST.id
     assert heard == "화장실로 가자" and dt == 0.4 and info["src"] == "llm"
     assert "[진행 중인 예약] 가" in client.seen[2]
+
+
+def _minutes_q():
+    from src.question_record import OpenQuestion
+    return OpenQuestion(id="q7", kind="minutes", text="몇 분쯤 걸리실까요?", option_ids=(), opened_at=0.0)
+
+
+def test_realtime_answer_is_filled(monkeypatch):
+    from src.realtime_intent import RealtimeResult
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    result = RealtimeResult(draft={"intent": "wait", "wait_minutes": 15, "answer": "minutes"},
+                            heard_text="삼십분", latency_sec=1.0)
+    intent, heard, _dt, _info = parser._deliver_realtime_result(result, [], None, question=_minutes_q())
+    # Realtime 이 낸 값 그대로다 — 받아쓴 글자의 규칙(30분)과 견주는 일은 노드 로그·재생 도구가 한다.
+    assert (intent.question_id, intent.answer, intent.answer_value, heard) == ("q7", "minutes", "15", "삼십분")
+    clamped = RealtimeResult(draft={"intent": "unknown", "answer": "yes"}, heard_text="네", latency_sec=1.0)
+    assert parser._deliver_realtime_result(clamped, [], None, question=_minutes_q())[0].answer == "unclear"
+
+
+def test_realtime_answer_is_empty_when_off():
+    from src.realtime_intent import RealtimeResult
+    result = RealtimeResult(draft={"intent": "wait", "wait_minutes": 15, "answer": "minutes"},
+                            heard_text="삼십분", latency_sec=1.0)
+    assert parser._deliver_realtime_result(result, [], None, question=_minutes_q())[0].answer == ""
+
+
+def test_audio_prompt_carries_the_question_line(monkeypatch):
+    from src import answer_field as af
+    from src.realtime_intent import RealtimeResult
+    seen = {}
+
+    class Client:
+        def ask(self, pcm, history, instructions):
+            seen["instructions"] = instructions
+            return RealtimeResult(draft={"intent": "unknown"}, heard_text="", latency_sec=0.1)
+
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: Client())
+    parser.parse_intent_audio(b"", [], question=_minutes_q())
+    assert "로봇이 물은 질문" not in seen["instructions"]
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    parser.parse_intent_audio(b"", [], question=_minutes_q())
+    assert seen["instructions"].endswith(af.with_question("", _minutes_q()))

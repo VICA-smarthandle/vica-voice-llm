@@ -1267,16 +1267,19 @@ def parse_intent_audio(
     robot_state: Optional[RobotState] = None,
     situation: str = "",
     directory_block: str = "",
+    question: Optional[OpenQuestion] = None,
 ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
     (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": "llm", "usage": ...}.
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
     도구 출력이 켜져 있고(VICA_TOOLS_AUDIO=on) 모델이 reserve_facility 를 부르면 의도 대신 ReserveCall 을 돌려준다.
+    question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 [지금 상황] 끝에 한 줄로 가고, 모델이 낸 answer 가 의도에 실린다.
     """
-    instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
+    instructions = build_audio_prompt(destinations, robot_state,
+                                      answer_field.with_question(situation, question), directory_block)
     result = get_realtime_client().ask(pcm16_16k, history, instructions)
-    return _deliver_realtime_result(result, destinations, robot_state)
+    return _deliver_realtime_result(result, destinations, robot_state, question)
 
 
 def parse_intent_realtime_text(
@@ -1286,23 +1289,29 @@ def parse_intent_realtime_text(
     robot_state: Optional[RobotState] = None,
     situation: str = "",
     directory_block: str = "",
+    question: Optional[OpenQuestion] = None,
 ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
     parse_intent_audio 와 같다. 운영 경로는 부르지 않는다."""
-    instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
+    instructions = build_audio_prompt(destinations, robot_state,
+                                      answer_field.with_question(situation, question), directory_block)
     result = get_realtime_client().ask_text(text, history, instructions)
-    return _deliver_realtime_result(result, destinations, robot_state)
+    return _deliver_realtime_result(result, destinations, robot_state, question)
 
 
-def _deliver_realtime_result(result, destinations: Sequence[DestinationData],
-                             robot_state: Optional[RobotState]) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
-    """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info)."""
+def _deliver_realtime_result(result, destinations: Sequence[DestinationData], robot_state: Optional[RobotState],
+                             question: Optional[OpenQuestion] = None,
+                             ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
+    """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info).
+
+    대답 칸이 켜졌으면 모델이 낸 answer 를 의도에 싣는다(모델 값 그대로 — 받아쓴 글자의 짧은 대답 규칙과 견주는 일은
+    노드 로그와 재생 도구가 한다, 3-나-2 1단계)."""
     heard = result.heard_text.strip()
     if result.tool == RESERVE:
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).
         return reserve_call(result.draft), heard, result.latency_sec, {"src": "llm", "usage": result.usage}
     try:
-        draft = _IntentDraft(**result.draft)
+        draft = _draft_cls()(**result.draft)
     except ValidationError as exc:
         raise ValueError(f"set_intent 인자가 _IntentDraft 와 맞지 않는다: {exc}") from exc
     dialog_state = robot_state.dialog_state if robot_state else ""
@@ -1313,6 +1322,7 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData],
     src = "llm+고르기규칙" if shared else "llm"
     if _audio_short_answer(intent, heard, dialog_state):
         src += "+짧은답규칙"
+    intent = answer_field.fill(intent, question, None, getattr(draft, "answer", "") or "")
     return intent, heard, result.latency_sec, {"src": src, "usage": result.usage}
 
 

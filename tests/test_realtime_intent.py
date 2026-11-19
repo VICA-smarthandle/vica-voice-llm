@@ -396,3 +396,18 @@ def test_audio_tools_active_follows_the_session_tools(monkeypatch, tmp_path):
     assert audio_tools_active()
     (tmp_path / "facilities.yaml").write_text("[]", encoding="utf-8")
     assert not audio_tools_active()
+
+
+def test_tool_has_no_answer_when_off():
+    from src.realtime_intent import build_intent_tool
+    assert "answer" not in build_intent_tool()["parameters"]["properties"]
+
+
+def test_tool_has_the_answer_field_when_on(monkeypatch):
+    from src import answer_field as af
+    from src.realtime_intent import build_intent_tool
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    tool = build_intent_tool()
+    assert tool["parameters"]["properties"]["answer"] == {
+        "type": "string", "enum": ["", *af.ANSWERS], "description": af.ANSWER_DESCRIPTION}
+    assert tool["parameters"]["required"] == ["intent", "heard_text"]

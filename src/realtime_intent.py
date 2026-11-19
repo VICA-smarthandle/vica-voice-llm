@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
+from . import answer_field
 from .tool_calls import audio_tools_on, reserve_tool
 
 SAMPLE_RATE_IN = 16000   # 웨이크워드 노드 클립
@@ -93,8 +94,12 @@ def audio_tools_active() -> bool:
 
 
 def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 정한다. 반드시 이 함수로만 답한다.") -> dict:
-    """_IntentDraft 와 같은 필드 + heard_text. 파서가 인자를 _IntentDraft 로 검증한다."""
-    return {
+    """_IntentDraft 와 같은 필드 + heard_text. 파서가 인자를 _IntentDraft 로 검증한다.
+
+    대답 칸이 켜졌으면(VICA_ANSWER=on) answer 인자를 더한다(설계 2026-11-18 4.1) — 허용 밖의 값은 파서 쪽
+    answer_field.fill 이 unclear 로 바꾼다. 꺼져 있으면 지금 인자 그대로다.
+    """
+    tool = {
         "type": "function",
         "name": TOOL_NAME,
         "description": description,
@@ -113,6 +118,10 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
             "required": ["intent", "heard_text"],
         },
     }
+    if answer_field.on():
+        tool["parameters"]["properties"]["answer"] = {
+            "type": "string", "enum": ["", *answer_field.ANSWERS], "description": answer_field.ANSWER_DESCRIPTION}
+    return tool
 
 
 def history_to_items(history: Optional[Sequence[Any]]) -> list[dict]:
