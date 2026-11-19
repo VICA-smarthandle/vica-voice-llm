@@ -88,3 +88,18 @@ def test_llm_failure_is_an_error_row_not_a_wrong_answer():
     row = run_case(by_id("R1"), fake(VicaIntent(intent="unknown", reply=LLM_UNAVAILABLE)))
     assert row["error"] and not row["ok"]
     assert summarize([row])["errors"] == 1
+
+
+def test_flow_checks_values_against_the_heard_text():
+    """Realtime 재생: 값의 근거는 넣은 글자가 아니라 모델이 적은 들린 말(heard_text)에서 찾는다 — 운영과 같다."""
+    assert run_case(by_id("F1"), lambda t, h, s: (ReserveCall(name="김민수"), 0.3, "김민수"))["ok"]
+    row = run_case(by_id("F1"), lambda t, h, s: (ReserveCall(name="김민수"), 0.3, "네"))
+    assert not row["ok"] and row["heard"] == "네"
+
+
+def test_interpreter_exception_is_an_error_row():
+    def boom(text, history, situation):
+        raise TimeoutError("Realtime 응답 8초 초과")
+
+    row = run_case(by_id("R1"), boom)
+    assert row["error"] and not row["ok"] and "TimeoutError" in row["why"]

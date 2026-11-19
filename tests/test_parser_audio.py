@@ -286,3 +286,20 @@ def test_reserve_tool_result_is_handed_back(monkeypatch):
     out, heard, dt, info = parser.parse_intent_audio(b"\x00\x00", [DEST])
     assert out == ReserveCall(facility="세미나실", date="내일", start_time="14:00")
     assert heard == "내일 오후 두 시에 세미나실 예약해 줘" and info["src"] == "llm" and dt == 1.0
+
+
+def test_text_replay_goes_through_the_same_delivery(monkeypatch):
+    """재생 측정용 글자 입력 — Realtime 에 글자를 넣고, 그 뒤 처리는 소리 경로와 같다."""
+    class Client:
+        def ask_text(self, text, history, instructions):
+            self.seen = (text, list(history or []), instructions)
+            return RealtimeResult(draft={"intent": "navigate", "destination_candidate": DEST.name,
+                                         "need_confirm": True, "confidence": 0.9},
+                                  heard_text=text, latency_sec=0.4)
+
+    client = Client()
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: client)
+    out, heard, dt, info = parser.parse_intent_realtime_text("화장실로 가자", [DEST], situation="[진행 중인 예약] 가\n")
+    assert out.intent == "navigate" and out.matched_destination_id == DEST.id
+    assert heard == "화장실로 가자" and dt == 0.4 and info["src"] == "llm"
+    assert "[진행 중인 예약] 가" in client.seen[2]

@@ -1207,6 +1207,27 @@ def parse_intent_audio(
     """
     instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
     result = get_realtime_client().ask(pcm16_16k, history, instructions)
+    return _deliver_realtime_result(result, destinations, robot_state)
+
+
+def parse_intent_realtime_text(
+    text: str,
+    destinations: Sequence[DestinationData],
+    history: Optional[list[BaseMessage]] = None,
+    robot_state: Optional[RobotState] = None,
+    situation: str = "",
+    directory_block: str = "",
+) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
+    """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
+    parse_intent_audio 와 같다. 운영 경로는 부르지 않는다."""
+    instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
+    result = get_realtime_client().ask_text(text, history, instructions)
+    return _deliver_realtime_result(result, destinations, robot_state)
+
+
+def _deliver_realtime_result(result, destinations: Sequence[DestinationData],
+                             robot_state: Optional[RobotState]) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
+    """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info)."""
     heard = result.heard_text.strip()
     if result.tool == RESERVE:
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).

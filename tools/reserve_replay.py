@@ -1,9 +1,10 @@
 """예약 묶음(tools/reserve_cases.py)을 운영 해석 경로에 넣어 도구 출력의 켜는 기준을 잰다 (설계 2026-11-18 7절).
 
-    .venv/bin/python -m tools.reserve_replay --path gpt
+    .venv/bin/python -m tools.reserve_replay --path gpt|realtime
 
-운영 지시문 그대로(parse_intent)에 [지금 상황]의 진행 중인 예약 한 줄과 대화 기록(넘긴 질문 = 로봇 줄)을 붙여 부르고,
-결과를 음성 노드와 같은 갈림(handle_result)에 넣어 예약 흐름이 쥔 값·말한 문장·저장 여부로 채점한다.
+운영 지시문 그대로(gpt = parse_intent, realtime = 소리 경로 지시문에 글자 입력)에 [지금 상황]의 진행 중인 예약 한 줄과
+대화 기록(넘긴 질문 = 로봇 줄)을 붙여 부르고, 결과를 음성 노드와 같은 갈림(handle_result)에 넣어 예약 흐름이 쥔 값·
+말한 문장·저장 여부로 채점한다. realtime 은 소리가 아니라 글자를 넣는다 — 소리로 이름을 얼마나 듣는지는 실기로 본다.
 합격: 첫 요청 15/15 · 그 밖에서 reserve 호출 0/13 · 이어진 대답 10/10.
 결과: ~/vica_data/tool_call_test_20261118/reserve_replay_<경로>_<시각>.jsonl. 주행 중에는 돌리지 않는다.
 
@@ -40,7 +41,8 @@ DESTINATIONS = [DestinationData(id=f"d{i}", name=name, confirm_prompt=f"{name}�
                 for i, name in enumerate(DESTINATION_NAMES)]
 STATE = RobotState(dialog_state="idle")
 
-Interpret = Callable[[str, list, str], tuple]     # (글자, 대화 기록, [지금 상황]) → (VicaIntent | ReserveCall, 걸린 초)
+# (글자, 대화 기록, [지금 상황]) → (VicaIntent | ReserveCall, 걸린 초[, 모델이 적은 들린 말])
+Interpret = Callable[[str, list, str], tuple]
 
 
 def _grade(case: Case, result, out, passed, flow: ReservationFlow) -> list[str]:
@@ -80,13 +82,19 @@ def run_case(case: Case, interpret: Interpret) -> dict:
                     if asked is not None else None)
         situation = join_situation(render_ledger(STATE, awaiting_answer=bool(case.setup), now_text="14:03"),
                                    flow.situation_line())
-        result, wall = interpret(case.text, history, situation)
-        row = {"id": case.id, "text": case.text, "wall_s": round(wall, 2),
+        failed = {"id": case.id, "text": case.text, "heard": "", "wall_s": 0.0, "reserve_called": False,
+                  "ok": False, "error": True, "result": "", "say": "", "passed": ""}
+        try:
+            result, wall, *rest = interpret(case.text, history, situation)
+        except Exception as exc:  # noqa: BLE001 — 경로 오류는 행 결과로 남긴다
+            return {**failed, "why": f"{type(exc).__name__}: {exc}"}
+        heard = rest[0] if rest else case.text      # Realtime 은 모델이 적은 들린 말로 값의 근거를 본다(운영과 같다)
+        row = {"id": case.id, "text": case.text, "heard": heard, "wall_s": round(wall, 2),
                "reserve_called": isinstance(result, ReserveCall), "error": False}
         if getattr(result, "reply", "") == LLM_UNAVAILABLE:
-            return {**row, "ok": False, "error": True, "why": "LLM 못 씀", "result": "", "say": "", "passed": ""}
+            return {**failed, "wall_s": round(wall, 2), "why": "LLM 못 씀"}
         gate = start_gate(STATE.dialog_state, question, flow.asked_text)
-        out, passed = handle_result(flow, result, case.text, gate=gate, tools_used=True)
+        out, passed = handle_result(flow, result, heard, gate=gate, tools_used=True)
         problems = _grade(case, result, out, passed, flow)
         shown = (json.dumps({k: v for k, v in vars(result).items() if v}, ensure_ascii=False)
                  if isinstance(result, ReserveCall)
@@ -126,9 +134,20 @@ def _gpt_interpreter() -> Interpret:
     return interpret
 
 
+def _realtime_interpreter() -> Interpret:
+    from src.langchain_intent_parser import parse_intent_realtime_text
+    from tools.answer_replay import call_with_retry
+
+    def interpret(text: str, history: list, situation: str):
+        result, heard, latency, _info = call_with_retry(lambda: parse_intent_realtime_text(
+            text, DESTINATIONS, history=history, robot_state=STATE, situation=situation))
+        return result, latency, heard
+    return interpret
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--path", choices=("gpt",), required=True)
+    ap.add_argument("--path", choices=("gpt", "realtime"), required=True)
     ap.add_argument("--only", default="", help="쉼표로 나눈 id 머리글자·id (예: F 또는 R1,E3)")
     args = ap.parse_args()
 
@@ -138,7 +157,7 @@ def main() -> None:
     os.environ.update(tools_env(True))
     scratch = tempfile.mkdtemp(prefix="reserve_replay_")
     os.environ["VICA_RESERVATION_DIR"] = scratch      # 시설 목록은 저장소 것, 운영 예약 파일은 건드리지 않는다
-    interpret = _gpt_interpreter()
+    interpret = _realtime_interpreter() if args.path == "realtime" else _gpt_interpreter()
 
     picks = [x.strip() for x in args.only.split(",") if x.strip()]
     cases = [c for c in CASES if not picks or c.id in picks or c.id[0] in picks]
