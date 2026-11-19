@@ -43,6 +43,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
                           UInt8MultiArray)
+from std_srvs.srv import SetBool
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
@@ -61,6 +62,8 @@ from .stt_qwen import QwenUnavailable, ear_stt_engines
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
+from .wake_doa_turn import (WAKE_DOA_TURN_SERVICE, WAKE_DOA_TURN_STATE_TOPIC, wake_doa_turn_from_env,
+                            wake_doa_turn_reply)
 from .wakeword_monitor import (
     LISTEN_START_SEC, WakewordMonitor, describe_emergency_check, describe_emergency_near,
     ear_stt_model_names, listen_band_min_from_env, save_emergency_clip)
@@ -152,8 +155,8 @@ class WakewordNode(Node):
         # 방향을 /vica/wake_doa 로 미션에 보내 그쪽으로 돈다(SEEKING·핸들 쪽 곧장
         # 질문). 마이크 잡음이 강한 곳에서 방향이 틀려 엉뚱한 쪽으로 돌았다. 꺼도
         # 방향은 로그에 남기고, barge-in 방향 관문·호출 방향 잠금은 그대로 쓴다.
-        self._wake_doa_turn = os.environ.get(
-            "VICA_WAKE_DOA_TURN", "off").strip().lower() in ("1", "on", "true")
+        # 2026-11-19: 앱 대시보드 '빔포밍 회전' 스위치로 실행 중 바꾼다(_on_wake_doa_turn_set).
+        self._wake_doa_turn = wake_doa_turn_from_env(os.environ.get("VICA_WAKE_DOA_TURN"))
 
         # 장소 이름 귀띔 — 자유 명령 창의 목적지 오전사('휴게실'→'조계실') 대책.
         # 목적지를 못 읽어도 감시는 시작해야 하므로 실패는 경고로만 남긴다.
@@ -331,6 +334,14 @@ class WakewordNode(Node):
             String, "/vica/patrol/watch", self._on_patrol_watch,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
+        # 빔포밍 회전 켜고 끄기(2026-11-19 사용자) — 앱이 서비스를 부르고 latched 상태만 보고 그린다.
+        # 마이크 스레드보다 먼저 만들어 첫 상태를 낸다. 음성을 다시 띄우면 .env 값으로 돌아간다.
+        self._pub_wake_doa_turn = self.create_publisher(
+            Bool, WAKE_DOA_TURN_STATE_TOPIC,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_service(SetBool, WAKE_DOA_TURN_SERVICE, self._on_wake_doa_turn_set)
+        self._publish_wake_doa_turn_state()
+
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._monitor_error: "BaseException | None" = None
         self._thread = threading.Thread(target=self._run_monitor, daemon=True)
@@ -345,7 +356,7 @@ class WakewordNode(Node):
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
             f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate} | "
-            f"호출 방향 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'} | "
+            f"빔포밍 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'} | "
             f"호출 응답 {'미션 판정' if self._wake_by_mission else '이 노드(옛 판)'})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
@@ -489,6 +500,19 @@ class WakewordNode(Node):
         self._monitor.set_wake_verdict(verdict, seq)
         if verdict == "ignore":
             self.get_logger().info(f"🙊 미션 판정 #{seq_text or '-'}: 대답 안 함 — 호출 창의 말을 버린다")
+
+    def _publish_wake_doa_turn_state(self) -> None:
+        self._pub_wake_doa_turn.publish(Bool(data=bool(self._wake_doa_turn)))
+
+    def _on_wake_doa_turn_set(self, request, response):
+        """앱 '빔포밍 회전' 스위치. 이미 보낸 회전은 미션 몫이라 끝까지 간다."""
+        on = bool(request.data)
+        self._wake_doa_turn = on
+        self._publish_wake_doa_turn_state()
+        self.get_logger().info(f"🧭 빔포밍 회전 {'켜짐' if on else '꺼짐'} (앱)")
+        response.success = True
+        response.message = wake_doa_turn_reply(on)
+        return response
 
     def _publish_wake_doa(self, doa: float) -> None:
         """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다.
