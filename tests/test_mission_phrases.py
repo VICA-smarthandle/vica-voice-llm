@@ -73,6 +73,9 @@ class TestSentences:
         assert mp.WAIT_SPOT_BLOCKED == ml.MSG_WAIT_SPOT_BLOCKED
         assert mp.WAIT_EXPIRED == ml.MSG_WAIT_EXPIRED
         assert mp.ESTOP_WAKE == ml.MSG_ESTOP_WAKE
+        assert mp.DOCK_WAKE == ml.MSG_DOCK_WAKE   # 도킹 중 호출(2026-11-18) — ROS feat/docking 과 같은 날 올린다
+        assert mp.DOCK_WAIT == ml.MSG_DOCK_WAIT   # 나오다 멈춘 상태의 호출(2026-11-19)
+        assert mp.DOCK_GO == ml.MSG_DOCK_GO       # 도킹 시작 안내(2026-11-19)
         assert mp.OBSTACLE_AVOID == ml.MSG_OBSTACLE_AVOID   # 주행 중 장애물 안내(2026-10-09)
         assert mp.OBSTACLE_SLOW == ml.MSG_OBSTACLE_SLOW
         assert mp.OBSTACLE_STOP == ml.MSG_OBSTACLE_STOP     # 정지 문장(2026-10-10)
