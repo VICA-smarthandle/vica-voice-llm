@@ -23,7 +23,7 @@
 - 지시문(`_build_system_prompt`·`build_audio_prompt`)은 고치지 않는다. 도구 규칙은 도구 설명에 적는다.
 - 문장 9개는 아래 글자 그대로(설계 6절, 사용자 확정):
   - ① `성함을 말씀해 주세요.`
-  - ② `{이름} 님 이름으로 {날짜} {시작}부터 {끝}까지 {시설} 예약할까요?` — 예: `김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?`
+  - ② `{이름} 님 이름으로 {날짜} {시작}부터 {끝}까지 {시설} 예약할까요?` — 예: `김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?`
   - ③ `네, 예약이 완료되었습니다. 이제 어디로 갈까요?`
   - ④ `그 시간에는 이미 예약이 있습니다. 다른 시간을 말씀해 주세요.`
   - ⑤ `언제로 예약할까요?`
@@ -33,7 +33,7 @@
   - ⑨ `지금은 예약을 받을 수 없습니다.`
 - 대답을 기다리는 문장(①②③④⑤⑦⑧)은 `ask_text`·`ask_kind` 로 넘겨 미션이 말한다(② `yesno`, 나머지 `open`). ⑥·⑨ 는 음성이 `reply` 로 말한다.
 - rclpy 로거를 조건식으로 고르지 않는다(`tests/test_one_voice_wiring.py::test_no_logger_picked_by_condition`).
-- 시험·측정 자료의 사람 이름은 지은 이름만 쓴다(김토니·이서연·박준호).
+- 시험·측정·시연 예시의 사람 이름은 흔한 이름을 여러 개 쓴다(김민수 · 이서연 · 박준호 · 정현우 · 강민지). 이름 하나에 맞춘 결과가 되지 않게 한다(사용자 11-19: "굳이 김토니로 할 필요는 없다"). 실제 사람의 정보는 쓰지 않는다.
 - 주행 묶음(`vica-drive.target`)이 켜져 있으면 전체 시험과 재생 측정은 미루고 해당 시험 파일만 돌린다. 유닛을 직접 건드리지 않는다. `.env` 스위치를 켜는 일·음성 노드 재시작·외부 API 를 부르는 재생 측정은 그때마다 사용자에게 묻는다.
 - 시험 명령: `cd ~/VICA-smarthandle/vica-voice-llm && .venv/bin/python -m pytest -q -p no:cacheprovider`
 
@@ -83,7 +83,7 @@ NOW = datetime(2026, 11, 18, 14, 3, 21)
 
 def test_add_then_list_sorted(tmp_path):
     s = ReservationStore(tmp_path / "reservations.json")
-    late = s.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+    late = s.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     early = s.add("세미나실", "2026-11-19", "10:00", "11:00", "이서연", NOW)
     assert [r.id for r in s.list()] == [early.id, late.id]
     assert early.id and early.id != late.id and late.source == "voice"
@@ -93,7 +93,7 @@ def test_add_then_list_sorted(tmp_path):
 
 def test_overlap_is_same_facility_same_day_only(tmp_path):
     s = ReservationStore(tmp_path / "reservations.json")
-    s.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+    s.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     assert s.conflicts("세미나실", "2026-11-19", "15:00", "17:00")
     assert not s.conflicts("세미나실", "2026-11-19", "16:00", "18:00")   # 맞닿는 것은 겹침이 아니다
     assert not s.conflicts("상담실", "2026-11-19", "14:00", "16:00")
@@ -115,7 +115,7 @@ def test_broken_file_is_not_overwritten(tmp_path):
     path.write_text('[{"id": "r1", "facil', encoding="utf-8")
     s = ReservationStore(path)
     with pytest.raises(OSError):
-        s.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+        s.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     with pytest.raises(OSError):
         s.list()
     assert path.read_text(encoding="utf-8") == '[{"id": "r1", "facil'
@@ -123,7 +123,7 @@ def test_broken_file_is_not_overwritten(tmp_path):
 
 def test_cancel_removes_one_and_returns_it(tmp_path):
     s = ReservationStore(tmp_path / "reservations.json")
-    a = s.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+    a = s.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     assert s.cancel(a.id) == a and s.list() == [] and s.cancel(a.id) is None
 
 
@@ -250,8 +250,8 @@ def test_fixed_sentences_are_the_confirmed_text():
 
 
 def test_confirm_sentence_is_the_demo_line():
-    line = p.confirm_sentence("김토니", date(2026, 11, 19), "14:00", "16:00", "세미나실", date(2026, 11, 18))
-    assert line == "김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+    line = p.confirm_sentence("김민수", date(2026, 11, 19), "14:00", "16:00", "세미나실", date(2026, 11, 18))
+    assert line == "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
 ```
 
 - [ ] **Step 2: 실패 확인** → `ModuleNotFoundError`
@@ -307,7 +307,7 @@ from src.schema import VicaIntent
 
 NOW = datetime(2026, 11, 18, 14, 3, 21)        # 수요일
 FACILITIES = [Facility("세미나실", ("세미나룸",), 2, "09:00", "18:00"), Facility("상담실", (), 2, "09:00", "18:00")]
-DEMO = "김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+DEMO = "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
 YES = VicaIntent(intent="affirm", need_confirm=False)
 NO = VicaIntent(intent="deny", need_confirm=False)
 
@@ -331,11 +331,11 @@ def first(flow, text="내일 오후 두 시에 세미나실 예약해 줘."):
 
 def test_demo_script(flow):
     assert first(flow) == FlowOutput(p.ASK_NAME, "open")
-    assert call(flow, "김토니", name="김토니") == FlowOutput(DEMO, "yesno")
+    assert call(flow, "김민수", name="김민수") == FlowOutput(DEMO, "yesno")
     out = flow.on_general(YES)
     assert out.say == p.DONE and out.kind == "open"
     assert (out.saved.facility, out.saved.date, out.saved.start, out.saved.end, out.saved.name) == (
-        "세미나실", "2026-11-19", "14:00", "16:00", "김토니")
+        "세미나실", "2026-11-19", "14:00", "16:00", "김민수")
     assert flow.store.list() == [out.saved] and not flow.active
 
 
@@ -344,7 +344,7 @@ def test_values_not_in_the_words_are_dropped(flow):
     assert out == FlowOutput(p.ASK_WHEN, "open")
     assert call(flow, "내일 오후 두 시", date="내일", start_time="14:00") == FlowOutput(p.ASK_NAME, "open")
     assert call(flow, "음", name="홍길동") == FlowOutput(p.ASK_NAME, "open")     # 글자에 없는 이름 — 다시 묻는다
-    assert call(flow, "제 이름은 김토니예요.", name="김토니") == FlowOutput(DEMO, "yesno")
+    assert call(flow, "제 이름은 김민수예요.", name="김민수") == FlowOutput(DEMO, "yesno")
 
 
 def test_the_models_time_is_used(flow):
@@ -356,16 +356,16 @@ def test_the_models_time_is_used(flow):
 def test_end_time_only_when_spoken(flow):
     call(flow, "내일 두 시부터 세 시까지 세미나실 예약해 줘.", facility="세미나실", date="내일",
          start_time="14:00", end_time="15:00")
-    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 두 시부터 세 시까지" in call(flow, "김민수", name="김민수").say
     flow.drop()
     call(flow, "모레 오후 두 시에 한 시간만 세미나실 쓸게요.", facility="세미나실", date="모레",
          start_time="14:00", end_time="15:00")
-    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 두 시부터 세 시까지" in call(flow, "김민수", name="김민수").say
     flow.drop()
     first(flow, "내일 오후 두 시에 세미나실 예약해 줘.")          # 끝을 말하지 않았다
     flow.drop()
     call(flow, "내일 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="14:00", end_time="17:00")
-    assert "오후 두 시부터 네 시까지" in call(flow, "김토니", name="김토니").say     # 지어낸 끝은 버리고 기본 2시간
+    assert "오후 두 시부터 네 시까지" in call(flow, "김민수", name="김민수").say     # 지어낸 끝은 버리고 기본 2시간
 
 
 def test_empty_call_asks_facility_first(flow):
@@ -377,7 +377,7 @@ def test_taken_slot_then_another_time(flow):
     flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "이서연", NOW)
     assert first(flow) == FlowOutput(p.TAKEN, "open")
     assert call(flow, "오후 네 시", start_time="16:00") == FlowOutput(p.ASK_NAME, "open")   # 날짜(내일)는 쥐고 있다
-    assert "오후 네 시부터 여섯 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 네 시부터 여섯 시까지" in call(flow, "김민수", name="김민수").say
 
 
 def test_out_of_hours_and_past_are_refused(flow):
@@ -393,7 +393,7 @@ def test_gate(flow):
     assert flow.on_call(ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", "mute") is None
     assert not flow.active
     first(flow)
-    assert flow.on_call(ReserveCall(name="김토니"), "김토니", "busy") == FlowOutput(DEMO, "yesno")   # 진행 중이면 문을 다시 보지 않는다
+    assert flow.on_call(ReserveCall(name="김민수"), "김민수", "busy") == FlowOutput(DEMO, "yesno")   # 진행 중이면 문을 다시 보지 않는다
     assert start_gate("idle", None, "") == "ok" and start_gate("idle", q("네?"), "") == "ok"
     assert start_gate("idle", q("화장실로 안내해드릴까요?", "confirm"), "") == "busy"
     assert start_gate("idle", q(DEMO, "yesno"), DEMO) == "ok"
@@ -403,17 +403,17 @@ def test_gate(flow):
 
 def test_confirm_no_and_second_yes_does_not_save_twice(flow):
     first(flow)
-    call(flow, "김토니", name="김토니")
+    call(flow, "김민수", name="김민수")
     assert flow.on_general(YES).saved is not None
     assert flow.on_general(YES) is None and len(flow.store.list()) == 1
     first(flow, "모레 오후 두 시에 세미나실 예약해 줘.")
-    call(flow, "김토니", name="김토니")
+    call(flow, "김민수", name="김민수")
     assert flow.on_general(NO) == FlowOutput(p.NOT_RESERVED, "") and not flow.active and len(flow.store.list()) == 1
 
 
 def test_save_failure_says_unavailable_not_done(flow):
     first(flow)
-    call(flow, "김토니", name="김토니")
+    call(flow, "김민수", name="김민수")
     flow.store.path.write_text('[{"id": "r1", "facil', encoding="utf-8")
     assert flow.on_general(YES) == FlowOutput(p.UNAVAILABLE, "") and not flow.active
 
@@ -432,7 +432,7 @@ def test_question_closing_drops_the_draft(flow):
     flow.on_question_record("")                 # 앞 질문("네?")이 닫힘 — 내 질문은 아직 열린 적 없다
     assert flow.active
     flow.on_question_record(p.ASK_NAME)         # 미션이 내 질문을 열었다
-    call(flow, "김토니", name="김토니")          # 새 질문(②)을 넘겼다
+    call(flow, "김민수", name="김민수")          # 새 질문(②)을 넘겼다
     flow.on_question_record("")                 # ①이 닫힘 — ②는 아직 안 열렸다
     assert flow.active
     flow.on_question_record(DEMO)
@@ -457,9 +457,9 @@ def test_to_intent_and_event(flow):
     assert (ask.intent, ask.reply, ask.ask_text, ask.ask_kind, ask.need_confirm) == ("clarify", "", p.ASK_NAME, "open", False)
     say = to_intent(FlowOutput(p.NOT_RESERVED, ""))
     assert (say.intent, say.reply, say.ask_text, say.need_confirm) == ("question", p.NOT_RESERVED, "", False)
-    res = flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+    res = flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     event = json.loads(created_event(res, NOW))
-    assert event["event"] == "reservation_created" and event["id"] == res.id and event["name"] == "김토니"
+    assert event["event"] == "reservation_created" and event["id"] == res.id and event["name"] == "김민수"
     assert set(event) == {"event", "id", "facility", "date", "start", "end", "name", "source", "timestamp"}
 ```
 
@@ -626,7 +626,7 @@ def test_routing(flow):
     out, passed = handle_result(flow, ReserveCall(facility="세미나실", date="내일", start_time="14:00"),
                                 "내일 오후 두 시에 세미나실 예약해 줘.", gate="ok", tools_used=True)
     assert out == FlowOutput(p.ASK_NAME, "open") and passed is None
-    out, passed = handle_result(flow, ReserveCall(name="김토니"), "김토니", gate="ok", tools_used=True)
+    out, passed = handle_result(flow, ReserveCall(name="김민수"), "김민수", gate="ok", tools_used=True)
     assert out == FlowOutput(DEMO, "yesno") and passed is None
     out, passed = handle_result(flow, YES, "그래", gate="ok", tools_used=True)
     assert out.say == p.DONE and passed is None                   # 예약이 받은 승낙은 미션에 보내지 않는다
@@ -696,9 +696,9 @@ def test_question_record_and_cleared_context_reach_the_flow():
 - Consumes: Task 4·5·6
 - Produces:
   - `tools.reserve_cases.CASES: list[Case]` — `Case(id: str, setup: tuple, text: str, expect: dict)`. `setup` 은 그 발화 전에 진행 상태에 넣을 `(ReserveCall, 글자)` 들(빈 tuple = 첫 요청).
-    - 첫 요청 15개: `~/vica_data/tool_call_test_20261118/measure.py` 의 `ROWS` 가운데 R1~R12, 그리고 E1 `내일 두 시부터 세 시까지 세미나실 예약해 줘.`(14:00~15:00) · E2 `모레 오전 열 시부터 열두 시까지 상담실 예약해 줘.`(10:00~12:00) · E3 `내일 오후 두 시에 한 시간만 세미나실 쓸게요.`(14:00~15:00).
+    - 첫 요청 15개: `~/vica_data/tool_call_test_20261118/measure.py` 의 `ROWS` 가운데 R1~R12(R8 의 이름은 `정현우`로 바꾼다 — `정현우 이름으로 내일 오전 열한 시 상담실 예약해 줘.`), 그리고 E1 `내일 두 시부터 세 시까지 세미나실 예약해 줘.`(14:00~15:00) · E2 `모레 오전 열 시부터 열두 시까지 상담실 예약해 줘.`(10:00~12:00) · E3 `내일 오후 두 시에 한 시간만 세미나실 쓸게요.`(14:00~15:00).
     - 그 밖 13개: 같은 파일의 N1~N13.
-    - 이어진 대답 10개(F1~F10, `setup` 으로 진행 상태를 만든 뒤 `[지금 상황]` 한 줄과 넘긴 질문을 붙임): 이름 질문에 `김토니` · `이서연입니다.` · `제 이름은 김토니예요.` · `아니, 됐어.`(거절) · `화장실 먼저 가자.`(이동), ⑤ 뒤 `내일 오후 세 시`, ⑦ 뒤 `세미나실이요.`, 확인에 `그래.`(승낙) · `아니요.`(거절) · `아니 네 시로 해 줘.`(시작 16:00 으로 다시 확인).
+    - 이어진 대답 10개(F1~F10, `setup` 으로 진행 상태를 만든 뒤 `[지금 상황]` 한 줄과 넘긴 질문을 붙임): 이름 질문에 `김민수` · `이서연입니다.` · `제 이름은 박준호예요.` · `아니, 됐어.`(거절) · `화장실 먼저 가자.`(이동), ⑤ 뒤 `내일 오후 세 시`, ⑦ 뒤 `세미나실이요.`, 확인에 `그래.`(승낙) · `아니요.`(거절) · `아니 네 시로 해 줘.`(시작 16:00 으로 다시 확인).
   - `tools.reserve_replay.summarize(rows: list[dict]) -> dict` — 키 `first_ok`·`first_total`·`stray_reserve`·`follow_ok`·`follow_total`
   - `python -m tools.reserve_replay --path gpt|realtime` — 운영 지시문(`parse_intent` 그대로)에 `situation=flow.situation_line()` 과 대화 기록(넘긴 질문을 로봇 줄로)을 붙여 돌리고, 결과를 `handle_result` 에 넣어 진행 상태와 저장 결과로 채점한다. `첫 요청 n/15 · 그 밖에서 reserve 호출 n/13 · 이어진 대답 n/10 · 평균 응답` 을 찍고 `~/vica_data/tool_call_test_20261118/reserve_replay_<경로>_<시각>.jsonl` 에 남긴다.
   - `tools.answer_replay`: `--tools` 를 주면 import 전에 `VICA_TOOLS_TEXT=on`·`VICA_TOOLS_AUDIO=on` 을 넣는다. 해석 결과가 `ReserveCall` 인 행은 `wrong` 으로 센다(208행에는 예약 발화가 없다).

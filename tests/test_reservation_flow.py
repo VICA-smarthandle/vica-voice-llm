@@ -12,7 +12,7 @@ from src.schema import VicaIntent
 
 NOW = datetime(2026, 11, 18, 14, 3, 21)        # 수요일
 FACILITIES = [Facility("세미나실", ("세미나룸",), 2, "09:00", "18:00"), Facility("상담실", (), 2, "09:00", "18:00")]
-DEMO = "김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+DEMO = "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
 YES = VicaIntent(intent="affirm", need_confirm=False)
 NO = VicaIntent(intent="deny", need_confirm=False)
 
@@ -36,11 +36,11 @@ def first(flow, text="내일 오후 두 시에 세미나실 예약해 줘.", dat
 
 def test_demo_script(flow):
     assert first(flow) == FlowOutput(p.ASK_NAME, "open")
-    assert call(flow, "김토니", name="김토니") == FlowOutput(DEMO, "yesno")
+    assert call(flow, "김민수", name="김민수") == FlowOutput(DEMO, "yesno")
     out = flow.on_general(YES)
     assert out.say == p.DONE and out.kind == "open"
     assert (out.saved.facility, out.saved.date, out.saved.start, out.saved.end, out.saved.name) == (
-        "세미나실", "2026-11-19", "14:00", "16:00", "김토니")
+        "세미나실", "2026-11-19", "14:00", "16:00", "김민수")
     assert flow.store.list() == [out.saved] and not flow.active
 
 
@@ -49,7 +49,17 @@ def test_values_not_in_the_words_are_dropped(flow):
     assert out == FlowOutput(p.ASK_WHEN, "open")
     assert call(flow, "내일 오후 두 시", date="내일", start_time="14:00") == FlowOutput(p.ASK_NAME, "open")
     assert call(flow, "음", name="홍길동") == FlowOutput(p.ASK_NAME, "open")     # 글자에 없는 이름 — 다시 묻는다
-    assert call(flow, "제 이름은 김토니예요.", name="김토니") == FlowOutput(DEMO, "yesno")
+    assert call(flow, "제 이름은 김민수예요.", name="김민수") == FlowOutput(DEMO, "yesno")
+
+
+@pytest.mark.parametrize("name, said", [
+    ("이서연", "이서연입니다."), ("박준호", "박준호요."), ("정현우", "정현우라고 합니다."), ("강민지", "제 이름은 강민지예요."),
+])
+def test_any_ordinary_name_goes_into_the_confirm_sentence(flow, name, said):
+    first(flow)
+    out = call(flow, said, name=name)
+    assert out == FlowOutput(f"{name} 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?", "yesno")
+    assert flow.on_general(YES).saved.name == name
 
 
 def test_the_models_time_is_used(flow):
@@ -61,14 +71,14 @@ def test_the_models_time_is_used(flow):
 def test_end_time_only_when_spoken(flow):
     call(flow, "내일 두 시부터 세 시까지 세미나실 예약해 줘.", facility="세미나실", date="내일",
          start_time="14:00", end_time="15:00")
-    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 두 시부터 세 시까지" in call(flow, "김민수", name="김민수").say
     flow.drop()
     call(flow, "모레 오후 두 시에 한 시간만 세미나실 쓸게요.", facility="세미나실", date="모레",
          start_time="14:00", end_time="15:00")
-    assert "오후 두 시부터 세 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 두 시부터 세 시까지" in call(flow, "김민수", name="김민수").say
     flow.drop()
     call(flow, "내일 오후 두 시에 세미나실 예약해 줘.", facility="세미나실", date="내일", start_time="14:00", end_time="17:00")
-    assert "오후 두 시부터 네 시까지" in call(flow, "김토니", name="김토니").say     # 지어낸 끝은 버리고 기본 2시간
+    assert "오후 두 시부터 네 시까지" in call(flow, "김민수", name="김민수").say     # 지어낸 끝은 버리고 기본 2시간
 
 
 def test_empty_call_asks_facility_first(flow):
@@ -80,7 +90,7 @@ def test_taken_slot_then_another_time(flow):
     flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "이서연", NOW)
     assert first(flow) == FlowOutput(p.TAKEN, "open")
     assert call(flow, "오후 네 시", start_time="16:00") == FlowOutput(p.ASK_NAME, "open")   # 날짜(내일)는 쥐고 있다
-    assert "오후 네 시부터 여섯 시까지" in call(flow, "김토니", name="김토니").say
+    assert "오후 네 시부터 여섯 시까지" in call(flow, "김민수", name="김민수").say
 
 
 def test_out_of_hours_and_past_are_refused(flow):
@@ -96,7 +106,7 @@ def test_gate(flow):
     assert flow.on_call(ReserveCall(facility="세미나실"), "세미나실 예약해 줘.", "mute") is None
     assert not flow.active
     first(flow)
-    assert flow.on_call(ReserveCall(name="김토니"), "김토니", "busy") == FlowOutput(DEMO, "yesno")   # 진행 중이면 문을 다시 보지 않는다
+    assert flow.on_call(ReserveCall(name="김민수"), "김민수", "busy") == FlowOutput(DEMO, "yesno")   # 진행 중이면 문을 다시 보지 않는다
     assert start_gate("idle", None, "") == "ok" and start_gate("idle", q("네?"), "") == "ok"
     assert start_gate("idle", q("화장실로 안내해드릴까요?", "confirm"), "") == "busy"
     assert start_gate("idle", q(DEMO, "yesno"), DEMO) == "ok"
@@ -106,17 +116,17 @@ def test_gate(flow):
 
 def test_confirm_no_and_second_yes_does_not_save_twice(flow):
     first(flow)
-    call(flow, "김토니", name="김토니")
+    call(flow, "김민수", name="김민수")
     assert flow.on_general(YES).saved is not None
     assert flow.on_general(YES) is None and len(flow.store.list()) == 1
     assert first(flow, "모레 오후 두 시에 세미나실 예약해 줘.", date="모레") == FlowOutput(p.ASK_NAME, "open")
-    assert call(flow, "김토니", name="김토니").kind == "yesno"
+    assert call(flow, "김민수", name="김민수").kind == "yesno"
     assert flow.on_general(NO) == FlowOutput(p.NOT_RESERVED, "") and not flow.active and len(flow.store.list()) == 1
 
 
 def test_save_failure_says_unavailable_not_done(flow):
     first(flow)
-    call(flow, "김토니", name="김토니")
+    call(flow, "김민수", name="김민수")
     flow.store.path.write_text('[{"id": "r1", "facil', encoding="utf-8")
     assert flow.on_general(YES) == FlowOutput(p.UNAVAILABLE, "") and not flow.active
 
@@ -135,7 +145,7 @@ def test_question_closing_drops_the_draft(flow):
     flow.on_question_record("")                 # 앞 질문("네?")이 닫힘 — 내 질문은 아직 열린 적 없다
     assert flow.active
     flow.on_question_record(p.ASK_NAME)         # 미션이 내 질문을 열었다
-    call(flow, "김토니", name="김토니")          # 새 질문(②)을 넘겼다
+    call(flow, "김민수", name="김민수")          # 새 질문(②)을 넘겼다
     flow.on_question_record("")                 # ①이 닫힘 — ②는 아직 안 열렸다
     assert flow.active
     flow.on_question_record(DEMO)
@@ -171,7 +181,7 @@ def test_to_intent_and_event(flow):
     assert (ask.intent, ask.reply, ask.ask_text, ask.ask_kind, ask.need_confirm) == ("clarify", "", p.ASK_NAME, "open", False)
     say = to_intent(FlowOutput(p.NOT_RESERVED, ""))
     assert (say.intent, say.reply, say.ask_text, say.need_confirm) == ("question", p.NOT_RESERVED, "", False)
-    res = flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "김토니", NOW)
+    res = flow.store.add("세미나실", "2026-11-19", "14:00", "16:00", "김민수", NOW)
     event = json.loads(created_event(res, NOW))
-    assert event["event"] == "reservation_created" and event["id"] == res.id and event["name"] == "김토니"
+    assert event["event"] == "reservation_created" and event["id"] == res.id and event["name"] == "김민수"
     assert set(event) == {"event", "id", "facility", "date", "start", "end", "name", "source", "timestamp"}

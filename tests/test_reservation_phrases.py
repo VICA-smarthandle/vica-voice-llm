@@ -17,5 +17,5 @@ def test_fixed_sentences_are_the_confirmed_text():
 
 
 def test_confirm_sentence_is_the_demo_line():
-    line = p.confirm_sentence("김토니", date(2026, 11, 19), "14:00", "16:00", "세미나실", date(2026, 11, 18))
-    assert line == "김토니 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
+    line = p.confirm_sentence("김민수", date(2026, 11, 19), "14:00", "16:00", "세미나실", date(2026, 11, 18))
+    assert line == "김민수 님 이름으로 내일 오후 두 시부터 네 시까지 세미나실 예약할까요?"
