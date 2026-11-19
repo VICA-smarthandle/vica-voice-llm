@@ -150,3 +150,38 @@ def test_reserve_call_on_a_labeled_row_counts_as_wrong(rows_labeled, dests):
 def test_tools_switch_is_set_before_the_parser_is_imported():
     assert answer_replay.tools_env(True) == {"VICA_TOOLS_TEXT": "on", "VICA_TOOLS_AUDIO": "on"}
     assert answer_replay.tools_env(False) == {"VICA_TOOLS_TEXT": "off", "VICA_TOOLS_AUDIO": "off"}
+
+
+def test_answer_switch_env():
+    assert answer_replay.answer_env(True) == {"VICA_ANSWER": "on"}
+    assert answer_replay.answer_env(False) == {"VICA_ANSWER": "off"}
+
+
+def test_question_for_maps_the_row(dests):
+    row = {"kind": "other", "question": "무엇을 도와드릴까요?"}
+    asked = answer_replay.question_for(row, dests)
+    assert (asked.id, asked.kind, asked.text, asked.option_ids) == ("replay", "open", "무엇을 도와드릴까요?", ())
+    confirm = answer_replay.question_for({"kind": "confirm", "question": "사회복지로 안내해드릴까요?"}, dests)
+    assert confirm.option_ids == ("d1",)
+    choice = answer_replay.question_for({"kind": "choice", "question": "사회복지와 화장실 중 어디로 갈까요?"}, dests)
+    assert choice.option_ids == ("d1", "d2")
+
+
+def test_replay_grades_by_the_answer_field(rows_labeled, dests):
+    said_yes = VicaIntent(intent="navigate", matched_destination_id="d1", answer="yes")
+    run = replay(rows_labeled[:1], lambda row: (said_yes, 0.5), lambda _p: dests)
+    assert run["rows"][0]["status"] == "ok" and run["rows"][0]["pred"] == "yes"
+
+
+def test_transcript_rule_wins_on_the_audio_path(monkeypatch, rows_labeled, dests):
+    from src.reservation_flow import ReserveCall
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    row = {**rows_labeled[1], "stt": "삼십분."}                 # kind=minutes
+    asked = answer_replay.question_for(row, dests)
+    heard = VicaIntent(intent="wait", wait_minutes=15, answer="minutes", answer_value="15")
+    fixed = answer_replay.with_transcript_rule(heard, row, asked)
+    assert (fixed.answer, fixed.answer_value, fixed.wait_minutes) == ("minutes", "30", 15)
+    long = {**rows_labeled[1], "stt": "화장실 가고 싶어"}
+    assert answer_replay.with_transcript_rule(heard, long, asked) is heard
+    call = ReserveCall(facility="세미나실")
+    assert answer_replay.with_transcript_rule(call, row, asked) is call

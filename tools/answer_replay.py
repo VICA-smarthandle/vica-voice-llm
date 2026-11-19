@@ -1,9 +1,10 @@
 """정답 묶음을 지금 구조의 해석 경로에 다시 넣어 기준 점수를 잰다 (설계 2026-11-14 5절).
 
-    .venv/bin/python -m tools.answer_replay --path midm|gpt|realtime --labels .../labeled.csv [--rounds 3]
+    .venv/bin/python -m tools.answer_replay --path midm|gpt|realtime --labels .../labeled.csv [--rounds 3] [--answer]
 
 midm·gpt = 받아쓴 글자 → parse_intent(글자 경로). realtime = 저장 소리(~/vica_data/listen_clips) → parse_intent_audio.
-결과: 정답 파일 옆 replay_<path>_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
+--answer = 대답 칸(VICA_ANSWER)을 켠 채로 잰다(3-나-2 1단계): 해석기에 질문 기록을 넘기고 answer 로 채점한다.
+결과: 정답 파일 옆 replay_<path>[_answer]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
 """
 from __future__ import annotations
 
@@ -20,11 +21,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from src import answer_field
+from src.one_voice import _choice_option_ids
 from src.question_record import OpenQuestion
 from src.replies import LLM_UNAVAILABLE
 from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
-from tools.answer_grade import answer_of, grade
+from tools.answer_grade import grade, pred_of, question_destination_id
 
 STOP_AFTER_ERRORS = 5
 CLIPS_DIR = Path.home() / "vica_data" / "listen_clips"
@@ -60,6 +63,11 @@ def tools_env(on: bool) -> dict:
     """--tools: 도구 출력 스위치(2026-11-18). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
     value = "on" if on else "off"
     return {"VICA_TOOLS_TEXT": value, "VICA_TOOLS_AUDIO": value}
+
+
+def answer_env(on: bool) -> dict:
+    """--answer: 대답 칸 스위치(2026-11-19). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
+    return {"VICA_ANSWER": "on" if on else "off"}
 
 
 def text_for(row: dict) -> str:
@@ -103,6 +111,33 @@ def parsed_text_for(row: dict) -> str:
     return strip_wake_echo(text_for(row), question, row.get("dialog_state", ""))
 
 
+def question_for(row: dict, destinations: Sequence) -> OpenQuestion:
+    """행의 질문 → 해석기에 넘길 질문 기록(3-나-2). 정답 묶음의 kind 'other'(LLM 이 지은 질문)는 운영에서 'open' 으로
+    넘어간다(one_voice.hand_over_question). 후보는 확인 질문이면 묻는 곳, 고르기 질문이면 이름이 든 곳들."""
+    kind = row.get("kind", "") or ""
+    kind = "open" if kind == "other" else kind
+    text = row.get("question", "") or ""
+    if kind == "confirm":
+        dest = question_destination_id(text, destinations)
+        options = (dest,) if dest else ()
+    elif kind == "choice":
+        options = tuple(_choice_option_ids(text, destinations))
+    else:
+        options = ()
+    return OpenQuestion(id="replay", kind=kind, text=text, option_ids=options, opened_at=0.0)
+
+
+def with_transcript_rule(intent, row: dict, question: OpenQuestion):  # noqa: ANN001
+    """소리 경로 행 — 받아쓴 글자가 통째로 짧은 대답(네/아니요 · N분)이면 Realtime 의 대답 대신 그 규칙의 대답으로
+    채점한다(설계 2026-11-18 4.3-3, 바탕 설계 D11). 대답 칸이 꺼졌거나 규칙에 안 맞거나 예약 호출이면 받은 결과 그대로."""
+    if isinstance(intent, ReserveCall):
+        return intent
+    ruled = answer_field.short_answer(text_for(row), question)
+    if ruled is None:
+        return intent
+    return intent.model_copy(update={"question_id": question.id, "answer": ruled[0], "answer_value": ruled[1]})
+
+
 def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]]) -> dict:
     """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약."""
     out_rows, errors_in_row, stopped = [], 0, False
@@ -139,8 +174,9 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
                 out_rows.append({**rec, "status": "wrong", "pred": "reserve", "pred_value": "", "latency": latency,
                                  "why": "reserve_facility"})
                 continue
-            pred, pv = answer_of(intent, row["kind"], row["question"], dests)
-            why = f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
+            pred, pv = pred_of(intent, row["kind"], row["question"], dests)
+            why = (f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
+                   f"/answer={getattr(intent, 'answer', '') or '-'}")
         errors_in_row = 0
         status = grade(row["label_answer"], row.get("label_value", ""), pred, pv, row.get("kind", ""))
         out_rows.append({**rec, "status": status, "pred": pred, "pred_value": pv, "latency": latency, "why": why})
@@ -184,15 +220,17 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
+    ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
     args = ap.parse_args()
 
     # src 의 parser 를 부르기 전에 경로를 고정한다 — import 때 .env 를 읽고 설정을 굳힌다(load_dotenv 는 있는 값을 안 덮음).
     env = path_env(args.path, None if args.local_rules == "auto" else args.local_rules == "on")
     os.environ.update(env)
     os.environ.update(tools_env(args.tools))
+    os.environ.update(answer_env(args.answer))
     model = MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {'켬' if args.answer else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -218,7 +256,8 @@ def main() -> None:
     def interpret_text(row: dict):
         dests, history, state = context(row)
         t0 = time.monotonic()
-        intent = parse_intent(parsed_text_for(row), dests, history=history, robot_state=state, model=model)
+        intent = parse_intent(parsed_text_for(row), dests, history=history, robot_state=state, model=model,
+                              question=question_for(row, dests))
         return intent, time.monotonic() - t0
 
     clips = []
@@ -235,9 +274,10 @@ def main() -> None:
                 return None, 0.0
             pcm = w.readframes(w.getnframes())
         dests, history, state = context(row)
+        asked = question_for(row, dests)
         intent, _heard, latency, _info = call_with_retry(
-            lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state))
-        return intent, latency
+            lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state, question=asked))
+        return with_transcript_rule(intent, row, asked), latency
 
     interpret = interpret_audio if args.path == "realtime" else interpret_text
     runs = []
@@ -252,7 +292,7 @@ def main() -> None:
             print("오류가 5건 이어져 멈춤 — 경로(Ollama·인터넷)를 확인하세요", file=sys.stderr)
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
-    base = labels_path.parent / f"replay_{args.path}{'_tools' if args.tools else ''}_{stamp}"
+    base = labels_path.parent / f"replay_{args.path}{'_tools' if args.tools else ''}{'_answer' if args.answer else ''}_{stamp}"
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")

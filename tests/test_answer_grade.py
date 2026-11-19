@@ -102,3 +102,11 @@ def test_confirm_answer_with_need_confirm_still_yes(dests):
 def test_wait_on_end_question_is_no(dests):
     """검토 I4: '여기까지 안내를 마칠까요?' + '기다려줘' = 안 마침."""
     assert answer_of(VicaIntent(intent="wait"), "yesno", "여기까지 안내를 마칠까요?", dests) == ("no", "")
+
+
+def test_pred_of_prefers_the_answer_field(dests):
+    from tools.answer_grade import pred_of
+    said = VicaIntent(intent="navigate", matched_destination_id="d1", answer="yes")
+    assert pred_of(said, "yesno", "여기서 대기할까요?", dests) == ("yes", "")
+    plain = VicaIntent(intent="navigate", matched_destination_id="d1")
+    assert pred_of(plain, "yesno", "여기서 대기할까요?", dests) == answer_of(plain, "yesno", "여기서 대기할까요?", dests)

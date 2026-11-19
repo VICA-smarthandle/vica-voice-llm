@@ -60,6 +60,15 @@ def answer_of(intent, kind: str, question: str, destinations: Sequence) -> tuple
     return "other", ""
 
 
+def pred_of(intent, kind: str, question: str, destinations: Sequence) -> tuple[str, str]:  # noqa: ANN001
+    """채점에 쓸 (answer, value). 대답 칸이 채워졌으면 그 값(3-나-2 — 새 구조는 대답을 직접 낸다), 비었으면 지금
+    구조의 어댑터(answer_of)로 읽는다 — 규칙 지름길처럼 대답 칸을 안 채운 길은 기준 점수와 같은 방식으로 채점된다."""
+    answer = getattr(intent, "answer", "") or ""
+    if answer:
+        return answer, getattr(intent, "answer_value", "") or ""
+    return answer_of(intent, kind, question, destinations)
+
+
 def grade(label: str, label_value: str, pred: str, pred_value: str, kind: str = "") -> str:
     """정답(label)과 예측(pred) → ok · reask · wrong · mismatch."""
     if pred == "unclear":
