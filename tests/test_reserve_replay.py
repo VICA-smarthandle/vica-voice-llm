@@ -17,9 +17,10 @@ def fake(result):
 
 def test_case_set_shape():
     kinds = [c.id[0] for c in CASES]
-    assert len(CASES) == 39 and len({c.id for c in CASES}) == 39
-    # F11 은 11-19 gpt 측정 뒤에 더했다 — F10("아니 네 시로 해 줘")은 확인 문장의 끝 시각도 "네 시"라 뜻이 갈린다
-    assert kinds.count("R") == 12 and kinds.count("E") == 3 and kinds.count("N") == 13 and kinds.count("F") == 11
+    assert len(CASES) == 43 and len({c.id for c in CASES}) == 43
+    # F11~F15 는 11-19 측정 뒤에 더했다 — F10("아니 네 시로 해 줘")은 확인 문장의 끝 시각도 "네 시"라 뜻이 갈리고,
+    # Realtime 이 확인의 "그래."에 예약 도구를 다시 불러 승낙·정정 변형을 더 잰다
+    assert kinds.count("R") == 12 and kinds.count("E") == 3 and kinds.count("N") == 13 and kinds.count("F") == 15
     assert all(c.setup for c in CASES if c.id.startswith("F")) and not any(c.setup for c in CASES if c.id[0] in "REN")
 
 

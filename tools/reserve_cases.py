@@ -1,6 +1,6 @@
 """예약 묶음 38개(설계 2026-11-18 7절) — 도구 출력의 켜는 기준을 재는 발화.
 
-첫 요청 15(R1~R12 · E1~E3) · 그 밖 13(N1~N13) · 이어진 대답 10(F1~F10) + F11.
+첫 요청 15(R1~R12 · E1~E3) · 그 밖 13(N1~N13) · 이어진 대답 10(F1~F10) + 뒤에 더한 F11~F15.
 F11 은 11-19 gpt 측정 뒤에 더했다: F10 "아니 네 시로 해 줘."는 확인 문장의 끝 시각도 "네 시"라 뜻이 갈린다
 (모델은 끝 16:00 으로 읽었다). F10 은 기록으로 남기고, 뜻이 하나인 "아니 세 시로 해 줘."를 따로 잰다.
 R·N 은 11-18 측정(~/vica_data/tool_call_test_20261118/measure.py)의 발화 그대로다(R8 의 이름만 정현우).
@@ -87,4 +87,10 @@ CASES: list[Case] = [
                                                "say": CONFIRM, "saved": 0}),
     Case("F11", ASKED_CONFIRM, "아니 세 시로 해 줘.", {"reserve": True, "name": "김민수", "start": "15:00", "end": "17:00",
                                                "say": CONFIRM, "saved": 0}),
+    # 확인 질문의 승낙 변형과 정정 변형(11-19 Realtime 측정 뒤에 더함 — "그래."에 예약 도구를 다시 불렀다)
+    Case("F12", ASKED_CONFIRM, "네.", {"say": p.DONE, "saved": 1, "active": False}),
+    Case("F13", ASKED_CONFIRM, "응, 맞아.", {"say": p.DONE, "saved": 1, "active": False}),
+    Case("F14", ASKED_CONFIRM, "좋아요, 그렇게 해 주세요.", {"say": p.DONE, "saved": 1, "active": False}),
+    Case("F15", ASKED_CONFIRM, "모레로 바꿔 줘.", {"reserve": True, "name": "김민수", "date": "2026-11-20", "start": "14:00",
+                                             "say": CONFIRM, "saved": 0}),
 ]
