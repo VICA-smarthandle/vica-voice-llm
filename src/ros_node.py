@@ -38,7 +38,7 @@ try:        # 질문 기록(2026-11-17). 옛 vica_interfaces 설치본이면 구
 except ImportError:
     VicaQuestionMsg = None
 
-from . import local_rules, question_record
+from . import answer_field, local_rules, question_record
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
@@ -379,6 +379,7 @@ class LlmIntentNode(Node):
             if self._intent_input == "audio" and audio_turn_applies(self._audio_turn, time.time()):
                 # 이 발화는 소리 경로가 이미 처리했다. 텍스트 경로 결과는 비교 로그로만.
                 turn, self._audio_turn = self._audio_turn, {}   # 1회 소비 — 다음 발화에 새지 않게
+                self._log_transcript_rule(text, turn)
                 self._shadow_text(text, turn)
                 return
             if self._intent_input == "audio" and self._audio_turn:
@@ -412,6 +413,8 @@ class LlmIntentNode(Node):
                     # 글자 경로에도 [지금 상황] 메모(2026-10-07 사용자 결정) — 와이파이가
                     # 끊겨 받아쓰기 경로로 넘어가도 "어디서 기다린다고?"에 답하게.
                     situation=self._situation_block(),
+                    # 열린 질문(질문 기록) — 대답 칸이 켜졌으면 LLM 이 질문 종류를 알고 answer 를 함께 낸다(3-나-2).
+                    question=self._question,
                 )
             finally:
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
@@ -578,6 +581,9 @@ class LlmIntentNode(Node):
             f"matched={intent.matched_destination_id} safety={intent.safety_flag}"
         )
         self.get_logger().info(question_record.log_line(question, time.time()))
+        if answer_field.on():
+            # 대답 칸(3-나-2 1단계) — 기록만 한다. 미션으로 나가는 메시지에는 아직 싣지 않는다(ros_convert).
+            self.get_logger().info(answer_field.log_line(intent, question))
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
@@ -703,7 +709,9 @@ class LlmIntentNode(Node):
         #    미래'의 문맥으로 다시 해석하게 된다. _shadow_text 는 이 스냅샷만 쓴다.
         history_snapshot = self._history.messages
         robot_state = self._robot_state
-        self._audio_turn.update(history=history_snapshot, robot_state=robot_state)
+        # 이 말이 들어올 때 열려 있던 질문 — 뒤따라 오는 받아쓴 글자(그림자 갈래)도 같은 질문으로 규칙을 본다(3-나-2).
+        question = self._question
+        self._audio_turn.update(history=history_snapshot, robot_state=robot_state, question=question)
         self._thinking_pub.publish(Bool(data=True))
         call_started = time.monotonic()
         try:
@@ -711,7 +719,8 @@ class LlmIntentNode(Node):
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
                 situation=self._situation_block(),
                 directory_block=format_directory_block(
-                    self._directory, self._robot_state.current_building, self._robot_state.current_floor))
+                    self._directory, self._robot_state.current_building, self._robot_state.current_floor),
+                question=question)
         except Exception as exc:
             # 연결 오류(접속 실패·끊김)면 이 발화부터 글자 경로를 바로 로컬 LLM 으로 — 클라우드 글자 LLM 도
             # 같은 인터넷이라 VICA_LLM_CLOUD_TIMEOUT 기다려 실패할 뿐이다(2026-10-24 사용자). 응답 지연·그 밖의
@@ -798,11 +807,26 @@ class LlmIntentNode(Node):
 
     def _situation_block(self) -> str:
         """지시문 맨 뒤 [지금 상황]: 미션 대장(P1)이 오면 그것, 옛 미션이면 goal-event 상황판."""
-        awaiting = time.time() < self._followup_until
+        # 대답 칸이 켜졌으면 시간 기준의 "방금 질문하고 답을 기다리는 중" 줄을 내지 않는다 — 해석기가 질문 기록으로
+        # '로봇이 물은 질문' 줄을 붙인다(설계 2026-11-18 4.2: 질문이 열려 있는 동안만 참).
+        awaiting = time.time() < self._followup_until and not answer_field.on()
         text = render_ledger(self._robot_state, awaiting_answer=awaiting, now_text=time.strftime("%H:%M"))
         text = text or self._board.render(awaiting_answer=awaiting)
         # 진행 중인 예약(설계 2026-11-18 5.3) — 상태 한 줄만. LLM 이 이름·날짜 대답을 그 예약에 잇게.
         return join_situation(text, self._reservation.situation_line() if self._reservation is not None else "")
+
+    def _log_transcript_rule(self, text: str, turn: dict) -> None:
+        """소리 모드: 받아쓴 글자가 통째로 짧은 대답(네/아니요 · N분)이면 그 규칙의 대답과 Realtime 이 낸 대답을
+        한 줄로 남긴다(3-나-2 1단계 — 기록만, 내보내는 것은 없다). 2단계가 이 줄로 둘이 얼마나 갈리는지 본다."""
+        question = turn.get("question")
+        ruled = answer_field.short_answer(text, question)
+        if ruled is None:
+            return
+        heard = turn.get("intent")
+        self.get_logger().info(
+            f"[대답] 받아쓴 글자 규칙={ruled[0]}/{ruled[1] or '-'} · "
+            f"Realtime={getattr(heard, 'answer', '') or '-'}/{getattr(heard, 'answer_value', '') or '-'} · "
+            f"kind={question.kind} · 글자='{text}'")
 
     def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).
