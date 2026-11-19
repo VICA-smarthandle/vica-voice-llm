@@ -167,7 +167,8 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             continue
         if not (row.get("answer_text") or "").strip():
             pred, pv, latency, why = "unclear", "", 0.0, "빈 글자"
-            both = {"pred_intent": "unclear", "pred_intent_value": "", "answer": "", "answer_value": "", "answer_src": ""}
+            both = {"pred_intent": "unclear", "pred_intent_value": "", "answer": "", "answer_value": "", "answer_src": "",
+                    "reply": ""}
         else:
             try:
                 intent, latency = interpret(row)
@@ -197,8 +198,10 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             answer, value = getattr(intent, "answer", "") or "", getattr(intent, "answer_value", "") or ""
             ruled = answer_field.short_answer(rule_text(row), question_for(row, dests))
             src = "rule" if ruled is not None and ruled == (answer, value) else ("llm" if answer else "")
+            # reply = 해석기가 낸 문장 그대로(되묻기면 LLM 이 지은 질문 — 운영에서는 미션이 이 문장을 말한다).
             both = {"pred_intent": by_intent[0], "pred_intent_value": by_intent[1],
-                    "answer": answer, "answer_value": value, "answer_src": src}
+                    "answer": answer, "answer_value": value, "answer_src": src,
+                    "reply": getattr(intent, "reply", "") or ""}
             why = (f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
                    f"/answer={answer or '-'}")
         errors_in_row = 0

@@ -218,3 +218,12 @@ def test_audio_minutes_rule_does_not_override_a_refusal(monkeypatch, rows_labele
     asked = answer_replay.question_for(row, dests)
     refused = VicaIntent(intent="deny", answer="no")
     assert answer_replay.with_transcript_rule(refused, row, asked) is refused
+
+
+def test_rows_keep_the_reply_sentence(rows_labeled, dests):
+    """되묻기가 어떤 문장이었는지 보려면 행에 문장이 남아야 한다(11-19 사용자 "다시 물을 때 어떤 대사를 하는지도")."""
+    asked = VicaIntent(intent="clarify", reply="어느 화장실로 갈까요?", need_confirm=False)
+    row = replay(rows_labeled[:1], lambda row: (asked, 0.5), lambda _p: dests)["rows"][0]
+    assert row["reply"] == "어느 화장실로 갈까요?"
+    empty = replay([{**rows_labeled[0], "answer_text": ""}], lambda row: (asked, 0.5), lambda _p: dests)["rows"][0]
+    assert empty["reply"] == ""
