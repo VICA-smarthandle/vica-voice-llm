@@ -101,6 +101,12 @@ class ReservationFlow:
                  f"이름 {self._name or NOT_YET}")
         return f'[진행 중인 예약] {" · ".join(parts)} · 방금 물은 것: "{self.asked_text}"'
 
+    def snapshot(self) -> dict:
+        """지금 쥔 값(로그·재생 채점용). 빈 글자 = 아직 없음."""
+        return {"active": self._active, "facility": self._facility.name if self._facility else "",
+                "date": self._day.isoformat() if self._day else "", "start": self._start,
+                "end": self._end() if self._start else "", "name": self._name, "asked": self.asked_text}
+
     # ----- 들어오는 것 -------------------------------------------------
     def on_call(self, call: ReserveCall, text: str, gate: str) -> Optional[FlowOutput]:
         """LLM 이 reserve_facility 를 불렀다. text 는 그 발화의 글자(받아쓴 글자 또는 heard_text)."""
@@ -216,6 +222,13 @@ class ReservationFlow:
             return FlowOutput(phrases.UNAVAILABLE, "")     # 저장되지 않은 예약을 완료라고 말하지 않는다
         self.drop()
         return FlowOutput(phrases.DONE, "open", saved=saved)
+
+
+def join_situation(block: str, line: str) -> str:
+    """[지금 상황] 글 끝에 진행 중인 예약 한 줄을 붙인다. 줄이 비면 그대로."""
+    if not line:
+        return block
+    return (block.rstrip("\n") + "\n" if block else "") + line + "\n"
 
 
 def handle_result(flow: Optional[ReservationFlow], result, text: str, *, gate: str,

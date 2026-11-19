@@ -22,6 +22,7 @@ from typing import Callable, Optional, Sequence
 
 from src.question_record import OpenQuestion
 from src.replies import LLM_UNAVAILABLE
+from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
 from tools.answer_grade import answer_of, grade
 
@@ -53,6 +54,12 @@ def path_env(path: str, local_rules: bool | None = None) -> dict:
     elif path == "gpt":
         env["VICA_LLM_PROVIDER"] = "openai"
     return env
+
+
+def tools_env(on: bool) -> dict:
+    """--tools: 도구 출력 스위치(2026-11-18). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
+    value = "on" if on else "off"
+    return {"VICA_TOOLS_TEXT": value, "VICA_TOOLS_AUDIO": value}
 
 
 def text_for(row: dict) -> str:
@@ -126,6 +133,12 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
                     stopped = True
                     break
                 continue
+            if isinstance(intent, ReserveCall):
+                # 정답 묶음에는 예약 발화가 없다 — 도구 출력에서 reserve_facility 가 나오면 묻지 않은 동작이다.
+                errors_in_row = 0
+                out_rows.append({**rec, "status": "wrong", "pred": "reserve", "pred_value": "", "latency": latency,
+                                 "why": "reserve_facility"})
+                continue
             pred, pv = answer_of(intent, row["kind"], row["question"], dests)
             why = f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
         errors_in_row = 0
@@ -170,14 +183,16 @@ def main() -> None:
     ap.add_argument("--labels", required=True)
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
+    ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
     args = ap.parse_args()
 
     # src 의 parser 를 부르기 전에 경로를 고정한다 — import 때 .env 를 읽고 설정을 굳힌다(load_dotenv 는 있는 값을 안 덮음).
     env = path_env(args.path, None if args.local_rules == "auto" else args.local_rules == "on")
     os.environ.update(env)
+    os.environ.update(tools_env(args.tools))
     model = MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -237,7 +252,7 @@ def main() -> None:
             print("오류가 5건 이어져 멈춤 — 경로(Ollama·인터넷)를 확인하세요", file=sys.stderr)
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
-    base = labels_path.parent / f"replay_{args.path}_{stamp}"
+    base = labels_path.parent / f"replay_{args.path}{'_tools' if args.tools else ''}_{stamp}"
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")

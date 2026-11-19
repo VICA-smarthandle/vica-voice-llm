@@ -232,3 +232,14 @@ def test_old_interfaces_get_the_question_as_a_spoken_reply():
     old = to_intent(ask, hand_over=False)
     assert old.reply == p.ASK_NAME and old.intent == "clarify"
     assert to_intent(FlowOutput(p.UNAVAILABLE, ""), hand_over=False) == to_intent(FlowOutput(p.UNAVAILABLE, ""))
+
+
+def test_snapshot_and_situation_join(flow):
+    from src.reservation_flow import join_situation
+    assert flow.snapshot() == {"active": False, "facility": "", "date": "", "start": "", "end": "", "name": "", "asked": ""}
+    first(flow)
+    assert flow.snapshot() == {"active": True, "facility": "세미나실", "date": "2026-11-19", "start": "14:00",
+                               "end": "16:00", "name": "", "asked": p.ASK_NAME}
+    assert join_situation("- 대화 단계: 쉼\n", "") == "- 대화 단계: 쉼\n"
+    assert join_situation("- 대화 단계: 쉼\n", "[진행 중인 예약] 가") == "- 대화 단계: 쉼\n[진행 중인 예약] 가\n"
+    assert join_situation("", "[진행 중인 예약] 가") == "[진행 중인 예약] 가\n"

@@ -137,3 +137,16 @@ def test_text_interpreter_uses_the_stripped_text():
     source = inspect.getsource(answer_replay.main)
     assert "parse_intent(parsed_text_for(row)" in source
     assert "parse_intent(text_for(row)" not in source
+
+
+def test_reserve_call_on_a_labeled_row_counts_as_wrong(rows_labeled, dests):
+    """정답 208행에는 예약 발화가 없다 — 도구 출력에서 reserve_facility 가 나오면 잘못된 행동이다."""
+    from src.reservation_flow import ReserveCall
+    run = replay(rows_labeled, lambda row: (ReserveCall(facility="세미나실"), 0.1), lambda _p: dests)
+    assert run["counts"].get("wrong", 0) == len(rows_labeled)
+    assert all(r["why"] == "reserve_facility" for r in run["rows"])
+
+
+def test_tools_switch_is_set_before_the_parser_is_imported():
+    assert answer_replay.tools_env(True) == {"VICA_TOOLS_TEXT": "on", "VICA_TOOLS_AUDIO": "on"}
+    assert answer_replay.tools_env(False) == {"VICA_TOOLS_TEXT": "off", "VICA_TOOLS_AUDIO": "off"}

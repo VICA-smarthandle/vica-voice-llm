@@ -64,7 +64,7 @@ from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
 from .tts_queue import RESPONSE, build_request, request_for_intent
 from .reservation_flow import (FlowOutput, ReservationFlow, ReserveCall, created_event, handle_result,
-                               start_gate, to_intent)
+                               join_situation, start_gate, to_intent)
 from .reservation_store import ReservationStore, default_facilities, reservation_dir
 from .tool_calls import audio_tools_on, text_tools_on
 
@@ -761,10 +761,7 @@ class LlmIntentNode(Node):
         text = render_ledger(self._robot_state, awaiting_answer=awaiting, now_text=time.strftime("%H:%M"))
         text = text or self._board.render(awaiting_answer=awaiting)
         # 진행 중인 예약(설계 2026-11-18 5.3) — 상태 한 줄만. LLM 이 이름·날짜 대답을 그 예약에 잇게.
-        line = self._reservation.situation_line() if self._reservation is not None else ""
-        if line:
-            text = (text.rstrip("\n") + "\n" if text else "") + line + "\n"
-        return text
+        return join_situation(text, self._reservation.situation_line() if self._reservation is not None else "")
 
     def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).
