@@ -37,12 +37,13 @@
 - 서비스 `/vica/wake_doa_turn/enable` (`std_srvs/SetBool`): `_wake_doa_turn` 을 바꾸고
   상태를 다시 발행한다. 응답 `success=True`, message '빔포밍 회전을 켰습니다' / '빔포밍 회전을 껐습니다'.
 - 상태 `/vica/wake_doa_turn/enabled` (`std_msgs/Bool`, RELIABLE·TRANSIENT_LOCAL, depth 1):
-  기동 때 한 번, 바뀔 때마다 발행.
+  기동 때·바뀔 때마다·1 s 마다 발행(11-19 검토: 앱이 음성보다 먼저 붙으면 rosbridge 가
+  VOLATILE 로 구독해 기동 때 한 번을 놓친다 — 전방 초음파와 같은 1 s 재발행).
 - 기동 값은 지금처럼 `.env` `VICA_WAKE_DOA_TURN`(없으면 off).
 - 값은 마이크 스레드(`_publish_wake_doa`)가 읽고 ROS 콜백이 쓴다 — bool 하나의 대입이라 잠금 없이 둔다.
 - 회전 중에 꺼도 이미 보낸 회전은 끝까지 간다(한 번 보내면 미션 몫).
 
-### 앱 (`VICA_Supervisor`, 운영 `after_feedback_waiting`)
+### 앱 (`feat/app-manual-drive` 에 커밋 → 운영 `after_feedback_waiting` 에 합침, 11-19 사용자)
 
 - `supervisor_provider.dart`: 상태 구독 + 서비스 호출. 전방 초음파 스위치 코드와 같은 모양.
   상태를 못 받았으면 `null`(모름).

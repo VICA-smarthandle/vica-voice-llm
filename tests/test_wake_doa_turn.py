@@ -67,6 +67,15 @@ def test_service_and_latched_state_are_created_before_the_mic_thread():
     assert pub.lineno < first_state.lineno < thread.lineno
 
 
+def test_state_is_republished_every_second():
+    # rosbridge 는 구독 순간 발행자가 없으면 VOLATILE·BEST_EFFORT 로 구독한다
+    # (rosbridge_library subscribers.py). 앱(vica-base)이 음성(vica-drive)보다 먼저 붙는 게
+    # 기본 흐름이라 기동 때 한 번 낸 값은 놓친다 — 1 s 마다 다시 낸다(전방 초음파 선례, 11-19 검토).
+    init = _method("__init__")
+    timers = [ast.unparse(c) for c in _calls(init, "self.create_timer")]
+    assert "self.create_timer(1.0, self._publish_wake_doa_turn_state)" in timers
+
+
 def test_set_callback_updates_publishes_and_replies():
     cb = _method("_on_wake_doa_turn_set")
     assigned = [ast.unparse(t) for n in ast.walk(cb) if isinstance(n, ast.Assign) for t in n.targets]

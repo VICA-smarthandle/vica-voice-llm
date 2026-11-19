@@ -341,6 +341,9 @@ class WakewordNode(Node):
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_service(SetBool, WAKE_DOA_TURN_SERVICE, self._on_wake_doa_turn_set)
         self._publish_wake_doa_turn_state()
+        # 앱이 음성보다 먼저 붙으면 rosbridge 가 VOLATILE 로 구독해 위 한 번을 놓친다
+        # (vica-app 은 부팅 묶음, 음성은 주행 묶음 — 11-19 검토). 1 s 마다 다시 낸다(전방 초음파 선례).
+        self.create_timer(1.0, self._publish_wake_doa_turn_state)
 
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._monitor_error: "BaseException | None" = None
