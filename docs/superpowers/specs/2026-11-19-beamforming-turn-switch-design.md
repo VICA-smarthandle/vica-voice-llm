@@ -42,7 +42,7 @@
 - 값은 마이크 스레드(`_publish_wake_doa`)가 읽고 ROS 콜백이 쓴다 — bool 하나의 대입이라 잠금 없이 둔다.
 - 회전 중에 꺼도 이미 보낸 회전은 끝까지 간다(한 번 보내면 미션 몫).
 
-### 앱 (`feat/app-manual-drive`, `~/wt-app-ux`)
+### 앱 (`VICA_Supervisor`, 운영 `after_feedback_waiting`)
 
 - `supervisor_provider.dart`: 상태 구독 + 서비스 호출. 전방 초음파 스위치 코드와 같은 모양.
   상태를 못 받았으면 `null`(모름).
@@ -69,5 +69,6 @@
 
 ## 저장소·브랜치
 
-- 음성 `after_feedback_waiting`, 앱 `feat/app-manual-drive`. 다른 세션 작업이 함께 있어 내 파일만 커밋.
+- 음성 `after_feedback_waiting`. 앱은 운영 `after_feedback_waiting` — 도킹·수동 주행 세션이 운영 브랜치에
+  합치기를 끝낸 뒤 그 위에서(11-19 도킹 세션 조율, `supervisor_provider.dart` 겹침). 다른 세션 작업이 함께 있어 내 파일만 커밋.
 - 실기 전 푸시·dev 머지 없음. 웹·APK 빌드는 주행 묶음이 꺼져 있을 때만(11-17 사고).
