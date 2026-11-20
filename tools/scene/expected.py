@@ -96,12 +96,25 @@ def _find(destinations: list, dest_id: Optional[str]):
     return next((d for d in destinations if dest_id and d.id == dest_id), None)
 
 
+_WAIT_OFFER_ENDS = ("기다릴까요?", "대기할까요?")
+
+
 def sentence_for(intent: str, dest_id: Optional[str], need_confirm: bool, state: str,
-                 destinations: list) -> Optional[str]:
+                 destinations: list, last_say: str = "") -> Optional[str]:
     """의도 → 예상 로봇 문장. 표에 없으면 None. LLM 이 문장을 짓는 의도(clarify·question 등)는 호출한 쪽이 reply 를 쓴다."""
     from src.destination_loader import _josa_euro
 
     dest = _find(destinations, dest_id)
+    # 11-04 실로그로 확인한 짧은 대답 행 (state·직전 로봇 말에 따라)
+    if intent == "deny" and state == "asking_next" and last_say.strip().endswith(_WAIT_OFFER_ENDS):
+        return phrases.ASK_ENTRANCE                       # 11-04 11:19:07·15:07:19
+    if intent == "affirm" and state == "asking_next" and last_say.strip() == phrases.ASK_ENTRANCE:
+        return phrases.FINISH                             # 11-04 15:07:33
+    if intent == "affirm" and state == "confirming" and dest is None:
+        dest = next((d for d in destinations if last_say and last_say == (d.confirm_prompt or
+                    f"{d.name}{_josa_euro(d.name)} 안내해드릴까요?")), None)
+        if dest is not None:                              # 11-04 15:06:45·11:20:56
+            return phrases.START.format(name=dest.name, josa=_josa_euro(dest.name))
     if intent == "navigate":
         if dest is None:
             return None
@@ -119,13 +132,15 @@ def sentence_for(intent: str, dest_id: Optional[str], need_confirm: bool, state:
     return None
 
 
-def _from_intent(intent, by: str, note: str, state: str, destinations: list) -> Expected:
+def _from_intent(intent, by: str, note: str, state: str, destinations: list, last_say: str = "") -> Expected:
     kind = getattr(intent, "intent", None)
     reply = getattr(intent, "reply", "") or ""
     sentence = sentence_for(kind, getattr(intent, "matched_destination_id", None),
-                            bool(getattr(intent, "need_confirm", False)), state, destinations)
+                            bool(getattr(intent, "need_confirm", False)), state, destinations, last_say)
     if sentence is None and reply and kind in _NO_REPLY_INTENTS:
         sentence = reply                     # LLM 이 문장을 짓는 의도 — reply 그대로
+    if sentence is None:
+        note = f"{note} · 문장 표 없음"
     return Expected(kind, by, sentence, reply or None, note)
 
 
@@ -157,7 +172,7 @@ def rule_expected(scene: Scene, destinations: list, events: Optional[list[Event]
         hit = lip._mission_question_answer(text, history, robot_state, local)
     if hit is None:
         return None
-    return _from_intent(hit, "규칙", "코드 규칙이 정함(LLM 안 거침) — 예상 문장은 추정", state, destinations)
+    return _from_intent(hit, "규칙", "코드 규칙이 정함(LLM 안 거침) — 예상 문장은 추정", state, destinations, last)
 
 
 # ── LLM 다시 묻기 ────────────────────────────────────────────────────
@@ -226,7 +241,8 @@ def reask(scene: Scene, path: str, interpret: Optional[Callable] = None, *,
     if intent is None:
         result = Expected(None, "없음", None, None, "소리 없음 — 저장된 클립을 못 찾음")
     else:
-        result = _from_intent(intent, "LLM 추정", f"{LLM_NOTE} (경로 {path})", state, destinations)
+        result = _from_intent(intent, "LLM 추정", f"{LLM_NOTE} (경로 {path})", state, destinations,
+                              _last_robot_say(scene, ut.t))
     cdir.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=1), encoding="utf-8")
     return result

@@ -72,3 +72,27 @@ def test_expected_marks_estimate(tmp_path):
 def test_reask_no_clip_is_none(tmp_path):
     e = reask(_scene(), "realtime", lambda *a: None, destinations=DESTS, cache_dir=tmp_path)
     assert e.by == "없음" and "소리 없음" in e.note
+
+
+def test_deny_in_asking_next_asks_entrance():
+    """11-04 15:07:19 — '여기서 대기할까요?'에 '아니.' → '여기까지 안내를 마칠까요?'"""
+    sc = _scene("아니.", state="asking_next")
+    sc.events[2] = Event(2.0, "tts", "tts_play", {"priority": "normal", "text": "여기서 대기할까요?"}, "")
+    e = rule_expected(sc, DESTS)
+    assert e.intent == "deny" and e.sentence == "여기까지 안내를 마칠까요?"
+
+
+def test_affirm_after_entrance_question_finishes():
+    sc = _scene("네", state="asking_next")
+    sc.events[2] = Event(2.0, "tts", "tts_play", {"priority": "normal", "text": "여기까지 안내를 마칠까요?"}, "")
+    assert rule_expected(sc, DESTS).sentence == "안내를 종료합니다."
+
+
+def test_affirm_in_confirming_starts_destination():
+    e = rule_expected(_scene("네", state="confirming"), DESTS)
+    assert e.sentence == "현장 안전 지원 휴머노이드로 안내를 시작합니다."
+
+
+def test_unlisted_row_is_none_with_note():
+    e = rule_expected(_scene("아니", state="confirming"), DESTS)
+    assert e.sentence is None and "문장 표 없음" in e.note
