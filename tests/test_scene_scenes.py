@@ -106,3 +106,45 @@ def test_state_at_ignores_estop_central_states():
     evs = [_ev(1.0, "mis", "state", to="navigating", via="mission", **{"from": "idle"}),
            _ev(2.0, "mis", "state", to="ESTOP_LATCHED", via="estop")]
     assert state_at(evs, 3.0) == "navigating"
+
+
+def _qo(t, qid, text=""):
+    return _ev(t, "mis", "q_open", id=qid, qkind="c", candidates=0, requested=False, text=text)
+
+
+def test_different_q_open_ids_split_even_after_user_text():
+    t = 1_800_000_000.0
+    evs = [_qo(t, "q1"), _ev(t + 10, "wake", "user_text", text="a"), _qo(t + 30, "q2"),
+           _ev(t + 35, "wake", "user_text", text="b")]
+    a, b = build_scenes(evs)
+    assert (a.question_id, b.question_id) == ("q1", "q2")
+    assert a.linked_by == b.linked_by == "question_id"
+    assert [e.data.get("text") for e in a.events if e.kind == "user_text"] == ["a"]
+
+
+def test_wake_with_q_open_merges_and_keeps_wake_trigger():
+    t = 1_800_000_000.0
+    evs = [_ev(t, "wake", "wake_open", n=1), _qo(t + 0.01, "q3", "네?"), _ev(t + 3, "wake", "user_text", text="a")]
+    (s,) = build_scenes(evs)
+    assert s.trigger == "wake" and s.question_id == "q3" and s.linked_by == "question_id"
+
+
+def test_wake_scene_without_q_open_stays_time_linked():
+    t = 1_800_000_000.0
+    (s,) = build_scenes([_ev(t, "wake", "wake_open", n=1), _ev(t + 3, "wake", "user_text", text="a")])
+    assert s.linked_by == "time" and s.question_id is None
+
+
+def test_old_log_reserve_after_15s_splits():
+    t = 1_800_000_000.0
+    evs = [_ev(t, "wake", "listen_reserve"), _ev(t + 5, "wake", "user_text", text="a"),
+           _ev(t + 25, "wake", "listen_reserve")]
+    assert len(build_scenes(evs)) == 2
+    evs[2] = _ev(t + 12, "wake", "listen_reserve")
+    assert len(build_scenes(evs)) == 1
+
+
+def test_reserve_right_after_q_open_does_not_split():
+    t = 1_800_000_000.0
+    evs = [_ev(t, "wake", "wake_open", n=1), _qo(t + 30, "q9"), _ev(t + 30.01, "wake", "listen_reserve")]
+    assert len(build_scenes(evs)) == 2
