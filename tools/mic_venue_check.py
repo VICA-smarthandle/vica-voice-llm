@@ -1,4 +1,4 @@
-"""마이크 현장 점검기 — 시연장에서 한 번 돌려 '이 장소에서 비카가 제대로 듣는가'를 휴대폰으로 본다.
+"""마이크 현장 점검기 — 시연장에서 한 번 돌려 '이 장소에서 비카가 제대로 듣는가'를 앱으로 본다.
 
 설계: docs/superpowers/specs/2026-10-12-mic-venue-check-design.md · 사용법: docs/mic-venue-check.md
 
@@ -6,7 +6,7 @@
     .venv/bin/python -m tools.mic_venue_check --restore     # .env 의 마이크 값 10개를 가장 최근 백업으로
     .venv/bin/python -m tools.mic_venue_check --demo        # 마이크·모델 없이 화면만(가짜 소리)
 
-전제: ⑫·⑬ 꺼짐 · 로봇 정지 · reSpeaker USB · 스피커는 reSpeaker 출력. 도구는 ROS 에 아무것도 보내지 않는다.
+전제: 음성 노드 꺼짐 · 로봇 정지 · reSpeaker USB · 스피커는 reSpeaker 출력. 도구는 ROS 에 아무것도 보내지 않는다.
 가져오기(import)만으로는 .env 를 읽지 않는다 — 시험이 운영 설정에 흔들리지 않게 프로그램으로 실행할 때만 읽는다.
 """
 from __future__ import annotations
@@ -110,7 +110,7 @@ def load_clips(baked_dir: Path, names: Sequence[str] = ROBOT_CLIPS) -> tuple:
 
 
 def lan_ip() -> str:
-    """휴대폰이 열 주소. 바깥으로 아무것도 보내지 않고 나가는 쪽 주소만 고른다."""
+    """앱이 붙을 주소. 바깥으로 아무것도 보내지 않고 나가는 쪽 주소만 고른다."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("10.255.255.255", 1))
@@ -258,12 +258,12 @@ def _restore_cli() -> int:
         print("그대로 둡니다.")
         return 0
     restore_latest(ENV_PATH, BACKUP_DIR)
-    print("되돌렸습니다. ⑫를 다시 켜야 적용됩니다.")
+    print("되돌렸습니다. 음성 노드를 다시 켜야 적용됩니다.")
     return 0
 
 
 class _Demo:
-    """--demo: 마이크·모델·칩 없이 가짜 소리로 화면을 움직인다(휴대폰 화면 확인용). 진짜 .env 는 건드리지 않는다."""
+    """--demo: 마이크·모델·칩 없이 가짜 소리로 화면을 움직인다(앱 화면 확인용). 진짜 .env 는 건드리지 않는다."""
     WAKE, STOP, YES, NO, VOICE = 20001, 20002, 20003, 20004, 20005
 
     def __init__(self):
@@ -366,7 +366,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.demo:
         running = voice_stack_running(_proc_cmdlines())
         if running:
-            print("⑫·⑬ 음성 칸이 켜져 있습니다. 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요:")
+            print("음성 노드가 켜져 있습니다. 앱에서 끈 뒤 다시 시작하세요:")
             for line in running[:5]:
                 print("   ", line[:120])
             return 1
@@ -412,7 +412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       record_dir=record_dir, backup_dir=BACKUP_DIR, clips=clips, previous_robot_level=prev,
                       chip_problems=problems)
     mic.open()
-    print("  준비 끝 — 휴대폰 화면을 따라 하세요. 끝낼 때는 화면의 '점검 끝내기' 또는 Ctrl+C.")
+    print("  준비 끝 — 앱 화면을 따라 하세요. 끝낼 때는 앱의 '끝내기'.")
     _install_signal_handlers()
     try:
         while not session.done:
@@ -457,7 +457,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠ 서버 끄기 문제: {exc}")
         print(f"  기록: {record_dir}")
-        print("  이제 ⑫를 켜고 시작 로그의 값을 확인한 뒤 시연 대화를 한 번 해 보세요.")
+        print("  이제 음성 노드를 켜고 시작 로그의 값을 확인한 뒤 시연 대화를 한 번 해 보세요.")
     return 0
 
 

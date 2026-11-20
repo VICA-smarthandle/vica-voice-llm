@@ -34,7 +34,7 @@ def row(m, key, v=V, prev=None):
 
 def test_all_good_is_pass():
     verdict = judge(good(), V)
-    assert verdict.overall == PASS and verdict.title == "시연 가능"
+    assert verdict.overall == PASS and verdict.title == "사용 가능"
 
 
 def test_empty_is_wait():
@@ -312,3 +312,8 @@ def test_ranges_cover_hallway_levels():
     for over in (dict(listen_min_rms=0.0405, short_answer_min_rms=0.050), dict(short_answer_min_rms=0.051),
                  dict(short_answer_min_rms=0.009), dict(approach_min_rms=0.0305)):
         assert check_values(replace(V, **over)), over
+
+
+def test_titles_use_new_wording():
+    from src.mic_check_rules import TITLES
+    assert TITLES[PASS] == "사용 가능" and TITLES[WARN] == "사용 가능 · 확인 필요"

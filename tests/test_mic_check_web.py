@@ -1,4 +1,4 @@
-"""휴대폰 중계 — 페이지, 다시 붙을 때 마지막 상태, 명령 줄 세우기(설계 4·9절)."""
+"""앱 중계 — 페이지, 다시 붙을 때 마지막 상태, 명령 줄 세우기(설계 4·9절)."""
 from __future__ import annotations
 
 import json
@@ -79,7 +79,7 @@ def test_failed_start_reports_port_in_use_and_stop_is_safe():
         second = LiveServer(host="127.0.0.1", port=first.port)
         with pytest.raises(RuntimeError) as err:
             second.start()
-        assert "휴대폰 중계를 열지 못했습니다" in str(err.value)
+        assert "앱 중계를 열지 못했습니다" in str(err.value)
         second.stop()
     finally:
         first.stop()
