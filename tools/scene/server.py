@@ -336,8 +336,32 @@ class Service:
 
 # ── HTTP ─────────────────────────────────────────────────────────────
 
-def make_handler(svc: Service):
+CSRF_HEADER = "X-Scene-Viewer"
+
+
+def make_handler(svc: Service, extra_hosts: tuple = ()):
     class H(BaseHTTPRequestHandler):
+        def _allowed_hosts(self) -> set:
+            port = self.server.server_address[1]
+            return {f"{h}:{port}" for h in ("127.0.0.1", "localhost", *extra_hosts)}
+
+        def _guard(self, method: str) -> bool:
+            """DNS rebinding·교차 사이트 요청 차단 — 거부하면 403 을 보내고 False."""
+            allowed = self._allowed_hosts()
+            host = (self.headers.get("Host") or "").lower()
+            origin = self.headers.get("Origin")
+            why = None
+            if host not in allowed:
+                why = "허용되지 않은 Host"
+            elif origin is not None and origin.lower() not in {f"http://{h}" for h in allowed}:
+                why = "허용되지 않은 Origin"
+            elif method == "POST" and self.headers.get(CSRF_HEADER) != "1":
+                why = f"{CSRF_HEADER} 헤더 없음"
+            if why:
+                self._json(403, {"error": why})
+                return False
+            return True
+
         def log_message(self, *a):
             pass
 
@@ -353,6 +377,8 @@ def make_handler(svc: Service):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
         def _route(self, method: str):
+            if not self._guard(method):
+                return
             u = urlparse(self.path)
             q = parse_qs(u.query)
             parts = [unquote(x) for x in u.path.strip("/").split("/")]
@@ -400,8 +426,9 @@ def make_handler(svc: Service):
     return H
 
 
-def serve(host: str = "127.0.0.1", port: int = 8772) -> None:
-    srv = ThreadingHTTPServer((host, port), make_handler(Service()))
+def serve(host: str = "127.0.0.1", port: int = 8772, allow_hosts: tuple = ()) -> None:
+    extra = tuple(h for h in (host, *allow_hosts) if h not in ("0.0.0.0", ""))
+    srv = ThreadingHTTPServer((host, port), make_handler(Service(), extra))
     print(f"장면 분석기 http://{host}:{port}/  (끄기: Ctrl-C)", flush=True)
     try:
         srv.serve_forever()

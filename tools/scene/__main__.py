@@ -81,13 +81,14 @@ def main(argv=None) -> int:
     sp = sub.add_parser("serve", help="브라우저 화면(포트 8772)")
     sp.add_argument("--port", type=int, default=8772)
     sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--allow-host", action="append", default=[], help="Host 헤더로 허용할 주소(예: Tailscale IP). 여러 번 가능")
     rk = sub.add_parser("reask", help="(서버용) 한 장면을 LLM·규칙에 다시 넣기")
     rk.add_argument("--scene-json", required=True)
     rk.add_argument("--path", required=True, choices=("rule", "midm", "gpt", "realtime"))
     a = ap.parse_args(argv)
     if a.cmd == "serve":
         from tools.scene.server import serve
-        serve(a.host, a.port)
+        serve(a.host, a.port, tuple(a.allow_host))
         return 0
     if a.cmd == "reask":
         return reask_child(a.scene_json, a.path)

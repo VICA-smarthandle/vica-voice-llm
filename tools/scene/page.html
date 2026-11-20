@@ -123,7 +123,7 @@ function renderScene(d){
 async function reask(id,p,btn){const out=$("reaskout");
   if(p!=="midm"&&!confirm(`${p} 는 외부 API 라 비용이 듭니다. 한 번 묻습니다.`))return;
   btn.disabled=true;out.innerHTML='<span class=note>묻는 중…</span>';
-  try{const e=await j(`/api/reask/${encodeURIComponent(id)}?path=${p}&${q()}`,{method:"POST"});
+  try{const e=await j(`/api/reask/${encodeURIComponent(id)}?path=${p}&${q()}`,{method:"POST",headers:{"X-Scene-Viewer":"1"}});
     out.innerHTML=`<div class=clipr><b>${esc(p)}</b> ${expBox(e)}</div>`}
   catch(e){out.innerHTML=`<div class=err><b>${e.code===409?"거부됨":"실패"}</b>: ${esc(e.message)}</div>`}
   btn.disabled=false}

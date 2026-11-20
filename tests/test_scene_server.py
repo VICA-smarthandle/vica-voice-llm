@@ -49,6 +49,9 @@ def api(tmp_path):
     srv.shutdown()
 
 
+H = {"X-Scene-Viewer": "1"}
+
+
 def get(url):
     try:
         with urllib.request.urlopen(url) as r:
@@ -102,7 +105,8 @@ def test_api_scene_json_shape(api):
 def test_reask_endpoint_refuses_when_driving(api):
     base, _, _ = api
     get(f"{base}/api/scenes?since=2026-11-04&until=2026-11-05")
-    req = urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=midm", method="POST")
+    req = urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=midm", method="POST",
+                                 headers={"X-Scene-Viewer": "1"})
     with pytest.raises(urllib.error.HTTPError) as ei:
         urllib.request.urlopen(req)
     assert ei.value.code == 409
@@ -114,10 +118,10 @@ def test_reask_endpoint_ok_and_bad_path(api):
     svc.reask_fn = lambda scene, path, events: {"intent": "affirm", "by": "LLM 추정", "sentence": "s",
                                                 "reply": None, "note": path}
     get(f"{base}/api/scenes?since=2026-11-04&until=2026-11-05")
-    ok = urllib.request.urlopen(urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=gpt", method="POST"))
+    ok = urllib.request.urlopen(urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=gpt", method="POST", headers=H))
     assert json.loads(ok.read())["note"] == "gpt"
     with pytest.raises(urllib.error.HTTPError) as ei:
-        urllib.request.urlopen(urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=zzz", method="POST"))
+        urllib.request.urlopen(urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=zzz", method="POST", headers=H))
     assert ei.value.code == 400
 
 
@@ -139,3 +143,29 @@ def test_reask_child_reports_refusal(tmp_path, monkeypatch, capsys):
                              "events": []}), encoding="utf-8")
     assert m.main(["reask", "--scene-json", str(f), "--path", "midm"]) == 3
     assert "주행 중" in json.loads(capsys.readouterr().out)["error"]
+
+
+@pytest.mark.parametrize("headers,why", [
+    ({}, "헤더 없음"),
+    ({"X-Scene-Viewer": "1", "Origin": "http://evil.example"}, "foreign origin"),
+    ({"X-Scene-Viewer": "1", "Host": "evil.example:80"}, "foreign host"),
+])
+def test_reask_post_cross_site_rejected(api, headers, why):
+    base, svc, _ = api
+    calls = []
+    svc.reask_fn = lambda scene, path, events: calls.append(path) or {}
+    get(f"{base}/api/scenes?since=2026-11-04&until=2026-11-05")
+    req = urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=gpt", method="POST", headers=headers)
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        urllib.request.urlopen(req)
+    assert ei.value.code == 403 and calls == [], why
+
+
+def test_own_origin_and_localhost_host_ok(api):
+    base, svc, _ = api
+    svc.reask_fn = lambda scene, path, events: {"note": "ok"}
+    get(f"{base}/api/scenes?since=2026-11-04&until=2026-11-05")
+    port = base.rsplit(":", 1)[1]
+    req = urllib.request.Request(f"{base}/api/reask/20261104-000000-wake?path=gpt", method="POST",
+                                 headers={**H, "Origin": f"http://localhost:{port}", "Host": f"localhost:{port}"})
+    assert urllib.request.urlopen(req).status == 200
