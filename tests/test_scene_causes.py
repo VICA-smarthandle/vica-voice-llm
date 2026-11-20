@@ -86,6 +86,11 @@ def test_1109_wake_near():
     assert ("호출 놓침", "추정") in pairs(s)
 
 
+def test_near_without_any_threshold_is_not_wake_miss():
+    c = judge(mk([ev(100.0, "wake_near", peak=0.83)]), {"wake_threshold": None})
+    assert "호출 놓침" not in {x.name for x in c} and ("원인 미분류", "확인 필요") in {(x.name, x.status) for x in c}
+
+
 def test_below_threshold_near_ignored():
     assert not judge(mk([ev(100.0, "wake_near", peak=0.5, threshold=0.70)]), CTX)
 

@@ -78,7 +78,10 @@ def judge(scene: Scene, ctx: dict) -> list[Cause]:
         th = ctx.get("wake_threshold")
         th = e.data.get("threshold") if th is None else th
         peak = e.data.get("peak", 0.0)
-        if th is not None and peak < th:
+        if th is None:
+            out.append(Cause("원인 미분류", "확인 필요", [_fmt(e)], "호출 문턱 모름(기동 줄·점수 줄에 문턱 없음)"))
+            continue
+        if peak < th:
             continue
         if any(0 <= e.t - f <= NEAR_AFTER_FIRE_S for f in fires):
             out.append(Cause("정상: 확정 직후 같은 말", "정상", [_fmt(e)]))
