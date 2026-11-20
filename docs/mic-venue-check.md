@@ -13,7 +13,7 @@
    `VICA_MIC_CHECK_LAUNCHER=mode` 표지가 없어 거절된다(`--demo`·`--restore` 제외).
 
 1단계 준비(모델 올리기, 칩에 `.env` 값 쓰기)는 점검기가 스스로 한다. 모델을 올리는 1~2분 동안 앱에 "준비하는 중"이 보인다.
-음성 노드와 같은 장소 귀띔을 쓰려면 점검기에 `--destinations ~/vica_data/destinations/<지도>/destinations.yaml` 이 필요하다.
+음성 노드와 같은 장소 귀띔은 모드 노드가 지도 목적지 파일(`~/vica_data/destinations/<지도>/destinations.yaml`)이 있으면 `--destinations` 로 자동으로 붙인다.
 
 ## 순서 (약 10~12분, 손잡이 자리에 서서 — 7·8단계는 자리를 옮긴다)
 

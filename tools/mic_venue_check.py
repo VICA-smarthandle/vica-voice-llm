@@ -2,7 +2,7 @@
 
 설계: docs/superpowers/specs/2026-10-12-mic-venue-check-design.md · 사용법: docs/mic-venue-check.md
 
-    cd ~/VICA-smarthandle/vica-voice-llm && .venv/bin/python -m tools.mic_venue_check --name 시연장
+    모드 노드가 띄운다(앱 → 마이크 점검). 터미널: --demo · --restore
     .venv/bin/python -m tools.mic_venue_check --restore     # .env 의 마이크 값 10개를 가장 최근 백업으로
     .venv/bin/python -m tools.mic_venue_check --demo        # 마이크·모델 없이 화면만(가짜 소리)
 
