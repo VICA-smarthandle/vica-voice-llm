@@ -1,4 +1,6 @@
-"""python -m tools.scene report --since "2026-11-04 00:00" --until "2026-11-08 00:00" [--no-journal]"""
+"""python -m tools.scene report --since "2026-11-04 00:00" --until "2026-11-08 00:00" [--no-journal]
+       python -m tools.scene serve [--port 8772] [--host 127.0.0.1]
+       python -m tools.scene reask --scene-json <파일> --path rule|midm|gpt|realtime   (서버가 자식 프로세스로 부름)"""
 from __future__ import annotations
 
 import argparse
@@ -37,6 +39,38 @@ def report(since: float, until: float, journal: bool = True) -> str:
     return "\n".join(out)
 
 
+def reask_child(scene_json: str, path: str) -> int:
+    """서버가 요청마다 새 프로세스로 부른다(R12) — 해석기는 import 때 환경값을 읽으므로 경로마다 새로 띄운다.
+    결과 Expected(또는 {"error": …})를 JSON 한 줄로 찍는다. 거부는 종료 코드 3."""
+    import json
+    from dataclasses import asdict
+
+    from tools.scene import expected
+    from tools.scene.events import Event
+    from tools.scene.scenes import Scene
+
+    d = json.loads(open(scene_json, encoding="utf-8").read())
+    def mk(e):
+        return Event(e["t"], e["node"], e["kind"], e.get("data", {}), e.get("raw", ""))
+    sc = d["scene"]
+    scene = Scene(sc["id"], sc["start"], sc["end"], sc["trigger"], [mk(e) for e in sc["events"]],
+                  sc.get("linked_by", "time"), sc.get("question_id"))
+    events = [mk(e) for e in d["events"]]
+    try:
+        if path == "rule":
+            ut = next((e for e in scene.events if e.kind == "user_text"), None)
+            dests = expected.destinations_for_scene(events, ut.t) if ut else []
+            res = expected.rule_expected(scene, dests, events)
+            out = asdict(res) if res else None
+        else:
+            out = asdict(expected.reask(scene, path, events=events))
+    except RuntimeError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 3
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tools.scene")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -44,7 +78,19 @@ def main(argv=None) -> int:
     rp.add_argument("--since", required=True)
     rp.add_argument("--until", required=True)
     rp.add_argument("--no-journal", action="store_true")
+    sp = sub.add_parser("serve", help="브라우저 화면(포트 8772)")
+    sp.add_argument("--port", type=int, default=8772)
+    sp.add_argument("--host", default="127.0.0.1")
+    rk = sub.add_parser("reask", help="(서버용) 한 장면을 LLM·규칙에 다시 넣기")
+    rk.add_argument("--scene-json", required=True)
+    rk.add_argument("--path", required=True, choices=("rule", "midm", "gpt", "realtime"))
     a = ap.parse_args(argv)
+    if a.cmd == "serve":
+        from tools.scene.server import serve
+        serve(a.host, a.port)
+        return 0
+    if a.cmd == "reask":
+        return reask_child(a.scene_json, a.path)
     print(report(_ts(a.since), _ts(a.until), journal=not a.no_journal))
     return 0
 
