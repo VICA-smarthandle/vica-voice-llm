@@ -1,8 +1,8 @@
-"""마이크 점검기 휴대폰 중계 — 페이지 하나와 실시간 통로 하나(websockets 15, 새 의존성 없음).
+"""마이크 점검기 앱 중계 — 실시간 통로 하나(/ws, websockets 15, 새 의존성 없음).
 
-같은 와이파이의 휴대폰이 http://<젯슨>:8770/ 을 열면 페이지를 받고, 페이지가 /ws 로 붙어 실시간 값을 받고
-버튼 명령을 보낸다. 점검기가 도는 동안에만 열린다. keep 이름을 붙인 메시지(상태·결과)는 기억해 두었다가
-새로 붙는 휴대폰에 먼저 보낸다 — 화면이 꺼졌다 켜져도 빈 화면이 되지 않게. 설계 4·9절.
+관리자 앱(Flutter)이 ws://<젯슨>:8770/ws 로 붙어 실시간 값을 받고 버튼 명령을 보낸다. 점검기는 페이지를 내보내지 않는다(stt_bench 는 page_html 로 낸다).
+점검기가 도는 동안에만 열린다. keep 이름을 붙인 메시지(상태·결과)는 기억해 두었다가
+새로 붙는 앱에 먼저 보낸다 — 화면이 꺼졌다 켜져도 빈 화면이 되지 않게. 설계 4·9절.
 """
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ DEFAULT_PORT = 8770
 
 
 class LiveServer:
-    def __init__(self, page_html: str, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
-        self._page = page_html.encode("utf-8")
+    def __init__(self, page_html: Optional[str] = None, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
+        # 페이지를 주면 / 에서 내준다(stt_bench). 안 주면 /ws 만 열고 나머지는 404(마이크 점검은 앱 전용).
+        self._page = page_html.encode("utf-8") if page_html is not None else None
         self._host, self._want_port = host, port
         self.port: Optional[int] = None
         self.commands: "queue.Queue[dict]" = queue.Queue()
@@ -37,9 +38,9 @@ class LiveServer:
     def start(self, timeout: float = 5.0) -> None:
         self._thread.start()
         if not self._ready.wait(timeout):
-            raise RuntimeError("휴대폰 중계를 열지 못했습니다(시간 초과)")
+            raise RuntimeError("앱 중계를 열지 못했습니다(시간 초과)")
         if self._error is not None:
-            raise RuntimeError(f"휴대폰 중계를 열지 못했습니다: {self._error}")
+            raise RuntimeError(f"앱 중계를 열지 못했습니다: {self._error}")
 
     def stop(self) -> None:
         """여러 번 불러도, 시작 전·시작 실패 뒤에 불러도 안전하다."""
@@ -88,12 +89,12 @@ class LiveServer:
     def _process_request(self, connection, request):
         if request.path == "/ws":
             return None
-        if request.path in ("/", "/index.html"):
+        if self._page is not None and request.path in ("/", "/index.html"):
             headers = Headers([("Content-Type", "text/html; charset=utf-8"),
                                ("Content-Length", str(len(self._page))),
                                ("Cache-Control", "no-store")])
             return Response(200, "OK", headers, self._page)
-        return connection.respond(404, "없는 주소입니다\n")
+        return connection.respond(404, "마이크 점검은 앱에서 합니다\n")
 
     async def _handler(self, ws) -> None:
         self._clients.add(ws)

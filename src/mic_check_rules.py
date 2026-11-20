@@ -54,7 +54,7 @@ ECHO_LABELS = {"strong": "센 (1.5·켜짐)", "mid": "중간 (1.0·켜짐)", "fa
 
 PASS, WARN, FAIL, REDO, WAIT = "pass", "warn", "fail", "redo", "wait"
 _RANK = {PASS: 0, WARN: 1, WAIT: 2, REDO: 3, FAIL: 4}
-TITLES = {PASS: "시연 가능", WARN: "시연 가능 · 확인 필요", WAIT: "점검 중",
+TITLES = {PASS: "사용 가능", WARN: "사용 가능 · 확인 필요", WAIT: "점검 중",
           REDO: "다시 녹음 필요", FAIL: "고친 뒤 다시"}
 
 

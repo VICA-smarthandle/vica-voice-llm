@@ -149,7 +149,7 @@ def test_double_record_is_ignored(tmp_path):
     s, hw, msgs = make(tmp_path)
     s.handle({"cmd": "record"})
     s.handle({"cmd": "record"})
-    assert last(msgs, "toast")["text"].startswith("지금은")
+    assert last(msgs, "toast")["text"] == "지금은 녹음 중입니다 · 끝난 뒤 다시 누르세요"
     feed(s, hw, NOISE, 188)
     assert len(s.meas.noise) == 3 and s.step.key == "call"
 
@@ -233,7 +233,9 @@ def test_save_and_restore(tmp_path):
     s.handle({"cmd": "save"})
     assert "VICA_WAKE_THRESHOLD=0.65" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert s.env_values.wake_threshold == 0.65 and (tmp_path / "bk").is_dir()
+    assert last(msgs, "toast")["text"] == "저장했습니다 · 음성 노드를 다시 켜야 적용됩니다"
     s.handle({"cmd": "restore"})
+    assert last(msgs, "toast")["text"].endswith(" 으로 되돌렸습니다 · 음성 노드를 다시 켜야 적용됩니다")
     assert "VICA_WAKE_THRESHOLD" not in read_env(tmp_path / ".env")      # 저장이 넣은 줄은 사라진다(기본값)
     assert values_from(read_env(tmp_path / ".env")) == original_values
     assert s.values.wake_threshold == 0.70 and s.env_values.wake_threshold == 0.70
@@ -357,6 +359,7 @@ def test_chip_problems_block_recording_and_robot(tmp_path):
     s.chip_problems = ["AGC 쓰기 실패"]
     s.handle({"cmd": "record"})
     assert "칩에 .env 값을 쓰지 못해" in last(msgs, "toast")["text"] and s.recording_kind is None
+    assert last(msgs, "toast")["text"].endswith(" · 끝내기 뒤 다시 시작하세요")
     go_to_robot(s)
     s.handle({"cmd": "robot"})
     assert "AGC 쓰기 실패" in last(msgs, "toast")["text"] and not s.robot_running
