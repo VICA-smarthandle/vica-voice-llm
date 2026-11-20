@@ -29,6 +29,16 @@ def test_root_is_404_and_only_ws_opens(server):
         pass
 
 
+def test_optional_page_is_served_at_root():
+    s = LiveServer("<html><body>벤치</body></html>", host="127.0.0.1", port=0)
+    s.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{s.port}/") as r:
+            assert r.status == 200 and "벤치" in r.read().decode("utf-8")
+    finally:
+        s.stop()
+
+
 def test_kept_message_sent_on_connect_and_commands_queued(server):
     server.publish({"type": "status", "n": 1}, keep="status")
     server.publish({"type": "status", "n": 2}, keep="status")     # 같은 이름은 마지막 것만

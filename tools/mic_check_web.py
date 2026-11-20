@@ -13,12 +13,16 @@ import threading
 from typing import Optional
 
 from websockets.asyncio.server import broadcast, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 DEFAULT_PORT = 8770
 
 
 class LiveServer:
-    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
+    def __init__(self, page_html: Optional[str] = None, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
+        # 페이지를 주면 / 에서 내준다(stt_bench). 안 주면 /ws 만 열고 나머지는 404(마이크 점검은 앱 전용).
+        self._page = page_html.encode("utf-8") if page_html is not None else None
         self._host, self._want_port = host, port
         self.port: Optional[int] = None
         self.commands: "queue.Queue[dict]" = queue.Queue()
@@ -85,6 +89,11 @@ class LiveServer:
     def _process_request(self, connection, request):
         if request.path == "/ws":
             return None
+        if self._page is not None and request.path in ("/", "/index.html"):
+            headers = Headers([("Content-Type", "text/html; charset=utf-8"),
+                               ("Content-Length", str(len(self._page))),
+                               ("Cache-Control", "no-store")])
+            return Response(200, "OK", headers, self._page)
         return connection.respond(404, "마이크 점검은 앱에서 합니다\n")
 
     async def _handler(self, ws) -> None:
