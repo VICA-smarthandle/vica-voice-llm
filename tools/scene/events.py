@@ -115,10 +115,10 @@ def classify(t: float, node_full: str, msg: str) -> Optional[Event]:
             return ev("listen_reserve")
         m = _USER_TEXT.search(msg)
         if m:
-            return ev("user_text", via="text", text=m.group(1))
+            return ev("user_text", text=m.group(1))
         m = _USER_AUDIO.match(msg)
         if m:
-            return ev("user_text", via="audio", sec=_f(m.group(1)))
+            return ev("user_audio", sec=_f(m.group(1)))
         m = _QUALITY.match(msg)
         if m:
             return ev("listen_quality", rms=_f(m.group(1)), peak=_f(m.group(2)), clip=_f(m.group(3)))
@@ -282,10 +282,13 @@ def read_events(since: float, until: float, log_dir: Path = DEFAULT_LOG_DIR,
     seen: set[tuple] = set()
     out: list[Event] = []
     for src in sources:
+        nth: dict[tuple, int] = {}          # 한 출처 안의 같은 줄은 번호를 붙여 서로 다른 사건으로 센다
         for t, node_full, msg in src:
             if t < since or t > until:
                 continue
-            key = (t, NODES.get(node_full), msg)
+            base = (t, NODES.get(node_full), msg)
+            nth[base] = nth.get(base, 0) + 1
+            key = base + (nth[base],)       # 출처 사이에서만 같은 번호끼리 합쳐진다
             if key in seen:
                 continue
             seen.add(key)

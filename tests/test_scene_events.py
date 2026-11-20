@@ -41,6 +41,8 @@ def test_listen_window_kinds():
 def test_user_text_quality_timing():
     u = classify(1.0, WAKE, "🗣️ 호출 발화 -> /vica/user_text: '그래.'")
     assert u.kind == "user_text" and u.data["text"] == "그래."
+    a = classify(1.0, WAKE, "🎧 발화 소리 -> /vica/user_audio (3.60s)")
+    assert a.kind == "user_audio" and a.data == {"sec": 3.6}
     q = classify(1.0, WAKE, "수음 품질: rms 0.1261 · peak 1.00 · clip 0.8%")
     assert q.kind == "listen_quality" and q.data == {"rms": 0.1261, "peak": 1.0, "clip": 0.8}
     t = classify(1.0, WAKE, "계측: 대기 -0.02s · 발화 8.01s · 말끝판정 0.88s · STT 1.63s")
@@ -136,6 +138,24 @@ def test_duplicate_lines_merged(tmp_path):
     _node_log(rl / "voice_1104_100000.log", ["[vica_wakeword-1] " + line])
     out = read_events(0, 2e9, log_dir=tmp_path, relaunch_dir=rl, journal=False)
     assert [e.kind for e in out] == ["wake_fire"]
+
+
+def test_identical_lines_within_one_source_kept(tmp_path):
+    rl = tmp_path / "relaunch"
+    rl.mkdir()
+    fail = "[vica_llm-1] [ERROR] [LLM] 호출 실패(클라우드만, 폴백 꺼짐): timed out"
+    _node_log(rl / "voice_1011_175409.log", [
+        "[vica_llm-1] [INFO] [1500.25] [vica_llm_intent_node]: 입력='그래.' -> intent=affirm matched= safety=normal",
+        fail, fail])
+    out = read_events(0, 2e9, log_dir=tmp_path / "none", relaunch_dir=rl, journal=False)
+    assert [e.kind for e in out] == ["llm_input", "llm_fail", "llm_fail"]
+
+
+def test_journal_same_second_failures_kept(tmp_path, monkeypatch):
+    line = "2026-11-20T07:52:05+0900 Z-jet run_llm.sh[1]: [vica_llm-1] [ERROR] [LLM] 호출 실패(모델 m): timed out"
+    monkeypatch.setattr(events, "_journal_lines", lambda s, u: [line, line])
+    out = read_events(0, 2e9, log_dir=tmp_path / "a", relaunch_dir=tmp_path / "b", journal=True)
+    assert [e.kind for e in out] == ["llm_fail", "llm_fail"]
 
 
 def test_relaunch_stderr_gets_time_of_previous_line(tmp_path):
