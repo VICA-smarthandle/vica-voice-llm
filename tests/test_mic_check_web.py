@@ -13,19 +13,20 @@ from tools.mic_check_web import LiveServer
 
 @pytest.fixture
 def server():
-    s = LiveServer("<html><body>점검</body></html>", host="127.0.0.1", port=0)
+    s = LiveServer(host="127.0.0.1", port=0)
     s.start()
     yield s
     s.stop()
 
 
-def test_page_and_404(server):
-    with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/") as r:
-        assert r.status == 200 and "text/html" in r.headers["Content-Type"]
-        assert "점검" in r.read().decode("utf-8")
-    with pytest.raises(urllib.error.HTTPError) as err:
-        urllib.request.urlopen(f"http://127.0.0.1:{server.port}/nope")
-    assert err.value.code == 404
+def test_root_is_404_and_only_ws_opens(server):
+    for path in ("/", "/index.html", "/nope"):
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.port}{path}")
+        assert err.value.code == 404
+        assert "앱에서" in err.value.read().decode("utf-8")
+    with connect(f"ws://127.0.0.1:{server.port}/ws"):
+        pass
 
 
 def test_kept_message_sent_on_connect_and_commands_queued(server):
@@ -50,22 +51,22 @@ def test_publish_reaches_connected_client(server):
 
 
 def test_stop_twice_is_safe():
-    s = LiveServer("<html></html>", host="127.0.0.1", port=0)
+    s = LiveServer(host="127.0.0.1", port=0)
     s.start()
     s.stop()
     s.stop()
 
 
 def test_stop_before_start_is_safe():
-    s = LiveServer("<html></html>", host="127.0.0.1", port=0)
+    s = LiveServer(host="127.0.0.1", port=0)
     s.stop()
 
 
 def test_failed_start_reports_port_in_use_and_stop_is_safe():
-    first = LiveServer("<html></html>", host="127.0.0.1", port=0)
+    first = LiveServer(host="127.0.0.1", port=0)
     first.start()
     try:
-        second = LiveServer("<html></html>", host="127.0.0.1", port=first.port)
+        second = LiveServer(host="127.0.0.1", port=first.port)
         with pytest.raises(RuntimeError) as err:
             second.start()
         assert "휴대폰 중계를 열지 못했습니다" in str(err.value)
@@ -75,7 +76,7 @@ def test_failed_start_reports_port_in_use_and_stop_is_safe():
 
 
 def test_publish_after_stop_is_safe():
-    s = LiveServer("<html></html>", host="127.0.0.1", port=0)
+    s = LiveServer(host="127.0.0.1", port=0)
     s.start()
     s.stop()
     s.publish({"type": "x"}, keep="status")

@@ -13,15 +13,12 @@ import threading
 from typing import Optional
 
 from websockets.asyncio.server import broadcast, serve
-from websockets.datastructures import Headers
-from websockets.http11 import Response
 
 DEFAULT_PORT = 8770
 
 
 class LiveServer:
-    def __init__(self, page_html: str, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
-        self._page = page_html.encode("utf-8")
+    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
         self._host, self._want_port = host, port
         self.port: Optional[int] = None
         self.commands: "queue.Queue[dict]" = queue.Queue()
@@ -88,12 +85,7 @@ class LiveServer:
     def _process_request(self, connection, request):
         if request.path == "/ws":
             return None
-        if request.path in ("/", "/index.html"):
-            headers = Headers([("Content-Type", "text/html; charset=utf-8"),
-                               ("Content-Length", str(len(self._page))),
-                               ("Cache-Control", "no-store")])
-            return Response(200, "OK", headers, self._page)
-        return connection.respond(404, "없는 주소입니다\n")
+        return connection.respond(404, "마이크 점검은 앱에서 합니다\n")
 
     async def _handler(self, ws) -> None:
         self._clients.add(ws)

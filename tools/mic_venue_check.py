@@ -24,7 +24,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -49,7 +49,7 @@ from tools.mic_check_web import DEFAULT_PORT, LiveServer  # noqa: E402
 ENV_PATH = ROOT / ".env"
 DATA = Path.home() / "vica_data" / "mic_checks"
 BACKUP_DIR = DATA / "env_backups"
-PAGE = Path(__file__).with_name("mic_check_page.html")
+LAUNCHER_ENV = "VICA_MIC_CHECK_LAUNCHER"   # 모드 노드가 systemd-run --setenv 로 넣는 실행 표지
 CHANNELS = 6              # reSpeaker 6채널 펌웨어 — ch0 이 칩 처리음(⑫ 가 듣는 소리)
 SETTLE_SEC = 2.0          # 칩에 쓴 뒤 AGC·에코가 자리 잡을 시간(잡음은 그 뒤에 잰다)
 VOICE_PATTERNS = ("vica_voice.launch.py", "-m src.ros_")   # ⑫·⑬ 중복 검사와 같은 무늬
@@ -63,6 +63,11 @@ ROBOT_CLIPS = (           # 설계 3절 — 호출어·긴급어와 닮은 말�
     "mission_msg_estop_reject.wav",
     "mission_msg_obstacle_avoid.wav",
 )
+
+
+def launched_by_mode(environ: Mapping[str, str]) -> bool:
+    """앱이 모드 노드를 거쳐 띄운 점검기인가. 값이 정확히 "mode" 일 때만 참."""
+    return environ.get(LAUNCHER_ENV) == "mode"
 
 
 def voice_stack_running(cmdlines: Sequence[str]) -> list:
@@ -354,6 +359,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = ap.parse_args(argv)
     if args.restore:
         return _restore_cli()
+    if not args.demo and not launched_by_mode(os.environ):
+        print("마이크 점검은 앱에서만 합니다. (화면 개발: --demo · 비상 되돌리기: --restore)")
+        return 2
     os.chdir(ROOT)   # 호출 모델 경로(models/...)가 저장소 기준이다
     if not args.demo:
         running = voice_stack_running(_proc_cmdlines())
@@ -373,9 +381,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     clips, missing = load_clips(ROOT / "assets" / "baked")
     for name in missing:
         print(f"  (멘트 {name} 없음 — 건너뜀)")
-    server = LiveServer(PAGE.read_text(encoding="utf-8"), port=args.port)
+    server = LiveServer(port=args.port)
     server.start()
-    print(f"\n  휴대폰으로 여세요:  http://{lan_ip()}:{server.port}\n")
+    print(f"\n  앱 연결 대기: ws://{lan_ip()}:{server.port}/ws\n")
     server.publish({"type": "prep", "text": "젯슨이 준비하는 중입니다(모델 올리기 1~2분)…"}, keep="status")
     if args.demo:
         return _run_demo(server, env_values, record_dir, clips, prev, args.name)

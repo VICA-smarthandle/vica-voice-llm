@@ -116,3 +116,27 @@ def test_demo_voice_frames_pass_band_gate():
     no = demo.frame(_Rec("answer", 5, "no"))
     assert demo.models().transcribe_confirm(no) == "아니"
     assert demo.predict(demo.frame(_Rec("call", 3)))["a"] > 0.9
+
+
+def test_launched_by_mode_only_for_mode():
+    from tools.mic_venue_check import launched_by_mode
+    assert not launched_by_mode({})
+    assert not launched_by_mode({"VICA_MIC_CHECK_LAUNCHER": "x"})
+    assert launched_by_mode({"VICA_MIC_CHECK_LAUNCHER": "mode"})
+
+
+def test_main_refuses_without_launcher(monkeypatch, capsys):
+    import tools.mic_venue_check as m
+    monkeypatch.delenv("VICA_MIC_CHECK_LAUNCHER", raising=False)
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("표지 없이 여기까지 옴"))
+    monkeypatch.setattr(m, "_proc_cmdlines", boom)
+    monkeypatch.setattr(m, "LiveServer", boom)
+    assert m.main([]) == 2
+    assert "마이크 점검은 앱에서만 합니다" in capsys.readouterr().out
+
+
+def test_main_restore_works_without_launcher(monkeypatch):
+    import tools.mic_venue_check as m
+    monkeypatch.delenv("VICA_MIC_CHECK_LAUNCHER", raising=False)
+    monkeypatch.setattr(m, "_restore_cli", lambda: 7)
+    assert m.main(["--restore"]) == 7
