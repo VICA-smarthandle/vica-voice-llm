@@ -90,3 +90,13 @@ def test_p8_unreadable_speech_is_unknown_not_dropped(monkeypatch):
     assert line in parser._build_system_prompt(DESTS) and line in parser.build_audio_prompt(DESTS)
     monkeypatch.setenv("VICA_RECUT", "off")
     assert line not in parser._build_system_prompt(DESTS) and line not in parser.build_audio_prompt(DESTS)
+
+
+def test_p18_same_place_said_a_little_differently_is_not_unavailable(monkeypatch):
+    line = ("  not_available = 목록에 없는 곳을 찾는다. clarify_wanted 에 찾는 곳이나 물건의 이름만 사용자가 말한 낱말로 적는다(문장을 통째로 "
+            "적지 않는다). 다른 곳인데 비슷하다고 그곳으로 바꾸지 않는다. 같은 곳을 조금 다르게 부른 것(띄어쓰기, 앞뒤에 붙은 말, 별칭)은 "
+            "not_available 이 아니라 그 목적지로 navigate 다.")
+    assert line in intent_recut.PROMPT_INTENTS.split("\n")
+    assert "사용자가 말한 낱말 그대로 적는다. 비슷한 다른 곳으로 바꾸지 않는다." not in intent_recut.PROMPT_INTENTS
+    monkeypatch.setenv("VICA_RECUT", "on")
+    assert line in parser._build_system_prompt(DESTS) and line in parser.build_audio_prompt(DESTS)

@@ -22,7 +22,7 @@ CLARIFY_KINDS = ("several", "not_available", "no_destination")
 # 지시문 두 벌(글자·소리)이 함께 싣는 글(원칙 1·4·7·12·31). 켰을 때만 지시문에 들어간다. 줄바꿈으로 시작·끝나지 않는다.
 PROMPT_INTENTS = """- clarify: 로봇에게 한 말이고 가고 싶은 곳에 대한 말인데 한 곳으로 정할 수 없다. reply 는 빈 문자열로 두고(되묻는 문장은 시스템이 만든다) clarify_kind 에 까닭을 적는다.
   several = 목록의 여러 곳에 똑같이 걸린다. clarify_options 에 그 곳들의 name 을 모두 적는다(하나만 적지 않는다).
-  not_available = 목록에 없는 곳을 찾는다. clarify_wanted 에 찾는 것을 사용자가 말한 낱말 그대로 적는다. 비슷한 다른 곳으로 바꾸지 않는다.
+  not_available = 목록에 없는 곳을 찾는다. clarify_wanted 에 찾는 곳이나 물건의 이름만 사용자가 말한 낱말로 적는다(문장을 통째로 적지 않는다). 다른 곳인데 비슷하다고 그곳으로 바꾸지 않는다. 같은 곳을 조금 다르게 부른 것(띄어쓰기, 앞뒤에 붙은 말, 별칭)은 not_available 이 아니라 그 목적지로 navigate 다.
   no_destination = 어디로 갈지 말하지 않았다.
 - unknown: 로봇에게 한 말인데 무슨 뜻인지 알아듣지 못했다. reply 는 빈 문자열 — 시스템이 다시 말해 달라고 한다.
 - not_for_robot: 로봇에게 한 말이 아니다(옆 사람과 나눈 말, 로봇을 두고 설명하는 말, 혼잣말, 로봇 목소리의 메아리, 소음). reply 는 빈 문자열 — 로봇은 끼어들지 않는다.
