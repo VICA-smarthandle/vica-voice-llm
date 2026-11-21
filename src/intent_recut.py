@@ -115,8 +115,9 @@ def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], h
     if not on() or result.safety_flag == "emergency":
         return result
     if result.intent == "clarify":
-        if _CHOICE_TAIL.search(result.reply or "") and getattr(draft, "clarify_kind", "") not in CLARIFY_KINDS:
-            return result                      # 코드가 이미 만든 고르기 문장(_ask_which 등) — 모델이 종류를 적었으면 모델 말이다
+        reply = (result.reply or "").strip()
+        if _CHOICE_TAIL.search(reply) and reply != (getattr(draft, "reply", "") or "").strip():
+            return result                      # 코드가 이미 만든 고르기 문장(_ask_which 등) — 모델이 지은 문장과 다를 때만
         ok = {d.name: d for d in destinations if d.name and d.is_approachable}
         options = list(dict.fromkeys(n for n in (getattr(draft, "clarify_options", None) or []) if n in ok))
         wanted = getattr(draft, "clarify_wanted", "") or ""

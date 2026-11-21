@@ -182,3 +182,36 @@ def test_off_keeps_the_models_own_clarify_sentence(monkeypatch):
     assert audio(parser._IntentDraft(intent="unknown", reply="")).reply == ""
     from src import intent_recut
     assert intent_recut.early(parser._IntentDraft(intent="question")) is None
+
+
+# ---- Task 2.4 수정 1차: 코드가 만든 고르기 문장 보존·LLM 이 지은 고르기 꼴은 틀에서 다시 -------------------------------
+CHOOSE_TOILETS = "남자 화장실과 여자 화장실 중 어디로 갈까요?"
+
+
+def test_p4_code_made_choice_sentence_is_kept(monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    out = finalize(draft(intent="navigate", destination_candidate="화장실"))     # _ask_which 가 만든다
+    assert out.intent == "clarify" and out.reply == CHOOSE_TOILETS
+
+
+def test_p4_code_made_choice_survives_a_thin_options_list(monkeypatch):
+    # 모델이 several 이라 했지만 쓸 수 있는 이름이 하나뿐 — 같은 발화에 코드가 만든 후보 질문을 덮지 않는다
+    monkeypatch.setenv("VICA_RECUT", "on")
+    d = dict(intent="navigate", destination_candidate="화장실", clarify_kind="several", clarify_options=["화장실"])
+    assert finalize(draft(**d)).reply == CHOOSE_TOILETS
+    assert audio(draft(**d)).reply == CHOOSE_TOILETS
+
+
+def test_p12_p18_models_own_choice_shape_goes_through_the_frame(monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    d = draft(intent="clarify", clarify_kind="", reply="407호와 비공개 408호 중 어디로 갈까요?")
+    assert finalize(d).reply == ASK_DESTINATION
+
+
+def test_p8_llm_unavailable_sentence_is_not_overwritten(monkeypatch):
+    from src import intent_recut
+    from src.replies import LLM_UNAVAILABLE
+    from src.schema import VicaIntent
+    monkeypatch.setenv("VICA_RECUT", "on")
+    r = VicaIntent(intent="unknown", reply=LLM_UNAVAILABLE)
+    assert intent_recut.settle(r, draft(intent="unknown"), _D, "비카야").reply == LLM_UNAVAILABLE
