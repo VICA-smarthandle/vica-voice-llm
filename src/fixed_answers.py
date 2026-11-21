@@ -1,26 +1,26 @@
 """정해진 대답 둘(2026-11-21 voice-principles-intent-recut 4단계, 설계 6.4) — 순수 함수만 둔다.
 
 "다시 말해줘"(repeat, 원칙 28)·"어디 갈 수 있어?"(places, 원칙 29)는 LLM 이 값을 고르기만 하고 문장은 코드가 만든다.
-`.env` VICA_TALK=on 이고 재단(VICA_RECUT=on)이 함께 켜졌을 때만 움직인다(기본 꺼짐 = 지금과 같다). 로컬(Ollama)이 답하는
-호출에는 싣지 않는다(원칙 16) — 지시문 두 줄은 재단을 싣는 지시문에만 붙고, 로컬이 답한 결과는 이 뒤처리를 지나지 않는다.
-ROS·LLM 을 모른다 — 장치 없이 시험된다.
+`.env` VICA_TALK=on 이고 재단(VICA_RECUT=on)·대답 칸(VICA_ANSWER=on)이 함께 켜졌을 때만 움직인다(기본 꺼짐 = 지금과 같다).
+로컬(Ollama)이 답하는 호출에는 싣지 않는다(원칙 16) — 지시문 두 줄은 재단을 싣는 지시문에만 붙고, 로컬이 답한 결과는 이 뒤처리를
+지나지 않는다. ROS·LLM 을 모른다 — 장치 없이 시험된다.
 """
 from __future__ import annotations
 
 import os
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence
 
-from . import intent_recut
+from . import answer_field, intent_recut
+from .mission_phrases import WAIT_BEACON
 from .question_record import OpenQuestion
-from .replies import RETRY_PROMPT, WAKE_GREETING, places_sentence
+from .replies import RETRY_PROMPT, WAKE_GREETING, expects_answer, places_sentence
 from .schema import DestinationData, VicaIntent
 
 REPEAT = "repeat"
 PLACES = "places"
-# 미션이 물어 쥐고 있는 질문 종류 — 여기에 "다시 말해줘"면 미션이 그 질문을 다시 말한다(미션 Task 4.3, _open_question_name).
-# open("네?"·음성이 넘긴 되묻기)과 choice(음성이 넘긴 고르기 질문 — 미션은 choice 를 스스로 묻지 않는다)는 미션이 쥐고 있지 않아
-# repeat 에 말이 없다 — 음성이 마지막 말을 다시 하고, 질문 꼴이면 hand_over_question 이 같은 종류로 다시 넘긴다.
-MISSION_KINDS = ("confirm", "yesno", "yesno_inverted", "minutes")
+# 고르기 질문 — 미션은 스스로 묻지 않는다(음성이 넘긴 것뿐). CONFIRMING 중에 넘긴 것이면 미션은 repeat 에 자기 확인 질문을 다시
+# 말하므로(_open_question_name), 이 종류만 음성이 그 글을 다시 넘긴다(hand_over_question 이 choice·보기 id 로).
+_VOICE_HANDED_KINDS = ("choice",)
 
 # 지시문 두 벌(글자·소리)이 재단의 의도 정의(intent_recut.PROMPT_INTENTS) 바로 뒤에 싣는 두 줄. 켰을 때만 들어간다.
 PROMPT_LINES = """- repeat: 로봇이 방금 한 말을 다시 해 달라고 한다("다시 말해줘", "뭐라고?", "못 들었어"). reply 는 빈 문자열.
@@ -28,8 +28,10 @@ PROMPT_LINES = """- repeat: 로봇이 방금 한 말을 다시 해 달라고 한
 
 
 def on() -> bool:
-    """스위치. `.env` VICA_TALK=on 이고 재단(intent_recut.on())이 켜졌을 때만 참 — 4단계는 2단계 위에서만 켜진다. 매번 읽는다."""
-    return os.environ.get("VICA_TALK", "").strip().lower() == "on" and intent_recut.on()
+    """스위치. `.env` VICA_TALK=on 이고 재단(intent_recut.on())·대답 칸(answer_field.on())이 켜졌을 때만 참 — 4단계는 2·3단계
+    위에서만 켜진다(대답 칸이 꺼지면 "다시 출발할까요?"를 음성이 쥐어 미션이 repeat 에 말이 없다). 매번 읽는다."""
+    return (os.environ.get("VICA_TALK", "").strip().lower() == "on"
+            and intent_recut.on() and answer_field.on())
 
 
 def places_names(destinations: Sequence[DestinationData]) -> list[str]:
@@ -37,24 +39,52 @@ def places_names(destinations: Sequence[DestinationData]) -> list[str]:
     return [d.name for d in destinations if d.name and d.is_approachable]
 
 
-def last_said(robot_recent: Sequence[tuple[float, str]]) -> str:
-    """로봇의 마지막 말(재생이 끝난 문장, /vica/tts_done). 호출 응답 "네?"는 건너뛴다. 없으면 빈 글자."""
+def _said_lines(robot_recent: Sequence[tuple[float, str]]) -> Iterator[str]:
+    """최근 로봇 말(재생이 끝난 문장, /vica/tts_done), 새것부터. 호출 응답 "네?"와 대기 알림(M3)은 뺀다 — 노드도 마지막 로봇 말·
+    대화 기록에서 대기 알림을 뺀다(_on_tts_done_text)."""
     for _, text in reversed(list(robot_recent)):
         line = (text or "").strip()
-        if line and line != WAKE_GREETING:
-            return line
-    return ""
+        if line and line not in (WAKE_GREETING, WAIT_BEACON):
+            yield line
+
+
+def last_said(robot_recent: Sequence[tuple[float, str]]) -> str:
+    """로봇의 마지막 말. "네?"·대기 알림은 건너뛴다. 없으면 빈 글자."""
+    return next(_said_lines(robot_recent), "")
+
+
+def _to_mission(ask_text: str = "", ask_kind: str = "", option_ids: Sequence[str] = ()) -> VicaIntent:
+    """미션에 보내는 repeat — 말은 미션이 한다: 쥐거나 접어 둔 질문이 있으면 그것을, 없으면 실려 간 글(ask_text)을 그 종류로."""
+    return VicaIntent(intent=REPEAT, reply="", need_confirm=False, ask_text=ask_text, ask_kind=ask_kind,
+                      ask_option_ids=list(option_ids))
+
+
+def _voice_says(text: str) -> VicaIntent:
+    """음성이 다시 말한다 — 지금 question 길(질문 꼴이면 hand_over_question 이 미션에 넘긴다)."""
+    return VicaIntent(intent="question", reply=text, need_confirm=False)
 
 
 def settle_repeat(question: Optional[OpenQuestion], robot_recent: Sequence[tuple[float, str]]) -> VicaIntent:
-    """repeat 를 정한다(원칙 28 · 9). 미션이 쥔 질문이 열려 있으면 repeat 를 미션에 보내고(미션이 다시 말한다 — 음성은 말하지
-    않는다), 아니면 음성이 마지막 말을 다시 한다. 다시 할 말이 없으면 unknown — 되묻는다. 대답 칸은 싣지 않는다."""
-    if question is not None and question.kind in MISSION_KINDS:
-        return VicaIntent(intent=REPEAT, reply="", need_confirm=False)
-    said = last_said(robot_recent)
-    if said:
-        return VicaIntent(intent="question", reply=said, need_confirm=False)
-    return VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False)
+    """repeat 를 정한다(원칙 28 · 9, 수정 1차). 누가 쥔 질문인지는 미션이 가른다 — 음성은 종류로 짐작하지 않는다.
+
+    1. 열린 질문이 없다: 음성이 마지막 말을 다시 한다. 없으면 unknown(되묻는 말).
+    2. 열린 질문이 "네?"다: 최근 로봇 말 중 질문 꼴의 가장 마지막 말을 실어 repeat 를 미션에 보낸다(미션이 쥐거나 접어 둔 질문이
+       있으면 그것을, 없으면 그 글을 말한다). 질문 꼴이 없으면 음성이 마지막 평서문을 다시 말하고, 그것도 없으면 글 없이 미션에.
+    3. 그 밖의 열린 질문: 그 질문의 글·종류·보기를 실어 repeat 를 미션에 보낸다. 고르기 질문(choice)만 음성이 그 글을 다시 넘긴다.
+    대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게.
+    """
+    if question is None:
+        said = last_said(robot_recent)
+        return _voice_says(said) if said else VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False)
+    if (question.text or "").strip() == WAKE_GREETING:
+        asked = next((line for line in _said_lines(robot_recent) if expects_answer(line)), "")
+        if asked:
+            return _to_mission(asked, "open")
+        said = last_said(robot_recent)
+        return _voice_says(said) if said else _to_mission()
+    if question.kind in _VOICE_HANDED_KINDS:
+        return _voice_says(question.text)
+    return _to_mission(question.text, question.kind, question.option_ids)
 
 
 def early(draft, destinations: Sequence[DestinationData]) -> Optional[VicaIntent]:

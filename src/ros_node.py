@@ -490,9 +490,10 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[끼어들지 않음] 나에게 한 말이 아님: '{text}' 화자={intent.speaker_verdict or '-'}")
             return
-        # 2-0a') 다시 말해줘(원칙 28 · 9) — 미션이 쥔 질문이 열려 있으면 repeat 를 미션에 보내 그 질문을 다시 말하게 하고(음성은
-        #        말하지 않는다), 아니면 음성이 마지막 말(_robot_recent — /vica/tts_done 으로 들어온 미션·음성 말, "네?" 빼고)을 다시
-        #        한다. 다시 할 말이 없으면 되묻는다. 대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은
+        # 2-0a') 다시 말해줘(원칙 28 · 9) — 열린 질문이 있으면 그 글을 실어 repeat 를 미션에 보낸다: 미션이 쥐거나 접어 둔 질문이
+        #        있으면 그것을, 없으면 실려 간 글을 말한다(누가 쥐었는지는 미션이 가른다, 음성은 말하지 않는다). 열린 질문이 없으면
+        #        음성이 마지막 말(_robot_recent — /vica/tts_done 으로 들어온 미션·음성 말, "네?"·대기 알림 빼고)을 다시 한다. 갈래는
+        #        fixed_answers.settle_repeat. 대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은
         #        그대로 싣는다. 꺼져 있으면 이 값이 만들어지지 않는다.
         if intent.intent == fixed_answers.REPEAT:
             settled = fixed_answers.settle_repeat(question, self._robot_recent)
@@ -617,9 +618,10 @@ class LlmIntentNode(Node):
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
         human = [] if scripted and not text else [HumanMessage(text)]   # 대답 없음으로 다시 묻는 예약 질문 — 사용자 줄 없음
-        if self._spoken_history or silenced:
+        if self._spoken_history or silenced or intent.intent == fixed_answers.REPEAT:
             # 2-3 에서 지운 대답은 기록에 빈 줄로 남기지 않는다 — 물어 둔 질문이 마지막 로봇
-            # 말로 남아야 다음 "네"가 그 질문의 답이 된다.
+            # 말로 남아야 다음 "네"가 그 질문의 답이 된다. 미션에 보낸 "다시 말해줘"도 같다 — 빈 로봇 줄이 남으면 다시 물은
+            # 확인 질문의 "음"이 확인 대기 없는 승낙(affirm)이 돼 출발한다(4.2 검토 C1, 09-28 '음'으로는 출발 안 함).
             self._history.extend(human)
         else:
             self._history.extend([*human, AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말

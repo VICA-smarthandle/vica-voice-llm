@@ -40,11 +40,11 @@ def fa():
     return importlib.import_module("src.fixed_answers")
 
 
-def talk_on(monkeypatch, answer=False):
+def talk_on(monkeypatch):
+    """4단계는 2·3단계 위에서만 켜진다(수정 1차 규칙 0) — 재단·대답 칸·정해진 대답 셋을 함께 켠다."""
     monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setenv("VICA_ANSWER", "on")
     monkeypatch.setenv("VICA_TALK", "on")
-    if answer:
-        monkeypatch.setenv("VICA_ANSWER", "on")
 
 
 # ---- 설명서 Step 1 의 넷 ------------------------------------------------------------------------------------------
@@ -76,20 +76,64 @@ def test_p28_repeat_says_the_open_question_or_the_last_sentence():
     assert settle_repeat(None, []).intent == "unknown"
 
 
-def test_p28_p9_repeat_goes_to_the_mission_only_for_questions_it_holds():
-    # 미션은 자기가 물은 종류의 질문만 쥔다(미션 Task 4.3). kind open 은 "네?"뿐 아니라 음성이 넘긴 되묻기도 있다 — 미션이 쥐고
-    # 있지 않아 repeat 에 말이 없으니 음성이 마지막 말을 다시 한다(controller 결정, 11-21). choice 도 음성이 넘긴 고르기 질문뿐이다
-    # (미션은 choice 를 스스로 묻지 않는다 — mission_logic 의 _ask(…, "choice") 0건) — 같은 길.
+# ---- 수정 1차: 누가 쥔 질문인지는 미션이 가른다 — 음성은 종류로 짐작하지 않는다 ---------------------------------------
+NOT_AVAILABLE_ASK = "제가 아는 목적지 중에서 스무디 가게는 없는데, 어디로 안내해드릴까요?"
+
+
+def _bare(out):
+    return (out.intent, out.reply, out.ask_text, out.ask_kind, tuple(out.ask_option_ids), out.answer, out.question_id)
+
+
+def test_p28_rule1_no_open_question_voice_says_its_last_sentence_again():
     settle_repeat = fa().settle_repeat
-    recent = [(1.0, "제가 아는 목적지 중에서 스무디 가게는 없는데, 어디로 안내해드릴까요?")]
-    for kind in ("confirm", "yesno", "yesno_inverted", "minutes"):
-        out = settle_repeat(OpenQuestion("q", kind, "질문?", (), 0.0), recent)
-        assert (out.intent, out.reply, out.answer, out.question_id) == ("repeat", "", "", "")
-    for kind in ("open", "choice"):
-        out = settle_repeat(OpenQuestion("q", kind, recent[0][1], (), 0.0), recent)
-        assert (out.intent, out.reply, out.need_confirm) == ("question", recent[0][1], False)
-    assert settle_repeat(None, recent).reply == recent[0][1]
-    assert settle_repeat(None, [(1.0, "네?"), (2.0, " 네? ")]).reply == RETRY_PROMPT
+    out = settle_repeat(None, [(1.0, "화장실 안내를 시작합니다.")])
+    assert (out.intent, out.reply, out.ask_text) == ("question", "화장실 안내를 시작합니다.", "")
+    assert settle_repeat(None, [(1.0, NOT_AVAILABLE_ASK)]).reply == NOT_AVAILABLE_ASK   # 질문 꼴이면 노드가 지금 길로 넘긴다
+    out = settle_repeat(None, [(1.0, "네?"), (2.0, " 네? ")])
+    assert (out.intent, out.reply) == ("unknown", RETRY_PROMPT)
+
+
+def test_p28_rule2_after_wake_greeting_the_latest_question_goes_to_the_mission():
+    settle_repeat, wake = fa().settle_repeat, OpenQuestion("q0", "open", "네?", (), 0.0)
+    # "네?" 아래의 질문 — 미션이 쥐거나 접어 두었으면 그것을, 아니면 실려 간 글을 미션이 말한다(음성은 말하지 않는다)
+    recent = [(1.0, "화장실로 안내해드릴까요?"), (2.0, "네?")]
+    assert _bare(settle_repeat(wake, recent)) == ("repeat", "", "화장실로 안내해드릴까요?", "open", (), "", "")
+    # 질문 뒤에 평서문이 있어도 가장 마지막 질문 꼴의 말
+    recent = [(1.0, "다시 출발할까요?"), (2.0, "화장실 안내를 시작합니다."), (3.0, "네?")]
+    assert settle_repeat(wake, recent).ask_text == "다시 출발할까요?"
+    # 질문 꼴이 없고 평서문만 — 음성이 다시 말한다
+    out = settle_repeat(wake, [(1.0, "화장실에 도착했습니다."), (2.0, "네?")])
+    assert (out.intent, out.reply, out.ask_text) == ("question", "화장실에 도착했습니다.", "")
+    # 아무 말도 없다 — 글 없이 미션에(쥐거나 접어 둔 오래된 질문이 있으면 미션이 다시 말한다)
+    assert _bare(settle_repeat(wake, [(2.0, "네?")])) == ("repeat", "", "", "", (), "", "")
+
+
+@pytest.mark.parametrize("kind,text,ids", [
+    ("confirm", "화장실로 안내해드릴까요?", ("wc",)),
+    ("yesno", "다시 출발할까요?", ()),
+    ("yesno_inverted", "안내가 필요 없으신가요?", ()),
+    ("minutes", "몇 분쯤 걸리실까요?", ()),
+    ("open", NOT_AVAILABLE_ASK, ()),                 # 음성이 넘긴 되묻기 — 미션은 쥐고 있지 않아 실려 간 글을 말한다
+    ("open", "네, 어디로 모실까요?", ()),             # 미션이 스스로 open 으로 묻는 질문 — 미션이 쥔 것을 다시 말한다
+])
+def test_p28_rule3_any_other_open_question_goes_to_the_mission_with_its_text(kind, text, ids):
+    q = OpenQuestion("q1", kind, text, ids, 0.0)
+    assert _bare(fa().settle_repeat(q, [(1.0, "엉뚱한 말이에요.")])) == ("repeat", "", text, kind, ids, "", "")
+
+
+def test_p28_rule3_handed_choice_is_handed_again_by_the_voice():
+    # 고르기 질문은 미션이 묻지 않는다(음성이 넘긴 것뿐). CONFIRMING 중에 열린 것이면 미션이 repeat 에 자기 확인 질문을 다시
+    # 말한다 — 그래서 이 종류만 음성이 그 글을 다시 넘긴다(question + reply → hand_over_question 이 choice·보기 id 로 넘김).
+    q = OpenQuestion("q2", "choice", "화장실과 사회복지 중 어디로 갈까요?", ("wc", "social"), 0.0)
+    out = fa().settle_repeat(q, [(1.0, "화장실과 사회복지 중 어디로 갈까요?"), (2.0, "엉뚱한 말이에요.")])
+    assert (out.intent, out.reply, out.ask_text) == ("question", q.text, "")
+
+
+def test_p28_last_said_skips_the_wait_beacon():
+    from src.mission_phrases import WAIT_BEACON
+    assert fa().last_said([(1.0, "화장실에 도착했습니다."), (2.0, WAIT_BEACON), (3.0, "네?")]) == "화장실에 도착했습니다."
+    out = fa().settle_repeat(None, [(1.0, WAIT_BEACON)])
+    assert out.intent == "unknown"
 
 
 def test_off_schema_and_prompts_have_no_repeat_or_places():
@@ -101,11 +145,15 @@ def test_conftest_keeps_talk_off():
     assert os.environ.get("VICA_TALK") == "off"
 
 
-def test_p28_switch_needs_recut(monkeypatch):
+def test_p28_switch_needs_recut_and_answer(monkeypatch):
+    # 4단계는 2·3단계 위에서만 켜진다(수정 1차 규칙 0) — 대답 칸이 꺼지면 "다시 출발할까요?"를 음성이 쥐어 repeat 가 헛돈다.
     monkeypatch.setenv("VICA_TALK", "on")
-    monkeypatch.setenv("VICA_RECUT", "off")
-    assert fa().on() is False                                    # 4단계는 2단계 위에서만 켜진다
+    for recut, answer in (("off", "off"), ("off", "on"), ("on", "off")):
+        monkeypatch.setenv("VICA_RECUT", recut)
+        monkeypatch.setenv("VICA_ANSWER", answer)
+        assert fa().on() is False
     monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setenv("VICA_ANSWER", "on")
     assert fa().on() is True
     monkeypatch.setenv("VICA_TALK", "off")
     assert fa().on() is False
@@ -117,6 +165,7 @@ def test_p28_switch_needs_recut(monkeypatch):
     {"VICA_RECUT": "on", "VICA_ANSWER": "on"},                   # ③ 재단 + 대답 칸
     {"VICA_TALK": "on"},                                         # 재단 없이 VICA_TALK 만 — ①과 같아야 한다
     {"VICA_TALK": "on", "VICA_ANSWER": "on"},
+    {"VICA_TALK": "on", "VICA_RECUT": "on"},                     # 대답 칸 없이 — ②와 같아야 한다(수정 1차 규칙 0)
 ])
 def test_off_combinations_offer_neither_value(monkeypatch, env):
     for key, value in env.items():
@@ -131,13 +180,12 @@ def test_off_combinations_offer_neither_value(monkeypatch, env):
 
 
 # ---- 켰을 때: 값·지시문 두 줄 -----------------------------------------------------------------------------------
-@pytest.mark.parametrize("answer", [False, True])
-def test_p28_p29_on_schema_and_tool_offer_both_values(monkeypatch, answer):
-    talk_on(monkeypatch, answer)
+def test_p28_p29_on_schema_and_tool_offer_both_values(monkeypatch):
+    talk_on(monkeypatch)
     enum = parser._draft_cls().model_json_schema()["properties"]["intent"]["enum"]
     assert {"repeat", "places", "not_for_robot", "dismiss"} <= set(enum)
     assert parser._draft_cls() is parser._draft_cls()             # 조합마다 같은 클래스
-    assert ("answer" in parser._draft_cls().model_fields) is answer
+    assert "answer" in parser._draft_cls().model_fields
     tool = build_intent_tool()["parameters"]
     assert {"repeat", "places", "not_for_robot", "dismiss"} <= set(tool["properties"]["intent"]["enum"])
     assert tool["required"][:2] == ["intent", "heard_text"]
@@ -226,7 +274,7 @@ def test_p29_audio_path_places_is_a_code_sentence(monkeypatch):
 
 
 def test_p28_audio_path_repeat_goes_out_bare(monkeypatch):
-    talk_on(monkeypatch, answer=True)
+    talk_on(monkeypatch)
     q = OpenQuestion("q", "confirm", "화장실로 안내해드릴까요?", ("wc",), 0.0)
     out, _ = _audio(monkeypatch, {"intent": "repeat", "reply": "", "heard_text": "뭐라고", "answer": "other"}, "뭐라고",
                     question=q)
@@ -308,13 +356,14 @@ def test_places_sentence_for_the_real_destinations_has_no_keyword():
     assert sentence and detect_emergency(sentence) is None
 
 
-# ---- 의도 노드 _publish_intent 의 repeat 갈래 ------------------------------------------------------------------
+# ---- 의도 노드 _publish_intent 의 repeat 갈래(수정 1차) ----------------------------------------------------------
 class _Pub:
     def __init__(self):
         self.sent = []
 
     def publish(self, msg):
-        keys = ("intent", "reply", "ask_text", "ask_kind", "answer", "question_id", "speaker_verdict", "data")
+        keys = ("intent", "reply", "ask_text", "ask_kind", "ask_option_ids", "answer", "question_id", "speaker_verdict",
+                "data")
         self.sent.append({k: getattr(msg, k, None) for k in keys})
 
 
@@ -344,7 +393,7 @@ def node_mod(monkeypatch):
     sys.modules.pop("src.ros_node", None)
 
 
-def _node(question, recent, spk=None):
+def _node(question, recent, spk=None, history=()):
     from src.history import ConversationHistory
     log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, warn=lambda *a, **k: None)
     me = types.SimpleNamespace(
@@ -354,6 +403,7 @@ def _node(question, recent, spk=None):
         _robot_state=RobotState(), _spk_on=False, _followup_until=0.0,
         _intent_pub=_Pub(), _tts_pub=_Pub(), _listen_pub=_Pub(),
         _board=types.SimpleNamespace(on_intent=lambda i: None), get_logger=lambda: log)
+    me._history.extend(list(history))
     return me
 
 
@@ -362,26 +412,53 @@ def _publish(node_mod, me, intent, text="뭐라고?"):
     return me._intent_pub.sent, [m["data"] for m in me._tts_pub.sent]
 
 
+def _row(m):
+    return (m["intent"], m["reply"], m["ask_text"], m["ask_kind"], tuple(m["ask_option_ids"] or ()), m["answer"],
+            m["question_id"])
+
+
+REPEAT = VicaIntent(intent="repeat", need_confirm=False)
 ASKED = OpenQuestion("q1", "confirm", "화장실로 안내해드릴까요?", ("wc",), 0.0)
 WAKE = OpenQuestion("q2", "open", "네?", (), 0.0)
+ASKED_HISTORY = (HumanMessage("화장실 가고 싶어"), AIMessage("화장실로 안내해드릴까요?"))
 
 
-def test_p28_p9_node_mission_question_open_sends_repeat_and_voice_stays_silent(node_mod, monkeypatch):
-    talk_on(monkeypatch, answer=True)
-    me = _node(ASKED, [(1.0, "화장실로 안내해드릴까요?")], spk={"verdict": "pass", "score": 0.8, "joined": 0.5})
+def test_p28_rule3_node_mission_question_goes_with_its_text_and_no_answer(node_mod, monkeypatch):
+    talk_on(monkeypatch)
+    me = _node(ASKED, [(1.0, ASKED.text)], spk={"verdict": "pass", "score": 0.8, "joined": 0.5}, history=ASKED_HISTORY)
     # 해석기가 대답 칸을 채워 왔어도(LLM 이 unclear) 미션이 다른 의도로 바꿔 읽지 않게 칸을 비운다
     parsed = VicaIntent(intent="repeat", need_confirm=False, confidence=0.9, question_id="q1", answer="unclear")
     sent, said = _publish(node_mod, me, parsed)
-    assert [(m["intent"], m["reply"], m["ask_text"], m["answer"], m["question_id"]) for m in sent] == [
-        ("repeat", "", "", "", "")]
+    assert [_row(m) for m in sent] == [("repeat", "", ASKED.text, "confirm", ("wc",), "", "")]
     assert sent[0]["speaker_verdict"] == "pass"                  # 화자 판정은 그대로 실린다
     assert said == []                                            # 한 목소리 — 미션이 그 질문을 다시 말한다
 
 
-def test_p28_node_after_wake_greeting_voice_says_the_last_sentence_again(node_mod, monkeypatch):
+def test_p28_c1_node_repeat_to_the_mission_leaves_no_empty_robot_line(node_mod, monkeypatch):
+    # 검토 C1 — 미션으로 간 repeat 가 기록에 AIMessage("")를 남기면 다시 물은 확인 질문의 "음"이 affirm 이 돼 출발한다(09-28 결정
+    # 위반). 글자 모드·VICA_LOCAL_RULES 꺼짐. 기록에는 사람 줄만 넣는다(silenced 와 같은 처리).
+    talk_on(monkeypatch)
+    me = _node(ASKED, [(1.0, ASKED.text)], history=ASKED_HISTORY)
+    _publish(node_mod, me, REPEAT)
+    msgs = me._history.messages
+    assert type(msgs[-1]) is HumanMessage and msgs[-1].content == "뭐라고?"
+    assert [m.content for m in msgs if isinstance(m, AIMessage)] == ["화장실로 안내해드릴까요?"]
+    um = parser._shortcut_intent("음", msgs, DESTS)
+    assert um is not None and um.intent == "clarify"             # "음"으로는 출발하지 않는다(같은 확인 질문을 한 번 더)
+
+
+def test_p28_rule2_node_question_under_wake_greeting_goes_to_the_mission(node_mod, monkeypatch):
+    talk_on(monkeypatch)
+    me = _node(WAKE, [(1.0, ASKED.text), (2.0, "네?")], history=ASKED_HISTORY)
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [_row(m) for m in sent] == [("repeat", "", ASKED.text, "open", (), "", "")]
+    assert said == [] and isinstance(me._history.messages[-1], HumanMessage)
+
+
+def test_p28_rule2_node_statement_under_wake_greeting_is_said_by_the_voice(node_mod, monkeypatch):
     talk_on(monkeypatch)
     me = _node(WAKE, [(1.0, "화장실에 도착했습니다."), (2.0, "네?")])
-    sent, said = _publish(node_mod, me, VicaIntent(intent="repeat", need_confirm=False))
+    sent, said = _publish(node_mod, me, REPEAT)
     assert [(m["intent"], m["reply"]) for m in sent] == [("question", "화장실에 도착했습니다.")]
     assert len(said) == 1 and said[0].endswith(":화장실에 도착했습니다.")
     # 대화 기록(글자 모드): 사용자 줄과 다시 한 말 — 다음 "다시 말해줘"의 last_said 도 같은 말이다(tts_done 으로 들어온다)
@@ -389,35 +466,54 @@ def test_p28_node_after_wake_greeting_voice_says_the_last_sentence_again(node_mo
     assert me._history.messages[-1].content == "화장실에 도착했습니다."
 
 
-def test_p28_node_handed_open_question_is_said_again_through_the_mission(node_mod, monkeypatch):
-    # 음성이 넘긴 되묻기(kind open)는 미션이 쥐고 있지 않다 — 음성이 마지막 말을 다시 하고, 질문 꼴이라 지금 길(hand_over_question)
-    # 대로 미션에 넘어가 다시 열린 질문이 된다. 음성은 직접 말하지 않는다(한 목소리).
+def test_p28_rule2_node_nothing_under_wake_greeting_goes_bare_to_the_mission(node_mod, monkeypatch):
     talk_on(monkeypatch)
-    asked_again = "제가 아는 목적지 중에서 스무디 가게는 없는데, 어디로 안내해드릴까요?"
-    me = _node(OpenQuestion("q3", "open", asked_again, (), 0.0), [(1.0, asked_again)])
-    sent, said = _publish(node_mod, me, VicaIntent(intent="repeat", need_confirm=False))
-    assert [(m["intent"], m["reply"], m["ask_text"], m["ask_kind"]) for m in sent] == [
-        ("question", "", asked_again, "open")]
+    me = _node(WAKE, [(2.0, "네?")])
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [_row(m) for m in sent] == [("repeat", "", "", "", (), "", "")]
     assert said == []
 
 
-def test_p28_node_handed_choice_question_is_handed_again_as_a_choice(node_mod, monkeypatch):
+@pytest.mark.parametrize("q", [
+    OpenQuestion("q3", "open", NOT_AVAILABLE_ASK, (), 0.0),           # 음성이 넘긴 되묻기
+    OpenQuestion("q4", "open", "네, 어디로 모실까요?", (), 0.0),         # 미션이 스스로 open 으로 묻는 질문
+    OpenQuestion("q5", "yesno", "다시 출발할까요?", (), 0.0),
+])
+def test_p28_rule3_node_open_question_goes_to_the_mission_with_its_text(node_mod, monkeypatch, q):
+    talk_on(monkeypatch)
+    me = _node(q, [(1.0, q.text)])
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [_row(m) for m in sent] == [("repeat", "", q.text, q.kind, (), "", "")]
+    assert said == []
+
+
+def test_p28_rule3_node_handed_choice_question_is_handed_again_as_a_choice(node_mod, monkeypatch):
     # 음성이 넘긴 고르기 질문 — 미션은 쥐고 있지 않다(CONFIRMING 중이었다면 repeat 에 확인 질문을 다시 말해 엉뚱한 질문이 된다).
     talk_on(monkeypatch)
     choose = "화장실과 사회복지 중 어디로 갈까요?"
-    me = _node(OpenQuestion("q4", "choice", choose, ("wc", "social"), 0.0), [(1.0, choose), (2.0, "네?")])
-    sent, said = _publish(node_mod, me, VicaIntent(intent="repeat", need_confirm=False))
-    assert [(m["intent"], m["ask_text"], m["ask_kind"]) for m in sent] == [("question", choose, "choice")]
+    me = _node(OpenQuestion("q6", "choice", choose, ("wc", "social"), 0.0), [(1.0, choose), (2.0, "엉뚱한 말이에요.")])
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [(m["intent"], m["ask_text"], m["ask_kind"], tuple(m["ask_option_ids"])) for m in sent] == [
+        ("question", choose, "choice", ("wc", "social"))]
     assert said == []
 
 
 def test_p28_p8_node_nothing_to_repeat_asks_again(node_mod, monkeypatch):
     talk_on(monkeypatch)
-    for question, recent in ((None, []), (WAKE, [(2.0, "네?")])):
-        me = _node(question, recent)
-        sent, said = _publish(node_mod, me, VicaIntent(intent="repeat", need_confirm=False))
-        assert [m["intent"] for m in sent] == ["unknown"]
-        assert RETRY_PROMPT in (sent[0]["reply"], sent[0]["ask_text"], *[s.split(":", 1)[-1] for s in said])
+    me = _node(None, [])
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [m["intent"] for m in sent] == ["unknown"]
+    assert RETRY_PROMPT in (sent[0]["reply"], sent[0]["ask_text"], *[s.split(":", 1)[-1] for s in said])
+
+
+def test_p28_repeat_ask_fields_survive_the_one_voice_and_quiet_steps():
+    # 규칙 6 — 미션 메시지에 실려야 한다. hand_over_question·quiet_for_mission 이 지우거나 바꾸지 않는다.
+    from src.mission_question import quiet_for_mission
+    from src.one_voice import hand_over_question
+    out = VicaIntent(intent="repeat", need_confirm=False, ask_text=ASKED.text, ask_kind="confirm", ask_option_ids=["wc"])
+    assert hand_over_question(out, DESTS) == out
+    for state in ("", "confirming", "awaiting_user", "waiting", "asking_next", "paused"):
+        assert quiet_for_mission(out, state, ASKED.text, 1.0, [d.name for d in DESTS]) == out
 
 
 def test_p28_node_wiring_settles_repeat_before_publishing():
