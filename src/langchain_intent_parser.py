@@ -1096,8 +1096,8 @@ def parse_intent(
     도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
     question 은 이 말이 들어올 때 열려 있던 질문(질문 기록). 대답 칸이 켜졌으면(VICA_ANSWER=on) 돌려주는 의도에
     question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 서면 그것, 그 밖은 LLM 이 낸 값이다(설계
-    2026-11-18 4.3). 의도 칸은 지금 길로 정하고 규칙은 그 읽기를 뒤집지 않는다(분 대답은 wait, 네/아니요로 보이는 not_for_robot 은
-    unknown) — 나가는 곳마다 같은 answer_field.fill 을 지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
+    2026-11-18 4.3). 의도 칸은 지금 길로 정하고 규칙은 그 읽기를 뒤집지 않는다(분은 wait 일 때 값만 바로잡고, 대답으로 보이는
+    not_for_robot 은 unknown) — 나가는 곳마다 같은 answer_field.fill 을 지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
@@ -1449,7 +1449,7 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
     """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info).
 
     대답 칸이 켜졌으면 Realtime 이 들은 글자(heard)에 짧은 대답 규칙을 대고 글자 경로와 같은 answer_field.fill 을 지난다
-    (Task 3.5b, 원칙 6·7) — 규칙은 모델의 읽기를 뒤집지 않는다(같은 읽기일 때 대답 칸 채우기·분·not_for_robot 되묻기만).
+    (Task 3.5b, 원칙 6·7) — 규칙은 모델의 읽기를 뒤집지 않는다(같은 읽기일 때 대답 칸 채우기·wait 분 값 바로잡기·not_for_robot 되묻기만).
     규칙이 의도나 대답 칸을 실제로 바꿨으면 info["src"] 에 "+대답규칙" 을 붙이고 바뀌기 전 값을 로그 한 줄로 남긴다."""
     heard = result.heard_text.strip()
     if result.tool == RESERVE:

@@ -456,16 +456,29 @@ def test_p6_sound_path_minutes_rule_yields_to_a_refusal(monkeypatch, capsys):
     assert info["src"] == "llm" and "[대답규칙]" not in capsys.readouterr().err
 
 
-def test_p7_sound_path_answer_is_not_dropped_as_not_for_robot(monkeypatch):
+@pytest.mark.parametrize("heard,llm", [("십 분 정도요", ""), ("오 분만 있다가 가자", "unclear")])
+def test_p7_sound_path_answer_is_not_dropped_as_not_for_robot(monkeypatch, heard, llm):
+    """수정 3차: not_for_robot 인 분 대답은 버리지 않되 wait 로 살리지도 않는다 — unknown·unclear(미션이 다시 묻는다).
+    "오 분만 있다가 가자"는 옆 사람에게 한 말일 수 있다(검토 재현) — 규칙이 대기로 바꾸면 안 된다."""
     monkeypatch.setenv("VICA_ANSWER", "on")
     monkeypatch.setenv("VICA_RECUT", "on")
-    dropped = RealtimeResult(draft={"intent": "not_for_robot", "answer": ""}, heard_text="십 분 정도요", latency_sec=1.0)
+    dropped = RealtimeResult(draft={"intent": "not_for_robot", "answer": llm}, heard_text=heard, latency_sec=1.0)
     intent, _h, _dt, info = parser._deliver_realtime_result(dropped, [DEST], None, question=_minutes_q())
-    assert (intent.intent, intent.wait_minutes, intent.reply, intent.need_confirm) == ("wait", 10, "", False)
-    assert (intent.answer, intent.answer_value, info["src"]) == ("minutes", "10", "llm+대답규칙")
+    assert (intent.intent, intent.wait_minutes, intent.reply, intent.need_confirm) == ("unknown", -1, "", False)
+    assert (intent.answer, intent.answer_value, info["src"]) == ("unclear", "", "llm+대답규칙")
     monkeypatch.delenv("VICA_ANSWER")                  # 대답 칸이 꺼졌으면 지금처럼 not_for_robot 그대로
     off, _h, _dt, info = parser._deliver_realtime_result(dropped, [DEST], None, question=_minutes_q())
     assert (off.intent, off.answer, info["src"]) == ("not_for_robot", "", "llm")
+
+
+def test_p6_sound_path_minutes_rule_does_not_turn_a_non_reading_into_wait(monkeypatch, capsys):
+    """"아까 한 시간 기다렸잖아"(Realtime unknown) — 분 규칙이 60분 대기로 바꾸지 않는다(수정 3차, 검토 재현)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said = RealtimeResult(draft={"intent": "unknown", "reply": "", "answer": ""}, heard_text="아까 한 시간 기다렸잖아",
+                          latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(said, [DEST], None, question=_minutes_q())
+    assert (intent.intent, intent.wait_minutes, intent.answer, info["src"]) == ("unknown", -1, "", "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
 
 
 def test_p6_sound_path_marks_nothing_when_the_rule_agrees(monkeypatch, capsys):

@@ -122,7 +122,7 @@ def test_short_answer_minutes(on):
 # ----- 규칙 대답이 서는 조건(Task 3.5b, 원칙 6·7) — transcript_wins 를 대신한다 -----------------------------------------
 INTENTS = get_args(VicaIntentType)
 LLM_ANSWERS = ("", *af.ANSWERS, " minutes ")
-MINUTES_READ_INTENTS = {"wait", "unknown", "clarify", "not_for_robot"}     # 설명서 규칙 1 의 글자 그대로
+MINUTES_READ_INTENTS = {"wait"}     # 수정 3차: 분도 LLM 이 wait 로 읽었을 때만(값 바로잡기) — 설명서 규칙 1 의 글자 그대로
 MINUTES_READ_ANSWERS = {"", "minutes", "unclear"}
 
 
@@ -165,8 +165,9 @@ def test_p6_standing_minutes_only_when_the_llm_did_not_read_it_otherwise():
     ("pause", "", False), ("cancel", "", False), ("deny", "", False), ("navigate", "", False),
     ("question", "", False), ("dismiss", "", False), ("affirm", "", False),
     ("wait", "no", False), ("wait", "destination", False), ("wait", "other", False),
-    ("wait", "minutes", True), ("wait", "", True), ("unknown", "unclear", True),
-    ("clarify", "", True), ("not_for_robot", "", True),
+    ("wait", "minutes", True), ("wait", "", True), ("wait", "unclear", True),
+    # 수정 3차: 못 알아들은 말(unknown·clarify)·not_for_robot 을 규칙이 wait 로 바꾸지 않는다 — "아까 한 시간 기다렸잖아"
+    ("unknown", "unclear", False), ("unknown", "", False), ("clarify", "", False), ("not_for_robot", "", False),
 ])
 def test_p6_standing_minutes_cases(name, llm, want):
     assert af.standing(("minutes", "10"), name, llm) is want
@@ -192,6 +193,8 @@ def test_p6_minutes_rule_corrects_the_value_when_the_llm_also_read_minutes(monke
     assert (out.intent, out.answer, out.answer_value) == ("wait", "minutes", "15")
     # 수정 1차: 의도는 그대로, wait_minutes 도 규칙의 분 — 두 칸이 갈리면 미션이 읽는 칸에 따라 대기 시간이 달라진다.
     assert out.wait_minutes == 15
+    empty = af.fill(VicaIntent(intent="wait", wait_minutes=-1), q("minutes"), ("minutes", "15"), "")   # 로컬·지름길 — 대답 칸 없음
+    assert (empty.intent, empty.wait_minutes, empty.answer, empty.answer_value) == ("wait", 15, "minutes", "15")
 
 
 def test_p7_an_answer_to_the_robots_question_is_never_dropped(monkeypatch):
@@ -201,12 +204,14 @@ def test_p7_an_answer_to_the_robots_question_is_never_dropped(monkeypatch):
     yes = af.fill(VicaIntent(intent="not_for_robot"), q("confirm"), ("yes", ""), "")
     assert (yes.intent, yes.answer, yes.reply) == ("unknown", "unclear", "")
     mins = af.fill(VicaIntent(intent="not_for_robot"), q("minutes"), ("minutes", "10"), "")
-    assert (mins.intent, mins.wait_minutes, mins.answer, mins.answer_value) == ("wait", 10, "minutes", "10")
+    # 수정 3차: 분도 같다 — "십 분 정도요"를 not_for_robot 으로 읽었으면 wait 로 살리지 않고 되묻게.
+    assert (mins.intent, mins.wait_minutes, mins.answer, mins.answer_value) == ("unknown", -1, "unclear", "")
 
 
 def test_p7_a_rule_answer_never_leaves_as_not_for_robot(on):
-    """not_for_robot + 네/아니요 규칙 대답 → 1 에서 서든 안 서든 unknown·unclear(수정 2차 규칙 3). 분은 규칙 2 대로 wait."""
-    for kind, ruled in (("confirm", ("yes", "")), ("yesno", ("no", "")), ("yesno_inverted", ("yes", ""))):
+    """not_for_robot + 규칙 대답(네/아니요든 분이든) → 1 에서 서든 안 서든 unknown·unclear(수정 2·3차 규칙 3)."""
+    for kind, ruled in (("confirm", ("yes", "")), ("yesno", ("no", "")), ("yesno_inverted", ("yes", "")),
+                        ("minutes", ("minutes", "5"))):
         for llm in ("", "unclear", ruled[0], "other"):
             out = af.fill(VicaIntent(intent="not_for_robot", reply="x", ask_text="x", ask_kind="open", need_confirm=True,
                                      destination_candidate="화장실", matched_destination_id="wc", confidence=0.7),
@@ -214,9 +219,7 @@ def test_p7_a_rule_answer_never_leaves_as_not_for_robot(on):
             assert (out.intent, out.answer, out.answer_value, out.question_id) == ("unknown", "unclear", "", "q1"), (kind, llm)
             assert (out.reply, out.ask_text, out.ask_kind, out.need_confirm) == ("", "", "", False)
             assert (out.destination_candidate, out.matched_destination_id, out.confidence) == (None, "", 0.7)
-    for llm in ("", "unclear"):
-        out = af.fill(VicaIntent(intent="not_for_robot"), q("minutes"), ("minutes", "5"), llm)
-        assert (out.intent, out.answer, out.answer_value) == ("wait", "minutes", "5")
+            assert out.wait_minutes == -1                                      # 분도 wait 로 바꾸지 않는다(수정 3차)
     dropped = af.fill(VicaIntent(intent="not_for_robot"), q("confirm"), None, "")       # 규칙 대답이 없으면 그대로
     assert (dropped.intent, dropped.answer) == ("not_for_robot", "")
 
@@ -249,14 +252,17 @@ def test_p6_whole_yes_no_only_fills_the_answer_when_the_reading_matches(on):
     assert (inverted.intent, inverted.answer) == ("unknown", "")      # 의도가 affirm 이 아니면 서지 않는다
 
 
-@pytest.mark.parametrize("name", ["unknown", "clarify", "not_for_robot"])
-def test_p6_minutes_rule_turns_a_non_reading_into_wait(on, name):
-    out = af.fill(VicaIntent(intent=name, reply="다시 말씀해 주시겠어요?", ask_text="다시 말씀해 주시겠어요?", ask_kind="open",
-                             need_confirm=True, confidence=0.3, destination_candidate="화장실", matched_destination_id="wc"),
-                  q("minutes"), ("minutes", "10"), "unclear")
-    assert (out.intent, out.wait_minutes, out.answer, out.answer_value) == ("wait", 10, "minutes", "10")
-    assert (out.reply, out.ask_text, out.ask_kind, out.need_confirm, out.confidence) == ("", "", "", False, 0.3)   # 수정 2차 M5
-    assert (out.destination_candidate, out.matched_destination_id) == (None, "")     # 수정 1차 — 네/아니요와 같은 꼴
+@pytest.mark.parametrize("name", ["unknown", "clarify"])
+@pytest.mark.parametrize("llm", ["unclear", ""])
+def test_p6_minutes_rule_does_not_turn_a_non_reading_into_wait(on, name, llm):
+    """수정 3차: 못 알아들은 말(unknown·clarify)을 규칙이 wait 로 바꾸지 않는다 — "아까 한 시간 기다렸잖아"가 60분 대기가 되면 안 된다.
+    의도·다른 칸 그대로, 대답 칸은 LLM 값(빈 값이면 빈 값). 미션이 열린 질문을 다시 묻는다."""
+    said = VicaIntent(intent=name, reply="다시 말씀해 주시겠어요?", ask_text="다시 말씀해 주시겠어요?", ask_kind="open",
+                      need_confirm=True, confidence=0.3, destination_candidate="화장실", matched_destination_id="wc")
+    out = af.fill(said, q("minutes"), ("minutes", "60"), llm)
+    assert (out.intent, out.wait_minutes, out.answer, out.answer_value) == (name, -1, llm, "")
+    assert (out.reply, out.ask_text, out.ask_kind, out.need_confirm, out.matched_destination_id) == (
+        said.reply, said.ask_text, "open", True, "wc")
 
 
 def test_p6_minutes_rule_that_does_not_stand_keeps_the_llm_answer(on):

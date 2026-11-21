@@ -114,12 +114,20 @@ def test_p6_text_path_minutes_rule_corrects_a_minutes_reading(on, monkeypatch):
 
 @pytest.mark.parametrize("llm_answer", ["", "unclear"])
 def test_p7_text_path_answer_is_not_dropped_as_not_for_robot(on, monkeypatch, llm_answer):
-    """재단이 켜지면 LLM 이 "십 분 정도요"를 not_for_robot 으로 내는 일이 있다(2단계 측정 1건) — 노드가 버리지 않게 wait 로."""
+    """재단이 켜지면 LLM 이 "십 분 정도요"를 not_for_robot 으로 내는 일이 있다(2단계 측정 1건) — 노드가 버리지 않게 하되
+    wait 로 살리지도 않는다(수정 3차): unknown·unclear 로 미션이 다시 묻는다."""
     monkeypatch.setenv("VICA_RECUT", "on")
     use(monkeypatch, Manager(parser._RecutAnswerDraft(intent="not_for_robot", answer=llm_answer)))
     out = parser.parse_intent("십 분 정도요", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
-    assert (out.intent, out.wait_minutes, out.reply, out.need_confirm) == ("wait", 10, "", False)
-    assert (out.answer, out.answer_value) == ("minutes", "10")
+    assert (out.intent, out.wait_minutes, out.reply, out.need_confirm) == ("unknown", -1, "", False)
+    assert (out.answer, out.answer_value) == ("unclear", "")
+
+
+def test_p6_text_path_minutes_rule_does_not_turn_a_non_reading_into_wait(on, monkeypatch):
+    """"아까 한 시간 기다렸잖아"(LLM unknown) — 분 규칙이 60분 대기로 바꾸지 않는다(수정 3차, 검토 재현)."""
+    use(monkeypatch, Manager(parser._AnswerDraft(intent="unknown", answer="")))
+    out = parser.parse_intent("아까 한 시간 기다렸잖아", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.wait_minutes, out.answer, out.answer_value) == ("unknown", -1, "", "")
 
 
 def test_p7_text_path_yes_is_not_dropped_as_not_for_robot(on, monkeypatch):
@@ -156,15 +164,17 @@ def test_p6_text_path_shortcut_meets_the_same_minutes_condition(on, monkeypatch)
     assert (paused.intent, paused.answer, paused.reply) == ("pause", "", parser.PAUSE_ACK)
 
 
-def test_p6_text_path_llm_failure_keeps_a_standing_rule_answer(on, monkeypatch):
-    """LLM 을 못 써도 나가는 곳은 같은 fill 을 지난다(규칙 4) — 통째 분 대답은 wait 로 나간다."""
+def test_p6_text_path_llm_failure_does_not_turn_minutes_into_wait(on, monkeypatch):
+    """LLM 을 못 써도 나가는 곳은 같은 fill 을 지난다(규칙 4). 수정 3차: LLM 실패의 unknown 을 규칙이 wait 로 바꾸지 않는다 —
+    LLM_UNAVAILABLE 이 그대로 나간다."""
     class Down(Manager):
         def invoke(self, messages, local_messages=None):
             raise RuntimeError("cloud down")
 
     use(monkeypatch, Down())
     out = parser.parse_intent("오 분", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
-    assert (out.intent, out.wait_minutes, out.reply, out.answer, out.answer_value) == ("wait", 5, "", "minutes", "5")
+    assert (out.intent, out.wait_minutes, out.reply, out.answer, out.answer_value) == (
+        "unknown", -1, parser.LLM_UNAVAILABLE, "", "")
     other = parser.parse_intent("모르겠어", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
     assert (other.intent, other.reply, other.answer) == ("unknown", parser.LLM_UNAVAILABLE, "")
 
@@ -321,7 +331,8 @@ def test_local_off_ollama_has_no_question_line_and_no_answer_field(monkeypatch, 
 
 
 @pytest.mark.parametrize("text,kind,want", [("네", "confirm", ("yes", "")), ("아니요", "yesno", ("no", "")),
-                                            ("오 분", "minutes", ("minutes", "5"))])
+                                            # 수정 3차: 가짜 로컬 LLM 이 unknown 을 내므로 분 규칙은 서지 않는다(wait 일 때만)
+                                            ("오 분", "minutes", ("", ""))])
 def test_local_off_still_fills_the_rule_answer(monkeypatch, backends, text, kind, want):
     calls, _ = backends
     _ollama_provider(monkeypatch, calls)
@@ -355,7 +366,8 @@ def test_local_off_fallback_from_openai_uses_plain_local_call(monkeypatch, backe
     assert "로봇이 물은 질문" in _sys(calls[0][2]) and "answer" in calls[0][1].model_fields   # 외부 API 는 그대로
     _, schema, messages = calls[1]
     assert schema is parser._IntentDraft and "로봇이 물은 질문" not in _sys(messages)
-    assert (out.answer, out.answer_value, out.question_id) == ("minutes", "5", "q1")
+    # 수정 3차: 가짜 로컬 LLM 이 unknown 을 내므로 분 규칙은 서지 않는다(wait 일 때만) — 대답 칸 빈 값.
+    assert (out.answer, out.answer_value, out.question_id) == ("", "", "q1")
 
 
 def test_local_on_fallback_from_openai_keeps_question_line(monkeypatch, backends):
