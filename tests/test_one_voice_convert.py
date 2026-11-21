@@ -44,3 +44,21 @@ def test_supports_ask_fields_false_on_old_interface():
 def test_llm_draft_has_no_ask_fields():
     """LLM 출력 형식은 그대로 — 질문 넘김 칸은 코드가 채운다."""
     assert not [name for name in _IntentDraft.model_fields if name.startswith("ask_")]
+
+
+class _AnswerMsg(_NewMsg):
+    __slots__ = ("question_id", "answer", "answer_value")
+
+
+def test_intent_to_msg_carries_answer_fields(monkeypatch):
+    monkeypatch.setattr(rc, "VicaIntentMsg", _AnswerMsg)
+    msg = rc.intent_to_msg(VicaIntent(intent="affirm", question_id="q1-3", answer="destination", answer_value="toilet"))
+    assert (msg.question_id, msg.answer, msg.answer_value) == ("q1-3", "destination", "toilet")
+
+
+def test_intent_to_msg_skips_answer_fields_on_msg_without_them(monkeypatch):
+    monkeypatch.setattr(rc, "VicaIntentMsg", _NewMsg)       # ask 칸은 있고 대답 칸은 없는 설치본
+    msg = rc.intent_to_msg(VicaIntent(intent="affirm", question_id="q1-3", answer="yes"))
+    assert msg.intent == "affirm" and not hasattr(msg, "question_id")
+    monkeypatch.setattr(rc, "VicaIntentMsg", _OldMsg)
+    assert rc.intent_to_msg(VicaIntent(intent="affirm", answer="yes")).intent == "affirm"

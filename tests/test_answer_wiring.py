@@ -43,7 +43,9 @@ def test_transcript_rule_is_only_logged():
     assert _calls(_method("_on_user_text"), "self._log_transcript_rule")
 
 
-def test_nothing_new_goes_to_the_mission_yet():
-    assert "answer" not in (SRC / "ros_convert.py").read_text()
+def test_answer_fields_go_to_the_mission_when_the_message_has_them():
+    text = (SRC / "ros_convert.py").read_text()
+    assert 'hasattr(msg, "question_id")' in text and "msg.answer_value" in text
+    # 미션 쪽 파라미터(answer_field)는 아직 없다 — 통로만 연다.
     for name in ("mission_question.py", "one_voice.py"):
         assert "answer_field" not in (SRC / name).read_text()
