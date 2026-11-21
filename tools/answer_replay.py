@@ -217,6 +217,25 @@ def key_summary(rows: list[dict]) -> dict:
             "key_principles": {k: dict(v) for k, v in principles.items()}}
 
 
+def regrade(run: dict, key: dict) -> dict:
+    """저장된 결과(run)를 새 답지(key)로 다시 채점한 사본 — LLM 을 다시 부르지 않고 행에 남은 로봇의 반응을 쓴다.
+    답지가 고쳐졌을 때(사용자 확인 · 판정용 새 행) 쓴다. 해석하지 못한 행(skip · error)은 그대로다."""
+    rows = []
+    for r in run["rows"]:
+        if "reaction" not in r:
+            rows.append(dict(r))
+            continue
+        key_row = key.get(r["ts"])
+        if key_row is None:
+            rows.append({**r, "key_status": "nokey", "principle": 0, "set": "", "key_action": "", "key_target": ""})
+            continue
+        kind = "open" if r.get("kind") == "other" else r.get("kind", "")       # question_for 와 같은 옮김
+        status, principle = grade_key(key_row, Reaction(**r["reaction"]), kind)
+        rows.append({**r, "key_status": status, "principle": principle, "set": key_row.get("set", ""),
+                     "key_action": key_row.get("action", ""), "key_target": key_row.get("target", "")})
+    return {**run, "rows": rows, **key_summary(rows)}
+
+
 def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]],
            rule_text: Callable[[dict], str] = parsed_text_for, key: Optional[dict] = None) -> dict:
     """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약. key(새 답지)를 주면 key_status 등도 붙인다.

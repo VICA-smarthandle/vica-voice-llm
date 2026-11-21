@@ -312,3 +312,18 @@ def test_result_name_keeps_runs_on_different_label_files_apart():
     b = answer_replay.result_name("gpt", "", False, False, False, "people_talk_labels", True, "20261121-1100")
     assert a != b and a.startswith("replay_gpt_key-labels_208_confirmed")
     assert answer_replay.result_name("gpt", "", False, True, False, "labeled", False, "20261121-1100") == "replay_gpt_answer_20261121-1100"
+
+
+def test_regrade_uses_the_saved_reaction_with_a_newer_key(dests):
+    """답지가 고쳐지면(사용자 확인 · 새 행) 저장된 결과를 LLM 호출 없이 다시 채점한다."""
+    proposal = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=True)
+    run = replay([KEY_ROW], lambda row: (proposal, 0.5), lambda _p: dests, key={"9.0": _key("etc", source="pending")})
+    assert run["rows"][0]["key_status"] == "pending"
+    again = answer_replay.regrade(run, {"9.0": _key("confirm", target="d2", source="user")})
+    assert again["rows"][0]["key_status"] == "ok" and again["key"] == {"seen": {"ok": 1}}
+    assert run["rows"][0]["key_status"] == "pending"            # 원본은 그대로 둔다
+
+
+def test_regrade_keeps_rows_that_were_never_interpreted(rows_labeled):
+    run = replay(rows_labeled[:1], lambda r: (VicaIntent(intent="affirm"), 1.0), lambda _p: None, key={})
+    assert answer_replay.regrade(run, {"1.0": _key("yes")})["rows"][0]["status"] == "skip"
