@@ -21,7 +21,7 @@ from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
-from . import answer_field, fixed_answers, intent_recut, local_rules
+from . import answer_field, fixed_answers, intent_recut, local_rules, vica_facts
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import audio_tools_active, get_realtime_client
@@ -285,6 +285,11 @@ def _build_system_prompt(
     order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
     # 원칙 28·29: 정해진 대답 두 줄은 재단을 싣는 지시문에만 — 로컬(recut=False)이 받는 글자는 그대로다(원칙 16).
     talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""
+    # 원칙 25·26: 잡담 길 — 같은 조건(재단 지시문 + fixed_answers.on())에서만 비카 사실·잡담 규칙을 싣고 question 범위를 넓힌다.
+    talk_on = recut and fixed_answers.on()
+    talk_block = vica_facts.FACTS + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    question_def = ('이동이 아닌 정보 질문이나 로봇에게 건 가벼운 말("지금 몇 층이야?").' if talk_on
+                    else '이동이 아니라 정보 질문("지금 몇 층이야?").')
     clarify_unknown = intent_recut.PROMPT_INTENTS + talk_lines if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
 - unknown: 안내와 무관하거나 이해 불가."""
     not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
@@ -298,7 +303,7 @@ def _build_system_prompt(
 
 {order_block}[intent 종류]
 - navigate: 어딘가로 가고 싶어함. 직접 표현("407호 가자")뿐 아니라 간접 표현("배 아파"->화장실, "배고파"->식당)도 포함.
-- question: 이동이 아니라 정보 질문("지금 몇 층이야?").
+- question: {question_def}
 {clarify_unknown}
 - cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
 - pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
@@ -320,7 +325,7 @@ def _build_system_prompt(
 
 {HANDLE_FACTS}
 
-[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify{not_avail})
+{talk_block}[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify{not_avail})
 {dest_block}
 {state_block}
 [규칙]
@@ -1268,6 +1273,10 @@ def build_audio_prompt(
   "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.""")
     promise_scope = "question 의 reply" if recut else "question·clarify·unknown 공통"
     talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""   # 원칙 28·29 — 글자 경로와 같은 두 줄
+    # 원칙 25·26: 잡담 길 — 글자 경로와 같은 조건. 켜졌을 때만 비카 사실·잡담 규칙을 싣고 농담 금지를 안내에 관한 말로 좁힌다.
+    talk_on = recut and fixed_answers.on()
+    talk_block = vica_facts.FACTS + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    joke_scope = "안내에 관한 말에는 " if talk_on else ""
     clarify_unknown = (intent_recut.PROMPT_INTENTS + talk_lines + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
   질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
   그 곳들의 name 만 들어 어느 쪽인지 묻는다.
@@ -1377,7 +1386,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "뭐라고요?" → "안내를 받으시겠냐고 여쭤봤어요."
 {clarify_unknown}
 
-[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify{not_avail}.
+{talk_block}[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify{not_avail}.
 (단, 아래 '다른 층 장소' 에 있는 곳은 clarify 가 아니라 [다른 층] 규칙)
 reply 에서 장소를 말할 때도 아래 name·별칭과 '다른 층 장소'만 쓴다. 목록에 없는 장소·부서·사람
 이름은 지어내지 않는다 — 예로도 들지 않는다. 이 지시문의 규칙 속 장소 이름(407호·식당·세미나실
@@ -1403,7 +1412,7 @@ reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-
 [말투] 차분하고 짧게, 존댓말로 필요한 말만 한다. **reply 는 30자 안팎, 가급적 한 문장이고 질문은 하나만
 한다** — 소리로만 듣는 사람에게 긴 말은 짐이다(2026-10-09 사용자: 대답이 길고 자유분방하다). 알려 줄 말과
 물을 말이 함께 있으면 마침표로 나누지 말고 "~인데,"·"~이라"로 이어 한 문장으로 만든다 — 로봇은 문장마다
-목소리를 새로 만들어서 문장과 문장 사이에 빈틈이 생긴다(2026-10-10 사용자). 농담·추측·맞장구("~하겠죠", "~하시군요")와 예시 늘어놓기, 변명·긴 설명은
+목소리를 새로 만들어서 문장과 문장 사이에 빈틈이 생긴다(2026-10-10 사용자). {joke_scope}농담·추측·맞장구("~하겠죠", "~하시군요")와 예시 늘어놓기, 변명·긴 설명은
 넣지 않는다. "죄송해요", "제가 헷갈리게 했나요", "이름표나 안내판을 확인해 보세요" 같은 사과·자책·
 조언은 쓰지 않는다. 모르면 "그건 제가 몰라요." 한 문장이면 된다. 같은 자리에서는 같은 말로 묻는다.
 답을 들어야 하는 말(되묻기·확인 질문)만 "?"로 끝낸다(그래야 로봇이 듣는다 — 접근 질문 중 question 답은 예외,
