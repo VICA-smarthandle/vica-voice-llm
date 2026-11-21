@@ -21,7 +21,7 @@ from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
-from . import answer_field, intent_recut, local_rules
+from . import answer_field, fixed_answers, intent_recut, local_rules
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import audio_tools_active, get_realtime_client
@@ -40,7 +40,7 @@ from .replies import (
     choose_between,
 )
 from .question_record import OpenQuestion
-from .schema import BaseIntentType, DestinationData, RobotState, VicaIntent, VicaIntentType
+from .schema import BaseIntentType, DestinationData, RecutIntentType, RobotState, TalkIntentType, VicaIntent
 from .reservation_flow import ReserveCall
 from .reservation_store import default_facilities
 from .tool_calls import RESERVE, SET_INTENT, reserve_call, reserve_tool, set_intent_tool, text_tools_on
@@ -147,7 +147,7 @@ class _RecutDraft(_IntentDraft):
     clarify_kind 는 허용 밖의 값도 그대로 받는다 — 뒤처리가 no_destination 으로 읽는다.
     """
 
-    intent: VicaIntentType = Field(
+    intent: RecutIntentType = Field(
         description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
                      " / not_for_robot / dismiss 중 하나"))
     clarify_kind: str = Field(
@@ -172,13 +172,27 @@ class _RecutAnswerDraft(_RecutDraft, _AnswerDraft):
     """두 스위치가 모두 켜졌을 때 — 새 칸과 대답 칸."""
 
 
+class _TalkDraft(_RecutDraft):
+    """VICA_TALK=on(재단 위에서만, 원칙 28·29) — LLM 이 고르는 값에 repeat·places 를 더한다. 문장은 코드가 만든다(fixed_answers)."""
+
+    intent: TalkIntentType = Field(
+        description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
+                     " / not_for_robot / dismiss / repeat / places 중 하나"))
+
+
+class _TalkAnswerDraft(_TalkDraft, _AnswerDraft):
+    """정해진 대답·재단·대답 칸이 모두 켜졌을 때."""
+
+
 def _base_draft_cls() -> type[_IntentDraft]:
     """로컬(Ollama) 구조화 출력의 바탕 스키마 — 재단 스위치와 상관없이 늘 _IntentDraft(원칙 16, 2단계 측정 P3)."""
     return _IntentDraft
 
 
 def _draft_cls() -> type[_IntentDraft]:
-    """LLM 출력 스키마 — (대답 칸, 재단) 스위치 조합마다 늘 같은 클래스. 둘 다 꺼졌으면 지금의 _IntentDraft."""
+    """LLM 출력 스키마 — (대답 칸, 재단, 정해진 대답) 스위치 조합마다 늘 같은 클래스. 다 꺼졌으면 지금의 _IntentDraft."""
+    if fixed_answers.on():           # 원칙 28·29 — 재단이 켜졌을 때만 참이다
+        return _TalkAnswerDraft if answer_field.on() else _TalkDraft
     if intent_recut.on():
         return _RecutAnswerDraft if answer_field.on() else _RecutDraft
     return _AnswerDraft if answer_field.on() else _IntentDraft
@@ -269,7 +283,9 @@ def _build_system_prompt(
     # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
     recut = intent_recut.on() if recut is None else recut
     order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
-    clarify_unknown = intent_recut.PROMPT_INTENTS if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
+    # 원칙 28·29: 정해진 대답 두 줄은 재단을 싣는 지시문에만 — 로컬(recut=False)이 받는 글자는 그대로다(원칙 16).
+    talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""
+    clarify_unknown = intent_recut.PROMPT_INTENTS + talk_lines if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
 - unknown: 안내와 무관하거나 이해 불가."""
     not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
     several_rule = intent_recut.SEVERAL_RULE if recut else """clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
@@ -1251,7 +1267,8 @@ def build_audio_prompt(
                       """clarify 로
   "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.""")
     promise_scope = "question 의 reply" if recut else "question·clarify·unknown 공통"
-    clarify_unknown = (intent_recut.PROMPT_INTENTS + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
+    talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""   # 원칙 28·29 — 글자 경로와 같은 두 줄
+    clarify_unknown = (intent_recut.PROMPT_INTENTS + talk_lines + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
   질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
   그 곳들의 name 만 들어 어느 쪽인지 묻는다.
 - unknown + 침묵(reply=""): 로봇에게 한 말이 **아닌 것이 분명할 때**(다른 사람들끼리의 대화,
@@ -1511,7 +1528,12 @@ def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bo
 def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
                         dialog_state: str = "", active: str = "",
                         shared: Sequence[DestinationData] = (), heard: str = "") -> VicaIntent:
-    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11)."""
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11).
+    정해진 대답(VICA_TALK, 원칙 28·29)은 그보다 앞에서 돌려보낸다 — 글자 경로(_finalize)와 같다."""
+    fixed = fixed_answers.early(draft, destinations)
+    if fixed is not None:
+        return fixed
+    draft = fixed_answers.as_known(draft)
     early = intent_recut.early(draft)
     if early is not None:
         return early
@@ -1712,7 +1734,12 @@ def _finalize(
     local: bool = False,
     robot_state: Optional[RobotState] = None,
 ) -> VicaIntent:
-    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11)."""
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11).
+    정해진 대답(VICA_TALK, 원칙 28·29)은 그보다 앞에서 돌려보낸다. Ollama 가 답한 호출은 이 함수를 지나지 않는다(원칙 16)."""
+    fixed = fixed_answers.early(draft, destinations)
+    if fixed is not None:
+        return fixed
+    draft = fixed_answers.as_known(draft)
     early = intent_recut.early(draft)
     if early is not None:
         return early

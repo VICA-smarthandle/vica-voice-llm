@@ -38,7 +38,7 @@ try:        # 질문 기록(2026-11-17). 옛 vica_interfaces 설치본이면 구
 except ImportError:
     VicaQuestionMsg = None
 
-from . import answer_field, intent_recut, local_rules, question_record
+from . import answer_field, fixed_answers, intent_recut, local_rules, question_record
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
@@ -490,6 +490,18 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[끼어들지 않음] 나에게 한 말이 아님: '{text}' 화자={intent.speaker_verdict or '-'}")
             return
+        # 2-0a') 다시 말해줘(원칙 28 · 9) — 미션이 쥔 질문이 열려 있으면 repeat 를 미션에 보내 그 질문을 다시 말하게 하고(음성은
+        #        말하지 않는다), 아니면 음성이 마지막 말(_robot_recent — /vica/tts_done 으로 들어온 미션·음성 말, "네?" 빼고)을 다시
+        #        한다. 다시 할 말이 없으면 되묻는다. 대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은
+        #        그대로 싣는다. 꺼져 있으면 이 값이 만들어지지 않는다.
+        if intent.intent == fixed_answers.REPEAT:
+            settled = fixed_answers.settle_repeat(question, self._robot_recent)
+            self.get_logger().info(
+                f"[다시 말함] 질문={question.kind if question is not None else '-'} → intent={settled.intent} "
+                f"'{settled.reply}'")
+            intent = settled.model_copy(update={
+                "confidence": intent.confidence, "speaker_verdict": intent.speaker_verdict,
+                "speaker_score": intent.speaker_score, "speaker_joined": intent.speaker_joined})
         # 2-0b) 대기 중 본인 확인 질문이 열려 있나. 본인 질문의 네/아니요는 글자로 정한다(11-11 실기).
         gate_t, gate_text = self._last_robot_line
         spk_gate = spk_gate_question(gate_text, time.time() - gate_t,

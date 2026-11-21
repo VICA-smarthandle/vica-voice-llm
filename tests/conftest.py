@@ -45,6 +45,8 @@ _DEFAULTS = {
     "VICA_ANSWER_LOCAL": "off",
     # 의도 재단(2026-11-20) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
     "VICA_RECUT": "off",
+    # 정해진 대답(2026-11-21, 4단계) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_TALK": "off",
 }
 
 for _key, _value in _DEFAULTS.items():

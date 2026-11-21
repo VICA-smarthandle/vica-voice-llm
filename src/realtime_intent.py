@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from . import answer_field, intent_recut
+from . import answer_field, fixed_answers, intent_recut
 from .tool_calls import RESERVE, audio_tools_on, reserve_tool
 
 SAMPLE_RATE_IN = 16000   # 웨이크워드 노드 클립
@@ -127,6 +127,8 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
                                     "description": "clarify_kind 가 several 일 때 목록의 name 을 모두"}
         props["clarify_wanted"] = {"type": "string",
                                    "description": "clarify_kind 가 not_available 일 때 사용자가 찾는 것을 말한 낱말 그대로"}
+        if fixed_answers.on():   # 원칙 28·29 — 재단 위에서만 켜진다
+            props["intent"]["enum"] += [fixed_answers.REPEAT, fixed_answers.PLACES]
     if answer_field.on():
         tool["parameters"]["properties"]["answer"] = {
             "type": "string", "enum": ["", *answer_field.ANSWERS], "description": answer_field.ANSWER_DESCRIPTION}

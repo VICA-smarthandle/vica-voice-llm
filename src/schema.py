@@ -65,11 +65,26 @@ BaseIntentType = Literal[
     "help",
 ]
 # 의도 재단(2026-11-20, 원칙 9·10) — 나에게 한 말이 아님·대화 끝내기. LLM 에게는 VICA_RECUT=on 일 때만 보인다.
+# 재단 초안(_RecutDraft)의 값이다 — 이 글자·순서가 재단 출력 스키마다(2·3단계 측정으로 고정, 4단계가 바꾸지 않는다).
+RecutIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+]
+# 정해진 대답(2026-11-21 4단계, 원칙 28) — repeat("다시 말해줘")는 미션에 간다: 미션이 쥔 질문을 다시 말한다.
 # VicaIntent.intent 는 스위치와 상관없이 이 넓은 형을 받는다.
 VicaIntentType = Literal[
     "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
     "affirm", "deny", "wait", "finish", "help",
     "not_for_robot", "dismiss",
+    "repeat",
+]
+# LLM 이 고르는 값(VICA_TALK=on, 원칙 28·29) — places("어디 갈 수 있어?")는 해석기가 question 으로 바꿔 미션에 가지 않는다.
+TalkIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+    "repeat", "places",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 

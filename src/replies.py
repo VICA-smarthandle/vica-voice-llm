@@ -12,6 +12,7 @@ Mission Manager 의 안내 멘트(MSG_*)는 vica_ros2_ws 쪽에 있다. 그쪽�
 """
 from __future__ import annotations
 
+from .destination_loader import _josa_euro
 from .mission_phrases import josa_eun_neun
 
 # 긴급어 감지 시의 응답. 실제 정지는 E-stop 래치 체인이 수행한다.
@@ -212,6 +213,23 @@ def not_available(wanted: str) -> str:
             or not any("가" <= ch <= "힣" for ch in what)):   # 원칙 11·31 — 한글이 없는 말은 소리 내지 않는다
         what = UNNAMED_PLACE
     return NOT_AVAILABLE.format(what=what, josa=josa_eun_neun(what))
+
+
+# --- 갈 수 있는 곳 (2026-11-21 4단계, 원칙 29) --------------------------------------------------------------------
+#
+# "어디 갈 수 있어?"의 대답 — LLM 이 짓지 않고 이 틀에서 만든다. {names} 는 갈 수 있는 곳 이름을 목록 순서로 셋까지
+# (넘으면 뒤에 " 등"), {josa} 는 그 끝에 맞춘 '로/으로'.
+PLACES_REPLY = "{names}{josa} 안내할 수 있습니다."
+_PLACES_MAX = 3
+
+
+def places_sentence(names) -> str:
+    """갈 수 있는 곳을 알리는 말. 이름이 없으면 빈 글자(말하지 않는다 — 부르는 쪽이 지금 길로 둔다)."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    head = ", ".join(names[:_PLACES_MAX]) + (" 등" if len(names) > _PLACES_MAX else "")
+    return PLACES_REPLY.format(names=head, josa=_josa_euro(head))
 
 
 def all_phrases() -> dict[str, str]:
