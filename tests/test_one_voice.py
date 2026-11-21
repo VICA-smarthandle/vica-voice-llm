@@ -168,3 +168,12 @@ def test_resume_question_is_always_the_fixed_sentence():
     padded = VicaIntent(intent="resume", need_confirm=True, reply="다시 출발할까요? 로봇은 그대로 서 있어요.")
     out = hand_over_question(padded, DESTS)
     assert (out.ask_text, out.ask_kind, out.reply) == (RESUME_CONFIRM, "yesno", "")
+
+
+def test_p3_pick_from_choice_is_demoted_to_a_confirm_question():
+    """원칙 3 — 보기에서 고른 뒤에도 한 번 더 묻는다(설계 2026-11-20 6.7). 10월 기록의 '고른 뒤 바로 출발' 33건은 고르기 질문이
+    열린 채 확정 navigate 가 온 것이다 — 그 목적지의 확인 질문이 아니므로 제안으로 낮춰진다(11-21 기록 33건 모두 확인)."""
+    choice = OpenQuestion(id="q2", kind="choice", text="남자 화장실과 여자 화장실 중 어디로 갈까요?",
+                          option_ids=("wc_m", "wc_w"), opened_at=0.0)
+    out = demote_unasked_confirm(_go("wc_m", reply="남자 화장실로 안내를 시작합니다."), choice, DESTS)
+    assert (out.matched_destination_id, out.need_confirm, out.reply) == ("wc_m", True, "")
