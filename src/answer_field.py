@@ -99,8 +99,16 @@ def question_line(question: Optional[OpenQuestion], recut: Optional[bool] = None
 
 
 def with_question(block: str, question: Optional[OpenQuestion], recut: Optional[bool] = None) -> str:
-    """[지금 상황] 글 끝에 질문 줄을 붙인다. 꺼졌거나 열린 질문이 없으면 그대로, 글이 비면 머리글을 단다. recut 은 question_line 과 같다."""
+    """[지금 상황] 글 끝에 질문 줄을 붙인다. 꺼졌거나 열린 질문이 없으면 그대로, 글이 비면 머리글을 단다. recut 은 question_line 과 같다.
+
+    재단이 켜진 지시문에서 열린 질문("네?" — kind open)에는 붙이지 않는다(원칙 13): 미션은 열린 질문의 대답 칸을 읽지 않고
+    (mission_logic.ANSWER_READ_KINDS), 그 자리는 재단의 단서 줄(intent_recut.with_clue)이 싣는다. 질문 줄의 "answer 는 …
+    destination …"이 부른 뒤의 말("나 배고파")을 목적지 제안으로 밀었다(2026-11-21 3단계 측정).
+    """
     if not on() or question is None:
+        return block
+    recut = _recut_on() if recut is None else recut
+    if recut and question.kind == "open":
         return block
     line = question_line(question, recut)
     if not block:

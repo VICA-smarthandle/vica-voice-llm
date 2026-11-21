@@ -71,3 +71,29 @@ def test_p11_not_available_does_not_read_out_words_without_hangul():
         assert not_available(wanted) == "제가 아는 목적지 중에서 말씀하신 곳은 없는데, 어디로 안내해드릴까요?"
     assert not_available("407호") == "제가 아는 목적지 중에서 407호는 없는데, 어디로 안내해드릴까요?"
     assert not_available("AI 체험관") == "제가 아는 목적지 중에서 AI 체험관은 없는데, 어디로 안내해드릴까요?"
+
+
+def test_p13_after_a_call_the_clue_line_stays_even_with_answers_on(monkeypatch):
+    """대답 칸이 켜져도 "네?"(열린 질문) 뒤에는 질문 줄 대신 단서 줄을 싣는다 — 미션은 열린 질문의 대답 칸을 읽지 않고,
+    질문 줄의 "answer 는 … destination …"이 "나 배고파"를 목적지 제안으로 밀었다(2026-11-21 3단계 측정, 본 말 3회 모두)."""
+    from src import answer_field
+    wake = OpenQuestion("q1", "open", "네?", (), 0.0)
+    asked = OpenQuestion("q2", "confirm", "화장실로 안내해드릴까요?", ("t",), 0.0)
+    monkeypatch.setenv("VICA_RECUT", "on"); monkeypatch.setenv("VICA_ANSWER", "on")
+    assert with_clue("x", wake) == "x\n" + clue_line(wake) + "\n"
+    assert answer_field.with_question("x", wake) == "x"                       # 질문 줄은 붙지 않는다
+    assert with_clue("x", asked) == "x"                                        # 미션 질문은 질문 줄이 싣는다
+    assert "로봇이 물은 질문" in answer_field.with_question("x", asked)
+    assert "로봇이 물은 질문" in answer_field.with_question("x", wake, recut=False)   # Ollama 가 답하는 호출 — 지금 그대로
+    monkeypatch.setenv("VICA_RECUT", "off")
+    assert "로봇이 물은 질문" in answer_field.with_question("x", wake)            # 재단이 꺼지면 지금 그대로
+
+
+def test_p13_prompt_after_a_call_is_the_stage2_prompt_when_answers_are_on(monkeypatch):
+    """재단 + 대답 칸에서 "네?" 뒤의 지시문은 재단만 켠 지시문(2단계에서 잰 것)과 글자까지 같다."""
+    from src import langchain_intent_parser as lip
+    wake = OpenQuestion("q1", "open", "네?", (), 0.0)
+    monkeypatch.setenv("VICA_RECUT", "on")
+    stage2 = lip._build_system_prompt([], None, question=wake)
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    assert lip._build_system_prompt([], None, question=wake) == stage2

@@ -73,8 +73,10 @@ def clue_line(question: Optional[OpenQuestion]) -> str:
 
 
 def with_clue(block: str, question: Optional[OpenQuestion]) -> str:
-    """[지금 상황] 글 끝에 단서 줄을 붙인다. 꺼졌거나·대답 칸이 켜졌거나(그쪽 질문 줄이 같은 내용을 싣는다)·질문이 없으면 그대로."""
-    if not on() or answer_field.on() or question is None:
+    """[지금 상황] 글 끝에 단서 줄을 붙인다. 꺼졌거나·질문이 없으면 그대로. 대답 칸이 켜졌으면 미션 질문에는 붙이지 않는다
+    (그쪽 질문 줄이 같은 내용을 싣는다) — 열린 질문("네?")에는 대답 칸이 켜져도 이 줄을 붙인다(answer_field.with_question 이
+    열린 질문에는 질문 줄을 싣지 않는다, 원칙 13)."""
+    if not on() or question is None or (answer_field.on() and question.kind != "open"):
         return block
     line = clue_line(question)
     if not block:
