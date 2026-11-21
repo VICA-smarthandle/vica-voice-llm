@@ -215,3 +215,22 @@ def test_p8_llm_unavailable_sentence_is_not_overwritten(monkeypatch):
     monkeypatch.setenv("VICA_RECUT", "on")
     r = VicaIntent(intent="unknown", reply=LLM_UNAVAILABLE)
     assert intent_recut.settle(r, draft(intent="unknown"), _D, "비카야").reply == LLM_UNAVAILABLE
+
+
+# ---- Task 2.4 수정 2차: 갈 수 없는 곳이 든 고르기 문장은 코드가 만든 것이어도 그대로 두지 않는다(원칙 18) ----------------
+def test_p18_audio_choice_naming_a_private_place_is_rebuilt(monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    out = audio(draft(intent="clarify", clarify_kind="", reply="407호나 비공개 408호 중에 어디로 갈까요?"))
+    assert "비공개 408호" not in out.reply and out.reply == ASK_DESTINATION
+
+
+def test_p4_audio_choice_between_approachable_places_is_kept(monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    out = audio(draft(intent="clarify", reply="남자 화장실이나 여자 화장실 중에 어디로 갈까요?"))   # 코드가 정해진 문장으로 바꾼다
+    assert out.reply == CHOOSE_TOILETS
+
+
+def test_off_audio_choice_naming_a_private_place_is_as_before(monkeypatch):
+    monkeypatch.delenv("VICA_RECUT", raising=False)
+    out = audio(parser._IntentDraft(intent="clarify", reply="407호나 비공개 408호 중에 어디로 갈까요?"))
+    assert out.reply == "407호와 비공개 408호 중 어디로 갈까요?"

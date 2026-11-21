@@ -9,7 +9,7 @@ import os
 from typing import Optional, Sequence
 
 from . import answer_field
-from .one_voice import _CHOICE_TAIL
+from .one_voice import _CHOICE_TAIL, _choice_option_ids
 from .question_record import OpenQuestion
 from .replies import (ASK_DESTINATION, LLM_UNAVAILABLE, RETRY_PROMPT, WAKE_GREETING, choose_between,
                       not_available)
@@ -107,6 +107,13 @@ def _is_wake(heard: str) -> bool:
     return parser._normalize_short_reply(heard) in parser._WAKE_WORDS
 
 
+def _all_approachable(head: str, destinations: Sequence[DestinationData]) -> bool:
+    """고르기 문장 앞부분에 이름이 든 목적지가 둘 이상이고 전부 갈 수 있는 곳이다(원칙 18)."""
+    ids = _choice_option_ids(head, destinations)
+    by_id = {d.id: d for d in destinations}
+    return len(ids) >= 2 and all(by_id[i].is_approachable for i in ids)
+
+
 def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], heard: str) -> VicaIntent:
     """뒤처리 끝(원칙 4·8·11·18): clarify 의 문장을 코드 틀에서 만들고 unknown 의 문장을 정해진 되묻는 말로 둔다.
 
@@ -116,7 +123,8 @@ def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], h
         return result
     if result.intent == "clarify":
         reply = (result.reply or "").strip()
-        if _CHOICE_TAIL.search(reply) and reply != (getattr(draft, "reply", "") or "").strip():
+        tail = _CHOICE_TAIL.search(reply)
+        if tail and reply != (getattr(draft, "reply", "") or "").strip() and _all_approachable(reply[:tail.start()], destinations):
             return result                      # 코드가 이미 만든 고르기 문장(_ask_which 등) — 모델이 지은 문장과 다를 때만
         ok = {d.name: d for d in destinations if d.name and d.is_approachable}
         options = list(dict.fromkeys(n for n in (getattr(draft, "clarify_options", None) or []) if n in ok))
