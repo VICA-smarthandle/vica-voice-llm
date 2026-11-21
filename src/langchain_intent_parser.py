@@ -241,14 +241,24 @@ def _build_system_prompt(
     dest_block = "\n".join(lines)
     ledger = situation if FLOOR_LABEL in situation else ""
     state_block = "" if ledger else _format_robot_state(robot_state)
+    # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
+    recut = intent_recut.on()
+    order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
+    clarify_unknown = intent_recut.PROMPT_INTENTS if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
+- unknown: 안내와 무관하거나 이해 불가."""
+    not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
+    several_rule = intent_recut.SEVERAL_RULE if recut else """clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
+  여자 화장실 중 어디로 갈까요?"). 하나만 들어 묻지도 않는다(2026-10-11 실기)."""
+    empty_kinds = "·clarify·unknown·not_for_robot·dismiss" if recut else ""
+    other_kinds = "question 의 " if recut else "그 외(question/clarify/unknown)의 "
+    no_dest = intent_recut.NO_DESTINATION_TAG if recut else ""
     return f"""너는 시각장애인 안내 로봇 'VICA'의 음성 의도 분석기다.
 사용자의 한국어 발화를 분석해 아래 규칙으로 분류해라.
 
-[intent 종류]
+{order_block}[intent 종류]
 - navigate: 어딘가로 가고 싶어함. 직접 표현("407호 가자")뿐 아니라 간접 표현("배 아파"->화장실, "배고파"->식당)도 포함.
 - question: 이동이 아니라 정보 질문("지금 몇 층이야?").
-- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
-- unknown: 안내와 무관하거나 이해 불가.
+{clarify_unknown}
 - cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
 - pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
   "대기해줘"·"여기서 기다려줘"는 pause 가 아니라 wait 다.
@@ -269,17 +279,16 @@ def _build_system_prompt(
 
 {HANDLE_FACTS}
 
-[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
+[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify{not_avail})
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
 - 들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실"이 남자 화장실·여자 화장실 둘 다)
-  navigate 로 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
-  여자 화장실 중 어디로 갈까요?"). 하나만 들어 묻지도 않는다(2026-10-11 실기).
-- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish 로
+  navigate 로 하나를 짐작해 고르지 말고 {several_rule}
+- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish{empty_kinds} 로
   분류하면 reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
-- 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로, 가급적 한 문장으로 써라. 알려 줄 말과
+- {other_kinds}reply 는 짧고 친절한 한국어로, 가급적 한 문장으로 써라. 알려 줄 말과
   물을 말은 마침표로 나누지 말고 "~인데,"로 잇는다 — 로봇은 문장마다 목소리를 새로 만들어서 문장 사이에
   빈틈이 생긴다(2026-10-10 사용자). 정보와 되묻기까지만이다 —
   "알겠습니다"·"할게요" 같은 약속, "안내해드릴까요?"·"계속 안내할까요?"처럼 로봇이 할 일을 권하는
@@ -308,8 +317,8 @@ def _build_system_prompt(
   맞아, 그래, 좋아)하면: intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true
   로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
-- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "") + (
-        answer_field.with_question(ledger, question))
+- 부정만 하고 목적지를 안 말하면 clarify{no_dest}.""" + (local_rules.prompt_rules(recut) if local else "") + (
+        answer_field.with_question(intent_recut.with_clue(ledger, question), question))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -1180,6 +1189,33 @@ def build_audio_prompt(
     reserve_on = audio_tools_active()
     first_line = AUDIO_FIRST_LINE_WITH_RESERVE if reserve_on else AUDIO_FIRST_LINE
     reserve_rules = AUDIO_RESERVE_RULES if reserve_on else ""
+    # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
+    recut = intent_recut.on()
+    heard_intent = "not_for_robot" if recut else "unknown"
+    ambiguous = ("애매하면 confidence 를 낮추고 unknown 으로 둔다." if recut else
+                 "애매하면 confidence 를 낮추고, 답이 꼭 필요한 자리면 clarify 로 되묻는다.")
+    order_block = "\n\n" + intent_recut.PROMPT_ORDER if recut else ""
+    several_rule = intent_recut.SEVERAL_RULE if recut else """clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과 여자 화장실
+  중 어디로 갈까요?"). 하나만 들어 "남자 화장실인가요?"처럼 묻지도 않는다(2026-10-11 실기: 같은 말에
+  "여자 화장실로 안내해드릴까요?"·"남자 화장실인가요?")."""
+    not_avail_deny = ("clarify(clarify_kind=not_available)로 내고 clarify_wanted 에 그 말을 적는다. 비슷한 다른 곳을 권하지 않는다." if recut else
+                      """clarify 로
+  "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.""")
+    promise_scope = "question 의 reply" if recut else "question·clarify·unknown 공통"
+    clarify_unknown = (intent_recut.PROMPT_INTENTS + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
+  질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
+  그 곳들의 name 만 들어 어느 쪽인지 묻는다.
+- unknown + 침묵(reply=""): 로봇에게 한 말이 **아닌 것이 분명할 때**(다른 사람들끼리의 대화,
+  기침·소음, 로봇 자신의 목소리), 그리고 **로봇이 방금 질문하고 답을 기다리는데 못 알아들었을
+  때**다. 질문 중이면 로봇 본체가 같은 질문을 한 번 다시 한다 — 네가 또 물으면 두 목소리가 된다
+  (2026-10-08). 로봇이 묻고 있지 않은데 사용자가 로봇에게 말한 것 같고 못 알아들었으면 침묵하지
+  말고 intent=clarify 로 "잘 못 들었는데, 다시 말씀해 주시겠어요?"(2026-09-20 사용자: 아무 말도
+  안 하면 무슨 상황인지 알 수 없다). 호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply 는
+  "{WAKE_GREETING}" 나 "네, 말씀하세요." 같은 짧은 응답."""
+    not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
+    digit_rule = ("clarify(clarify_kind=several)로 내고 clarify_options 에 그 번호들의 name 을 적는다." if recut else
+                  "clarify 로 몇 번인지 되묻는다.")
+    empty_kinds = "·clarify·unknown·not_for_robot·dismiss" if recut else ""
     return f"""너는 시각장애인 안내 로봇 '비카(VICA)'다. 차분하고 짧게 말하는 안내원처럼 말하고, 사용자의
 목소리를 직접 듣고, {first_line}
 코드는 네 결정을 고치지 않고 그대로 로봇 본체(미션 관리자)에 전달한다. 확인 질문·정정·
@@ -1192,18 +1228,16 @@ user 줄은 그 전에 들린 사용자의 말이다. 로봇의 마지막 말이
 
 [heard_text] 이번 소리에서 실제로 들린 말만 한국어로 그대로 적는다(결정을 내렸다면 반드시
 채운다 — "그래"를 듣고 출발시키면서 heard_text 를 비우지 마라). 사람 말이 아니면
-(기침·소음·로봇 자신의 목소리·다른 사람들끼리의 잡담) 빈 문자열로 두고 intent=unknown,
+(기침·소음·로봇 자신의 목소리·다른 사람들끼리의 잡담) 빈 문자열로 두고 intent={heard_intent},
 reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 소리에 없는 말은 없는 것이다.
-애매하면 confidence 를 낮추고, 답이 꼭 필요한 자리면 clarify 로 되묻는다.
+{ambiguous}{order_block}
 
 [intent 별 규칙 — need_confirm 과 reply 까지 네가 정한다]
 - navigate(새 목적지): 가고 싶은 곳을 말했다. 직접("407호 가자")도 간접("배 아파"→화장실)도 된다.
   destination_candidate=목록의 name 그대로, need_confirm=true, reply=네 말로 만든 확인 질문
   (목적지 name 을 그대로 넣고 반드시 "?"로 끝낸다. 예: "화장실로 안내해드릴까요?").
   들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실 가고 싶어"가 남자 화장실·여자 화장실
-  둘 다) 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과 여자 화장실
-  중 어디로 갈까요?"). 하나만 들어 "남자 화장실인가요?"처럼 묻지도 않는다(2026-10-11 실기: 같은 말에
-  "여자 화장실로 안내해드릴까요?"·"남자 화장실인가요?").
+  둘 다) 하나를 짐작해 고르지 말고 {several_rule}
 - navigate(주행 중 바꾸기): [지금 상황]의 대화 단계가 '안내 중(주행)'인데 '안내 중' 줄의 곳(OO)이
   아닌 다른 목적지(XX)로 가고 싶다고 했다("화장실 가고 싶어", "식당으로 가자", "배 아파").
   destination_candidate=XX, need_confirm=true, reply="지금 OO로 가는 중이에요. XX로 바꿀까요?"
@@ -1226,8 +1260,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   reply=XX 로 다시 묻는 확인 질문("XX로 안내해드릴까요?").
 - deny: 확인 질문이나 제안에 부정만 하고 대안이 없다("아니", "아니요", "됐어"). reply="".
   부정 뒤에 **목록에 없는 곳**을 말하면("아니, 학과장님 사무실") 방금 거절당한 목적지를 그대로 다시
-  제안하지 마라 — 로봇 본체는 같은 곳의 재제안을 승낙으로 보고 출발한다(21:21 실기). clarify 로
-  "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.
+  제안하지 마라 — 로봇 본체는 같은 곳의 재제안을 승낙으로 보고 출발한다(21:21 실기). {not_avail_deny}
   "기다리지 마"·"대기 안 해도 돼"는 대기를 거절하는 말이다: 로봇의 마지막 말이 대기를 묻는 질문
   ("…여기서 기다릴까요?"·"여기서 대기할까요?"·"몇 분쯤 걸리실까요?")이면 deny, "여기까지 안내를
   마칠까요?"처럼 끝낼지 묻는 질문이면 affirm 이다(2026-10-08 실기 "대기하지 마").
@@ -1267,7 +1300,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "아까 어디 갔었지?"는 직전에 간 곳, "어디 가려고 했더라?"는 하려다 만 곳, "몇 시야?"는 시각,
   "배터리 얼마나 남았어?"는 배터리 줄로 답한다. 줄이 "모름"이면 한 문장으로 모른다고 한다. 정말 모르는 것만 한 문장으로 모른다고 한다 —
   다른 사람에게 물어보라는 식의 조언은 하지 않는다.
-- 약속 금지(question·clarify·unknown 공통, 2026-10-08): reply 는 정보와 되묻기까지만이다. "알겠습니다"·
+- 약속 금지({promise_scope}, 2026-10-08): reply 는 정보와 되묻기까지만이다. "알겠습니다"·
   "할게요"·"해 드릴게요" 같은 약속, "계속 안내할까요?"·"방향 맞춰드릴까요?"처럼 로봇이 할 일을 권하는
   말은 쓰지 않는다 — 로봇 본체가 모르는 약속이 된다. 목록에 있는 곳으로 안내를 권하려면 question 이
   아니라 navigate(need_confirm=true)로 낸다(위 위치 질문 규칙처럼).
@@ -1276,18 +1309,9 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "안내를 시작할까요?" 같은 말 금지) — 로봇 본체가 이어서 "안내를 받으시겠어요?"를 다시 묻는다(2026-10-09
   실기: 답 끝에 질문을 붙여 질문이 두 번 겹쳤다). 예: "누구세요?" → "저는 시각장애인 안내로봇 비카입니다.",
   "뭐라고요?" → "안내를 받으시겠냐고 여쭤봤어요."
-- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
-  질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
-  그 곳들의 name 만 들어 어느 쪽인지 묻는다.
-- unknown + 침묵(reply=""): 로봇에게 한 말이 **아닌 것이 분명할 때**(다른 사람들끼리의 대화,
-  기침·소음, 로봇 자신의 목소리), 그리고 **로봇이 방금 질문하고 답을 기다리는데 못 알아들었을
-  때**다. 질문 중이면 로봇 본체가 같은 질문을 한 번 다시 한다 — 네가 또 물으면 두 목소리가 된다
-  (2026-10-08). 로봇이 묻고 있지 않은데 사용자가 로봇에게 말한 것 같고 못 알아들었으면 침묵하지
-  말고 intent=clarify 로 "잘 못 들었는데, 다시 말씀해 주시겠어요?"(2026-09-20 사용자: 아무 말도
-  안 하면 무슨 상황인지 알 수 없다). 호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply 는
-  "{WAKE_GREETING}" 나 "네, 말씀하세요." 같은 짧은 응답.
+{clarify_unknown}
 
-[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
+[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify{not_avail}.
 (단, 아래 '다른 층 장소' 에 있는 곳은 clarify 가 아니라 [다른 층] 규칙)
 reply 에서 장소를 말할 때도 아래 name·별칭과 '다른 층 장소'만 쓴다. 목록에 없는 장소·부서·사람
 이름은 지어내지 않는다 — 예로도 들지 않는다. 이 지시문의 규칙 속 장소 이름(407호·식당·세미나실
@@ -1306,7 +1330,7 @@ N층이라 제가 못 가는데, 엘리베이터로 안내해드릴까요?"). �
 reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-10-08). "그럴래?"·"그럴까?"·"어어"처럼 부드러운 긍정을 부정으로 오해하지 마라.
 
 [숫자] "테스트1·테스트2·테스트3"처럼 숫자로 갈리는 목적지는 숫자가 핵심이다. "쓰리·스리·삼"=3,
-"투·이"=2, "원·일"=1. 숫자가 확실치 않으면 confidence 를 낮추고 clarify 로 몇 번인지 되묻는다.
+"투·이"=2, "원·일"=1. 숫자가 확실치 않으면 confidence 를 낮추고 {digit_rule}
 
 {HANDLE_FACTS}
 
@@ -1320,7 +1344,7 @@ reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-
 로봇 본체가 다시 묻는다). 묻는 말에 대한 대답·안내·모른다는 말은 평서문이니 "."로 끝낸다 — 평서문에 "?"를
 붙이면 말끝이 올라가 질문처럼 들리고 로봇이 쓸데없이 귀를 연다(2026-10-11: "성별은 추정할 수 없어요?",
 "목록에 408호는 없어요?" — 질문 대답 30개 중 18개가 "?"로 끝났다).
-reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel)는 로봇 본체가 이어서
+reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel{empty_kinds})는 로봇 본체가 이어서
 말하므로 네가 말을 보태지 않는다.
 {reserve_rules}{state_block}{situation}"""
 
@@ -1343,7 +1367,7 @@ def parse_intent_audio(
     question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 [지금 상황] 끝에 한 줄로 가고, 모델이 낸 answer 가 의도에 실린다.
     """
     instructions = build_audio_prompt(destinations, robot_state,
-                                      answer_field.with_question(situation, question), directory_block)
+                                      answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
     # tool_trail: 진행 중인 예약에서 부른 reserve_facility 기록(ReservationFlow.tool_trail) — 대화 기록에 싣는다.
     # 없으면 예전과 같은 호출이다(인자를 넘기지 않는다).
     result = get_realtime_client().ask(pcm16_16k, history, instructions,
@@ -1364,7 +1388,7 @@ def parse_intent_realtime_text(
     """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
     parse_intent_audio 와 같다. 운영 경로는 부르지 않는다."""
     instructions = build_audio_prompt(destinations, robot_state,
-                                      answer_field.with_question(situation, question), directory_block)
+                                      answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
     result = get_realtime_client().ask_text(text, history, instructions,
                                             **({"tool_trail": tool_trail} if tool_trail else {}))
     return _deliver_realtime_result(result, destinations, robot_state, question)

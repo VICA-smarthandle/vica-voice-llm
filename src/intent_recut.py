@@ -16,6 +16,29 @@ NOT_FOR_ROBOT = "not_for_robot"
 DISMISS = "dismiss"
 CLARIFY_KINDS = ("several", "not_available", "no_destination")
 
+# 지시문 두 벌(글자·소리)이 함께 싣는 글(원칙 1·4·7·12·31). 켰을 때만 지시문에 들어간다. 줄바꿈으로 시작·끝나지 않는다.
+PROMPT_INTENTS = """- clarify: 로봇에게 한 말이고 가고 싶은 곳에 대한 말인데 한 곳으로 정할 수 없다. reply 는 빈 문자열로 두고(되묻는 문장은 시스템이 만든다) clarify_kind 에 까닭을 적는다.
+  several = 목록의 여러 곳에 똑같이 걸린다. clarify_options 에 그 곳들의 name 을 모두 적는다(하나만 적지 않는다).
+  not_available = 목록에 없는 곳을 찾는다. clarify_wanted 에 찾는 것을 사용자가 말한 낱말 그대로 적는다. 비슷한 다른 곳으로 바꾸지 않는다.
+  no_destination = 어디로 갈지 말하지 않았다.
+- unknown: 로봇에게 한 말인데 무슨 뜻인지 알아듣지 못했다. reply 는 빈 문자열 — 시스템이 다시 말해 달라고 한다.
+- not_for_robot: 로봇에게 한 말이 아니다(옆 사람과 나눈 말, 로봇을 두고 설명하는 말, 혼잣말, 로봇 목소리의 메아리, 소음). reply 는 빈 문자열 — 로봇은 끼어들지 않는다.
+- dismiss: 안내를 받고 있지 않은데 로봇과의 대화를 그만하려 한다("됐어", "아니야 괜찮아", "나중에 할게"). reply 는 빈 문자열.
+  안내 중에 그만두려는 말은 cancel, 로봇이 방금 한 질문을 거절하는 말은 deny 다."""
+
+PROMPT_ORDER = """[판단 순서] 들은 말을 이 순서로 판단하고, 앞에서 정해지면 뒤로 가지 않는다.
+1. 로봇에게 한 말인가. 아니면 not_for_robot 이다. [지금 상황]의 '로봇이 방금 한 말' 줄을 함께 본다 — 로봇이 방금 부름에 대답했거나 질문했다면 이어진 말은 대개 로봇에게 한 말이다. 그래도 사람끼리 주고받는 말이거나 로봇을 가리켜 설명하는 말이면 not_for_robot 이다.
+2. 로봇이 방금 한 질문의 대답인가. 대답이면 그 질문의 뜻으로 읽는다.
+3. 새 요청인가. 무엇을 원하는지 읽는다. 가려는 곳이 목록에 없으면 clarify(not_available)다.
+4. 로봇에게 한 말인데 알아듣지 못했으면 unknown 이다.
+로봇에게 한 말인지 확실하지 않으면 not_for_robot 이 아니라 unknown 을 고른다 — 진짜 요청을 버리는 것이 되묻는 것보다 나쁘다."""
+
+# 두 지시문이 같은 말로 쓰는 조각(켰을 때).
+SEVERAL_RULE = "clarify(clarify_kind=several)로 내고 clarify_options 에 그 곳들의 name 을 모두 적는다. 하나만 적지 않는다(2026-10-11 실기)."
+NOT_AVAILABLE_TAG = "(clarify_kind=not_available)"
+NO_DESTINATION_TAG = "(clarify_kind=no_destination)"
+WAKE_LINE = '호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply="네?".'
+
 _HEADER = "\n[지금 상황]\n"
 
 

@@ -39,6 +39,18 @@ LOCAL_PROMPT_RULES = """
 4. 목적지 목록에 딱 맞는 곳이 없으면 비슷한 곳을 고르지 말고 clarify 로 답한다.
 5. 로봇에게 한 말이 아니면(옆 사람 대화, 혼잣말) intent 는 unknown, reply 는 빈 문자열."""
 
+# 재단(VICA_RECUT=on)일 때의 규칙 5 — 로봇에게 한 말이 아니면 not_for_robot(원칙 1).
+_RULE5_OFF = "intent 는 unknown, reply 는 빈 문자열."
+_RULE5_ON = "intent 는 not_for_robot, reply 는 빈 문자열."
+
+
+def prompt_rules(recut: bool) -> str:
+    """로컬 추가 규칙 글. 꺼졌으면 LOCAL_PROMPT_RULES 그대로, 켜졌으면 규칙 5 만 not_for_robot 으로."""
+    if not recut:
+        return LOCAL_PROMPT_RULES
+    assert _RULE5_OFF in LOCAL_PROMPT_RULES
+    return LOCAL_PROMPT_RULES.replace(_RULE5_OFF, _RULE5_ON)
+
 
 def enabled() -> bool:
     """스위치가 켜졌는가. 켜도 VICA_INTENT_INPUT=text 일 때만 참이다.
