@@ -118,8 +118,10 @@ def mission_reaction(intent, question: Optional[OpenQuestion], destinations: Seq
     도움 요청 뒤 확인 질문의 yes(확정 출발)는 여기서 가르지 못한다 — 행에 그 상황이 없다.
     """
     answer = getattr(intent, "answer", "") or ""
-    if not answer_field or question is None or question.kind not in ANSWER_READ_KINDS or not answer:
+    if not answer_field or question is None or question.kind not in ANSWER_READ_KINDS:
         return reaction_of(intent, question, destinations)
+    if not answer:
+        return _as_intent(intent, question, destinations)
     value = (getattr(intent, "answer_value", "") or "").strip()
     if answer in ("yes", "no"):
         return Reaction(answer)
@@ -139,7 +141,17 @@ def mission_reaction(intent, question: Optional[OpenQuestion], destinations: Seq
         return Reaction("wait", minutes=value) if value.isdigit() and int(value) > 0 else Reaction("reask", say=question.text)
     if answer == "unclear":
         return Reaction("reask", say=question.text)
-    return reaction_of(intent, question, destinations)
+    return _as_intent(intent, question, destinations)
+
+
+def _as_intent(intent, question: OpenQuestion, destinations: Sequence) -> Reaction:  # noqa: ANN001
+    """answer_field 가 켜진 미션이 의도대로 받을 때. 확인 질문 중 같은 곳의 **제안**(need_confirm)은 승낙이 아니라 같은 질문을
+    다시 한다(Task 3.3b — 2026-11-21 실기: "거기가 어디야"를 그 곳 제안으로 잘못 읽어 출발). 확정(need_confirm=False)은 승낙이다."""
+    reaction = reaction_of(intent, question, destinations)
+    if (question.kind == "confirm" and intent.intent == "navigate" and getattr(intent, "need_confirm", False)
+            and reaction.action == "yes"):
+        return Reaction("reask", say=question.text)
+    return reaction
 
 
 def _same(key: dict, reaction: Reaction) -> bool:

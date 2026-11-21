@@ -212,3 +212,18 @@ def test_answer_field_minutes_and_unclear():
     assert mission_reaction(answered("wait", "minutes", "열"), minutes, DESTS, answer_field=True).action == "reask"
     # 못 알아들음 = unknown — 미션이 같은 질문을 다시 한다
     assert mission_reaction(answered("finish", "unclear"), minutes, DESTS, answer_field=True).action == "reask"
+
+
+def test_p3_same_place_proposal_during_confirm_is_asked_again_when_the_mission_reads_answers():
+    """Task 3.3b: answer_field 가 켜진 미션은 확인 질문 중 같은 곳의 제안(need_confirm)에 출발하지 않고 다시 묻는다 — 대답 칸이
+    비었거나 other 여도. 확정(need_confirm=False)과 대답 칸 yes 는 승낙이다. 꺼져 있으면 옛 규칙(같은 곳 = 승낙)."""
+    confirm = asked("confirm", "화장실로 안내해드릴까요?", (TOILET.id,))
+    proposal = VicaIntent(intent="navigate", matched_destination_id=TOILET.id, need_confirm=True)
+    assert mission_reaction(proposal, confirm, DESTS, answer_field=True).action == "reask"
+    assert mission_reaction(answered("navigate", "other", matched_destination_id=TOILET.id, need_confirm=True),
+                            confirm, DESTS, answer_field=True).action == "reask"
+    confirmed = VicaIntent(intent="navigate", matched_destination_id=TOILET.id, need_confirm=False)
+    assert mission_reaction(confirmed, confirm, DESTS, answer_field=True) == Reaction("yes")
+    assert mission_reaction(proposal, confirm, DESTS) == Reaction("yes")                       # 꺼짐 — 옛 규칙
+    other = VicaIntent(intent="navigate", matched_destination_id=WELFARE.id, need_confirm=True)
+    assert mission_reaction(other, confirm, DESTS, answer_field=True) == Reaction("confirm", WELFARE.id)
