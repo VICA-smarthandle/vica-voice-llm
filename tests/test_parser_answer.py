@@ -159,6 +159,23 @@ def test_p6_text_path_llm_failure_keeps_a_standing_rule_answer(on, monkeypatch):
     assert (other.intent, other.reply, other.answer) == ("unknown", parser.LLM_UNAVAILABLE, "")
 
 
+@pytest.mark.parametrize("question", [q(), q("yesno", "안내를 취소할까요?"), q("yesno_inverted", "안내가 필요 없으신가요?")])
+def test_p6_text_path_cancel_word_keeps_the_cancel_shortcut(on, monkeypatch, question):
+    """수정 1차: "취소"는 네/아니요 규칙 대답이 아니다 — 취소 지름길이 정한 cancel 이 그대로 나가고 대답 칸은 빈 값.
+    ("안내를 취소할까요?"에 "취소"는 승낙이라 deny 로 바꾸면 "안내를 계속하겠습니다."가 된다.)"""
+    use(monkeypatch, Manager())                        # 지름길 — LLM 을 부르지 않는다
+    out = parser.parse_intent("취소", DESTS, history=[], question=question)
+    assert (out.intent, out.need_confirm, out.reply) == ("cancel", True, parser.CANCEL_CONFIRM)
+    assert (out.answer, out.answer_value, out.question_id) == ("", "", "q1")
+
+
+def test_p6_text_path_other_negatives_still_deny(on, monkeypatch):
+    use(monkeypatch, Manager())
+    for text in ("아니", "싫어"):
+        out = parser.parse_intent(text, DESTS, history=[], question=q("yesno", "안내를 취소할까요?"))
+        assert (out.intent, out.answer) == ("deny", "no"), text
+
+
 def test_text_path_is_unchanged_when_off(monkeypatch):
     use(monkeypatch, Manager(parser._IntentDraft(intent="finish")))
     out = parser.parse_intent("십 분 말고 그냥 끝내 줘", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))

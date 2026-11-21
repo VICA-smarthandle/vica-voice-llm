@@ -319,7 +319,8 @@ def test_realtime_answer_is_filled(monkeypatch):
     # Task 3.5b(규칙 3): Realtime 이 들은 글자 "삼십분"의 규칙 대답이 값을 바로잡는다(Realtime 도 시간으로 읽었다).
     # 의도가 wait 면 그대로 — wait_minutes 는 Realtime 의 15, answer_value 만 규칙의 30(규칙 2).
     assert (intent.question_id, intent.answer, intent.answer_value, heard) == ("q7", "minutes", "30", "삼십분")
-    assert (intent.intent, intent.wait_minutes, info["src"]) == ("wait", 15, "llm+대답규칙")
+    # 수정 1차: 의도가 wait 면 의도는 그대로, wait_minutes 도 규칙의 30 — answer_value 와 갈리지 않는다.
+    assert (intent.intent, intent.wait_minutes, info["src"]) == ("wait", 30, "llm+대답규칙")
     clamped = RealtimeResult(draft={"intent": "unknown", "answer": "yes"}, heard_text="네", latency_sec=1.0)
     assert parser._deliver_realtime_result(clamped, [], None, question=_minutes_q())[0].answer == "unclear"
 
@@ -374,6 +375,23 @@ def test_p6_sound_path_whole_no_on_a_proposal(monkeypatch):
     intent, _h, _dt, info = parser._deliver_realtime_result(_other_proposal("아니요"), [DEST, OTHER], None,
                                                             question=_confirm_q())
     assert (intent.intent, intent.answer, intent.matched_destination_id, info["src"]) == ("deny", "no", "", "llm+대답규칙")
+
+
+@pytest.mark.parametrize("asked,need_confirm,answer", [
+    ("confirm", True, "other"),                    # 확인 질문 중 "취소" — 안내 취소 제안
+    ("cancel_q", False, "yes"),                    # "안내를 취소할까요?"에 "취소" — 승낙(확정 취소)
+])
+def test_p6_sound_path_cancel_word_keeps_the_realtime_cancel(monkeypatch, capsys, asked, need_confirm, answer):
+    """수정 1차: heard "취소"는 네/아니요 규칙 대답이 아니다 — Realtime 의 cancel 그대로, src 에 꼬리표 없음."""
+    from src.question_record import OpenQuestion
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    question = (_confirm_q() if asked == "confirm" else
+                OpenQuestion(id="q9", kind="yesno", text=parser.CANCEL_CONFIRM, option_ids=(), opened_at=0.0))
+    said = RealtimeResult(draft={"intent": "cancel", "need_confirm": need_confirm, "reply": "", "answer": answer},
+                          heard_text="취소.", latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(said, [DEST], None, question=question)
+    assert (intent.intent, intent.need_confirm, intent.answer, info["src"]) == ("cancel", need_confirm, answer, "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
 
 
 def test_p6_sound_path_minutes_rule_yields_to_a_refusal(monkeypatch, capsys):

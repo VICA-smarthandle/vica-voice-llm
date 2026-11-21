@@ -92,14 +92,21 @@ def with_question(block: str, question: Optional[OpenQuestion]) -> str:
 def short_answer(text: str, question: Optional[OpenQuestion], local: bool = False) -> Optional[tuple[str, str]]:
     """이미 있는 짧은 대답 규칙만(설계 4.3-3): 통째로 네/아니요, N분. 질문 종류에 맞을 때만 (answer, 값), 아니면 None.
 
-    새 낱말 목록·정규식을 두지 않는다 — handle_mode 의 낱말과 parse_wait_minutes 만 쓴다. "안내가 필요 없으신가요?"
+    새 낱말 목록·정규식을 두지 않는다 — handle_mode 의 낱말과 parse_wait_minutes 만 쓴다(취소 낱말은 해석기의
+    _CANCEL_WORDS 로 빼기만 한다 — 뜻이 질문에 따라 갈린다). "안내가 필요 없으신가요?"
     (yesno_inverted)도 들은 대로 yes/no 다 — 뜻은 미션이 질문 종류로 읽는다. 혼잣소리('음'·'어어', SOFT_AFFIRMATIVES)는
     여기서 정하지 않는다 — yesno 에는 "다시 출발할까요?"처럼 로봇이 움직이는 질문도 있다(2026-09-28, 검토 I4).
     """
     if not on() or question is None:
         return None
     if question.kind in _YES_NO_KINDS:
+        from .langchain_intent_parser import _CANCEL_WORDS   # 지연 import — 해석기가 이 모듈을 import 한다
+
         word = normalize_short_reply(text or "")
+        if word in _CANCEL_WORDS:
+            # 원칙 6(수정 1차): "취소"는 NEGATIVES 에도 있지만 뜻이 질문에 따라 갈린다 — "화장실로 안내해드릴까요?"에는 거절,
+            # "안내를 취소할까요?"에는 승낙. 규칙이 정하지 않는다 — 의도는 지금 길(취소 지름길·LLM)이 정한다.
+            return None
         if word in NEGATIVES:
             return ("no", "")
         if word in AFFIRMATIVES:
@@ -136,9 +143,14 @@ def _ruled(intent: VicaIntent, question: OpenQuestion, ruled: tuple[str, str]) -
         # 대화 상태가 아니라 질문 기록이다. affirm·deny 의 말은 미션 몫이라 문장·목적지 칸을 비운다.
         update.update(intent="affirm" if answer == "yes" else "deny", reply="", ask_text="", ask_kind="",
                       need_confirm=False, destination_candidate=None, matched_destination_id="")
-    elif intent.intent != "wait":
+    elif intent.intent == "wait":
+        # 의도는 그대로, wait_minutes 도 규칙의 분(수정 1차) — answer_value 와 갈리면 미션이 읽는 칸에 따라 대기 시간이 달라진다.
+        update.update(wait_minutes=int(value))
+    else:
         # 원칙 7: unknown·clarify·not_for_robot(다른 뜻은 standing 이 걸렀다) → 그 분만큼 wait. 물은 질문의 대답을 버리지 않는다.
-        update.update(intent="wait", wait_minutes=int(value), reply="", ask_text="", need_confirm=False)
+        # 목적지 칸도 비운다(수정 1차 — 네/아니요와 같은 꼴).
+        update.update(intent="wait", wait_minutes=int(value), reply="", ask_text="", need_confirm=False,
+                      destination_candidate=None, matched_destination_id="")
     return intent.model_copy(update=update)
 
 

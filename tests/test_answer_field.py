@@ -95,6 +95,20 @@ def test_short_answer_only_whole_utterance(on, text, kind):
     assert af.short_answer(text, q(kind)) is None
 
 
+@pytest.mark.parametrize("kind", ["confirm", "yesno", "yesno_inverted"])
+@pytest.mark.parametrize("text", ["취소", "취소.", "취소해줘", "안내 취소"])
+def test_p6_cancel_word_is_not_a_yes_no_rule_answer(on, kind, text):
+    """"취소"는 NEGATIVES 에도 있지만 뜻이 질문에 따라 갈린다 — "화장실로 안내해드릴까요?"에는 거절, "안내를 취소할까요?"에는
+    승낙. 네/아니요 규칙이 정하지 않는다(수정 1차) — 의도는 지금 길(취소 지름길·LLM)이 정한다."""
+    assert af.short_answer(text, q(kind, "안내를 취소할까요?")) is None
+
+
+@pytest.mark.parametrize("text", ["아니", "아니요", "아뇨", "아니야", "아니에요", "싫어", "싫어요", "아니요."])
+def test_p6_other_negatives_stay_no(on, text):
+    for kind in ("confirm", "yesno", "yesno_inverted"):
+        assert af.short_answer(text, q(kind)) == ("no", "")
+
+
 def test_short_answer_minutes(on):
     m = q("minutes", "몇 분쯤 걸리실까요?")
     assert af.short_answer("삼십분.", m) == ("minutes", "30")
@@ -157,7 +171,8 @@ def test_p6_minutes_rule_corrects_the_value_when_the_llm_also_read_minutes(monke
     monkeypatch.setenv("VICA_ANSWER", "on")
     out = af.fill(VicaIntent(intent="wait", wait_minutes=13), q("minutes"), ("minutes", "15"), "minutes")
     assert (out.intent, out.answer, out.answer_value) == ("wait", "minutes", "15")
-    assert out.wait_minutes == 13                      # 의도가 wait 면 그대로 — answer_value 만 규칙의 분(규칙 2)
+    # 수정 1차: 의도는 그대로, wait_minutes 도 규칙의 분 — 두 칸이 갈리면 미션이 읽는 칸에 따라 대기 시간이 달라진다.
+    assert out.wait_minutes == 15
 
 
 def test_p7_an_answer_to_the_robots_question_is_never_dropped(monkeypatch):
@@ -204,9 +219,11 @@ def test_p6_whole_yes_no_clears_the_sentence_fields_and_keeps_the_rest(on):
 @pytest.mark.parametrize("name", ["unknown", "clarify", "not_for_robot"])
 def test_p6_minutes_rule_turns_a_non_reading_into_wait(on, name):
     out = af.fill(VicaIntent(intent=name, reply="다시 말씀해 주시겠어요?", ask_text="다시 말씀해 주시겠어요?",
-                             need_confirm=True, confidence=0.3), q("minutes"), ("minutes", "10"), "unclear")
+                             need_confirm=True, confidence=0.3, destination_candidate="화장실", matched_destination_id="wc"),
+                  q("minutes"), ("minutes", "10"), "unclear")
     assert (out.intent, out.wait_minutes, out.answer, out.answer_value) == ("wait", 10, "minutes", "10")
     assert (out.reply, out.ask_text, out.need_confirm, out.confidence) == ("", "", False, 0.3)
+    assert (out.destination_candidate, out.matched_destination_id) == (None, "")     # 수정 1차 — 네/아니요와 같은 꼴
 
 
 def test_p6_minutes_rule_that_does_not_stand_keeps_the_llm_answer(on):
