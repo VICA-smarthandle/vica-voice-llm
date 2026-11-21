@@ -349,16 +349,64 @@ def _other_proposal(heard):
 
 
 def test_p6_sound_path_uses_the_heard_words_for_a_whole_yes(monkeypatch, capsys):
+    """확인 질문 + heard "네" + Realtime affirm·answer 빈 값 → 대답 칸 yes(의도 그대로) — 같은 읽기일 때만 채운다(수정 2차 ③)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said = RealtimeResult(draft={"intent": "affirm", "reply": "", "confidence": 0.8, "answer": ""}, heard_text="네.",
+                          latency_sec=0.9)
+    intent, heard, dt, info = parser._deliver_realtime_result(said, [DEST, OTHER], None, question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.answer_value, intent.question_id) == ("affirm", "yes", "", "q3")
+    assert intent.confidence == pytest.approx(0.8) and (heard, dt) == ("네.", 0.9)
+    assert info["src"] == "llm+대답규칙"
+    log = capsys.readouterr().err
+    assert "[대답규칙] 규칙 전(짧은답규칙 뒤) intent=affirm answer=-/-" in log      # 검토 M4 — 어느 시점의 값인지 글자로
+
+
+def test_p6_sound_path_whole_yes_does_not_overturn_a_destination_reading(monkeypatch, capsys):
+    """확인 질문 + heard "네" + Realtime 다른 곳 제안·answer destination → 그대로(수정 2차 ④ — 규칙이 덮지 않는다)."""
     monkeypatch.setenv("VICA_ANSWER", "on")
     intent, heard, dt, info = parser._deliver_realtime_result(_other_proposal("네."), [DEST, OTHER], None,
                                                               question=_confirm_q())
-    assert (intent.intent, intent.answer, intent.answer_value, intent.question_id) == ("affirm", "yes", "", "q3")
-    assert (intent.reply, intent.need_confirm, intent.destination_candidate, intent.matched_destination_id) == (
-        "", False, None, "")
-    assert intent.confidence == pytest.approx(0.6) and (heard, dt) == ("네.", 0.9)
-    assert info["src"] == "llm+대답규칙"
-    log = capsys.readouterr().err
-    assert "[대답규칙]" in log and "intent=navigate" in log and "answer=destination/info" in log   # 바뀌기 전 값
+    assert (intent.intent, intent.answer, intent.answer_value, intent.question_id) == ("navigate", "destination", "info", "q3")
+    assert (intent.need_confirm, intent.matched_destination_id, info["src"]) == (True, OTHER.id, "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
+
+
+def test_p7_sound_path_yes_from_not_for_robot_is_asked_again(monkeypatch):
+    """확인 질문 + heard "네" + Realtime not_for_robot → unknown·unclear·reply 빈 값(affirm 아님) — 옆 사람의 "네"가 출발이 되지
+    않게 하고, 버리지도 않아 미션이 다시 묻는다(수정 2차 ② · 규칙 3)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_RECUT", "on")
+    for llm in ("", "yes"):
+        aside = RealtimeResult(draft={"intent": "not_for_robot", "reply": "", "answer": llm}, heard_text="네",
+                               latency_sec=1.0)
+        intent, _h, _dt, info = parser._deliver_realtime_result(aside, [DEST], None, question=_confirm_q())
+        assert (intent.intent, intent.answer, intent.reply, intent.need_confirm) == ("unknown", "unclear", "", False), llm
+        assert info["src"] == "llm+대답규칙"
+
+
+# 검토자 재현(Critical) — "가자"·"가줘"는 AFFIRMATIVES 에 있지만 확인 질문 밖에서는 뜻이 반대다. Realtime 이 맞게 읽은 것을
+# 규칙이 승낙으로 뒤집으면 안 된다 — BASE 4cdc717 과 같은 의도·대답으로 나간다(수정 2차 ①).
+REVIEW_SCENES = [
+    ("yesno", "안내를 취소할까요?", "가자", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
+    ("yesno", "안내를 취소할까요?", "가자", {"intent": "resume", "answer": "other"}, "navigating", "resume", "other"),
+    ("yesno", "다녀오시는 동안 여기서 기다릴까요?", "가자", {"intent": "resume", "answer": "no"}, "asking_next", "resume", "no"),
+    ("yesno_inverted", "안내가 필요 없으신가요?", "가자", {"intent": "resume", "answer": "no"}, "waiting", "resume", "no"),
+    ("yesno", "직원의 도움이 필요하신가요?", "가줘", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
+    ("yesno", "여기까지 안내를 마칠까요?", "가자", {"intent": "resume", "answer": "other"}, "asking_next", "resume", "other"),
+]
+
+
+@pytest.mark.parametrize("kind,text,heard,draft,state,want_intent,want_answer", REVIEW_SCENES)
+def test_p6_sound_path_rule_does_not_overturn_the_review_scenes(monkeypatch, kind, text, heard, draft, state,
+                                                               want_intent, want_answer):
+    from src.question_record import OpenQuestion
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    question = OpenQuestion(id="q1", kind=kind, text=text, option_ids=(), opened_at=0.0)
+    result = RealtimeResult(draft=draft, heard_text=heard, latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
+                                                            question=question)
+    assert (intent.intent, intent.answer, info["src"]) == (want_intent, want_answer, "llm")
 
 
 def test_sound_path_is_unchanged_when_off(monkeypatch):
@@ -374,7 +422,12 @@ def test_p6_sound_path_whole_no_on_a_proposal(monkeypatch):
     monkeypatch.setenv("VICA_ANSWER", "on")
     intent, _h, _dt, info = parser._deliver_realtime_result(_other_proposal("아니요"), [DEST, OTHER], None,
                                                             question=_confirm_q())
-    assert (intent.intent, intent.answer, intent.matched_destination_id, info["src"]) == ("deny", "no", "", "llm+대답규칙")
+    # 수정 2차: Realtime 이 다른 곳 제안으로 읽었으면 규칙 no 가 뒤집지 않는다.
+    assert (intent.intent, intent.answer, intent.matched_destination_id, info["src"]) == (
+        "navigate", "destination", OTHER.id, "llm")
+    refused = RealtimeResult(draft={"intent": "deny", "reply": "", "answer": ""}, heard_text="아니요", latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(refused, [DEST, OTHER], None, question=_confirm_q())
+    assert (intent.intent, intent.answer, info["src"]) == ("deny", "no", "llm+대답규칙")     # 같은 읽기 — 대답 칸만 채움
 
 
 @pytest.mark.parametrize("asked,need_confirm,answer", [
@@ -437,7 +490,7 @@ def test_p6_sound_path_reserve_call_is_untouched(monkeypatch):
     assert out == ReserveCall(facility="세미나실") and info["src"] == "llm"
 
 
-def test_p6_sound_path_short_answer_rule_then_answer_rule(monkeypatch):
+def test_p6_sound_path_short_answer_rule_then_answer_rule(monkeypatch, capsys):
     """대답을 기다리는 단계의 짧은 대답 규칙(_audio_short_answer)이 먼저 의도를 바꾸고, 대답 칸은 질문 기록의 규칙이 채운다."""
     from src.schema import RobotState
     monkeypatch.setenv("VICA_ANSWER", "on")
@@ -447,6 +500,8 @@ def test_p6_sound_path_short_answer_rule_then_answer_rule(monkeypatch):
                                                             question=_confirm_q())
     assert (intent.intent, intent.answer, intent.reply) == ("affirm", "yes", "")
     assert info["src"] == "llm+짧은답규칙+대답규칙"
+    # 검토 M4: 로그의 '규칙 전' 은 _audio_short_answer 가 지나간 뒤의 값(affirm)이다 — Realtime 원래 의도(question)가 아니다.
+    assert "규칙 전(짧은답규칙 뒤) intent=affirm" in capsys.readouterr().err
 
 
 def test_sound_path_does_not_wait_for_the_local_transcript():

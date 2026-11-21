@@ -76,15 +76,24 @@ def test_rule_answers_without_the_llm(on, monkeypatch):
     assert (out.intent, out.answer) == ("affirm", "yes")
 
 
-def test_rule_beats_the_llm_answer(on, monkeypatch):
+def test_rule_does_not_overturn_the_llm_answer(on, monkeypatch):
     monkeypatch.setenv("VICA_LOCAL_RULES", "1")
     monkeypatch.setenv("VICA_INTENT_INPUT", "text")
     manager = use(monkeypatch, Manager(parser._AnswerDraft(intent="unknown", reply="네?", answer="other")))
     out = parser.parse_intent("네", DESTS, history=[], robot_state=RobotState(dialog_state="idle"),
                               question=q("yesno", "여기서 대기할까요?"))
     assert len(manager.kinds) == 1          # 로컬 규칙은 대답을 기다리는 단계가 아니면 LLM 에 묻는다
-    # Task 3.5b(규칙 2): 통째 "네"는 질문 기록이 판단 근거다 — LLM 의 unknown·"네?"를 affirm·빈 문장으로 바꾼다.
-    assert (out.intent, out.answer, out.reply, out.need_confirm) == ("affirm", "yes", "", False)
+    # 수정 2차: LLM 이 다르게 읽었으면(other·unknown) 규칙 yes 는 서지 않는다 — 의도·대답 칸 모두 LLM 의 것.
+    # (BASE 는 대답 칸만 yes 로 덮었다 — 그 덮어쓰기가 "가자"에서 승낙을 지어냈다, 검토 Critical.)
+    assert (out.intent, out.answer, out.reply) == ("unknown", "other", "네?")
+
+
+@pytest.mark.parametrize("pending,intent", [(parser.RESUME_CONFIRM, "resume"), (parser.CANCEL_CONFIRM, "cancel")])
+def test_p6_text_path_confirmed_command_shortcut_keeps_its_intent(on, monkeypatch, pending, intent):
+    """지름길이 낸 확정 resume·cancel 은 그대로 나간다 — LLM 대답 빈 값·의도가 affirm 이 아니라 규칙 yes 는 서지 않는다(수정 2차)."""
+    use(monkeypatch, Manager())
+    out = parser.parse_intent("네", DESTS, history=[AIMessage(pending)], question=q("yesno", pending))
+    assert (out.intent, out.need_confirm, out.answer, out.question_id) == (intent, False, "", "q1")
 
 
 MINUTES_Q = ("minutes", "몇 분쯤 걸리실까요?")
@@ -120,18 +129,19 @@ def test_p7_text_path_yes_is_not_dropped_as_not_for_robot(on, monkeypatch):
     manager = use(monkeypatch, Manager(parser._RecutAnswerDraft(intent="not_for_robot", answer="")))
     out = parser.parse_intent("네", DESTS, history=[], robot_state=RobotState(dialog_state="idle"), question=q())
     assert len(manager.kinds) == 1
-    assert (out.intent, out.answer, out.reply) == ("affirm", "yes", "")
+    # 수정 2차: 버리지 않되 승낙으로 살리지도 않는다 — unknown·unclear(옆 사람의 "네"가 출발이 되지 않게, 미션이 다시 묻는다).
+    assert (out.intent, out.answer, out.reply, out.need_confirm) == ("unknown", "unclear", "", False)
 
 
-def test_p6_text_path_whole_no_replaces_the_llm_destination(on, monkeypatch):
+def test_p6_text_path_whole_no_does_not_overturn_the_llm_destination(on, monkeypatch):
     monkeypatch.setenv("VICA_LOCAL_RULES", "1")
     monkeypatch.setenv("VICA_INTENT_INPUT", "text")
     manager = use(monkeypatch, Manager(parser._AnswerDraft(intent="navigate", destination_candidate="안내소",
                                                            answer="destination")))
     out = parser.parse_intent("아니요", DESTS, history=[], robot_state=RobotState(dialog_state="idle"), question=q())
-    assert len(manager.kinds) == 1                     # LLM 이 낸 목적지 제안을 규칙이 바꾼다(지름길이 아니다)
-    assert (out.intent, out.answer, out.matched_destination_id, out.destination_candidate, out.reply, out.need_confirm) == (
-        "deny", "no", "", None, "", False)
+    assert len(manager.kinds) == 1                     # 지름길이 아니라 LLM 이 읽었다
+    # 수정 2차: 규칙 no 는 LLM 의 다른 곳 제안을 뒤집지 않는다.
+    assert (out.intent, out.answer, out.answer_value, out.matched_destination_id) == ("navigate", "destination", "info", "info")
 
 
 def test_p6_text_path_shortcut_meets_the_same_minutes_condition(on, monkeypatch):

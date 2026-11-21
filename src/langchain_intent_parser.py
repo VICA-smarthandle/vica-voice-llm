@@ -1096,8 +1096,8 @@ def parse_intent(
     도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
     question 은 이 말이 들어올 때 열려 있던 질문(질문 기록). 대답 칸이 켜졌으면(VICA_ANSWER=on) 돌려주는 의도에
     question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 서면 그것, 그 밖은 LLM 이 낸 값이다(설계
-    2026-11-18 4.3). 의도 칸은 지금 길로 정하고, 규칙 대답이 서면 그 대답에 맞춘다 — 나가는 곳마다 같은 answer_field.fill 을
-    지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
+    2026-11-18 4.3). 의도 칸은 지금 길로 정하고 규칙은 그 읽기를 뒤집지 않는다(분 대답은 wait, 네/아니요로 보이는 not_for_robot 은
+    unknown) — 나가는 곳마다 같은 answer_field.fill 을 지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
@@ -1449,8 +1449,8 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
     """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info).
 
     대답 칸이 켜졌으면 Realtime 이 들은 글자(heard)에 짧은 대답 규칙을 대고 글자 경로와 같은 answer_field.fill 을 지난다
-    (Task 3.5b, 원칙 6·7) — 규칙 대답이 서면 그것, 아니면 모델이 낸 answer 다. 규칙이 모델의 의도나 대답을 바꿨으면
-    info["src"] 에 "+대답규칙" 을 붙이고 바뀌기 전 값을 로그 한 줄로 남긴다."""
+    (Task 3.5b, 원칙 6·7) — 규칙은 모델의 읽기를 뒤집지 않는다(같은 읽기일 때 대답 칸 채우기·분·not_for_robot 되묻기만).
+    규칙이 의도나 대답 칸을 실제로 바꿨으면 info["src"] 에 "+대답규칙" 을 붙이고 바뀌기 전 값을 로그 한 줄로 남긴다."""
     heard = result.heard_text.strip()
     if result.tool == RESERVE:
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).
@@ -1477,7 +1477,9 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
         by_llm = answer_field.fill(intent, question, None, llm_answer)
         if (filled.intent, filled.answer, filled.answer_value) != (by_llm.intent, by_llm.answer, by_llm.answer_value):
             src += "+대답규칙"
-            _log("info", f"[대답규칙] 규칙 전 intent={by_llm.intent} answer={by_llm.answer or '-'}/{by_llm.answer_value or '-'}"
+            # '규칙 전' 은 _audio_short_answer 가 지나간 뒤의 값이다(검토 M4) — Realtime 이 처음 낸 의도는 src 의 +짧은답규칙 으로 본다.
+            _log("info", f"[대답규칙] 규칙 전(짧은답규칙 뒤) intent={by_llm.intent} "
+                         f"answer={by_llm.answer or '-'}/{by_llm.answer_value or '-'}"
                          f" → intent={filled.intent} answer={filled.answer}/{filled.answer_value or '-'} heard='{heard}'")
     return filled, heard, result.latency_sec, {"src": src, "usage": result.usage}
 

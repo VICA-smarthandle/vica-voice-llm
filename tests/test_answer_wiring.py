@@ -110,9 +110,9 @@ def test_p6_resume_question_answers_carry_the_answer_field_when_on(monkeypatch):
     no = parse_intent("아니", _DESTS, history=_ASKED, question=_RESUME_Q)
     assert (no.intent, no.reply, no.answer, no.question_id) == ("deny", "", "no", "q7")
     yes = parse_intent("네", _DESTS, history=_ASKED, question=_RESUME_Q)
-    # Task 3.5b(규칙 2): 질문 기록의 yesno 에 통째 "네"는 affirm 이다 — 지름길의 확정 resume 을 바꾼다. 미션은 이 질문이
-    # 열려 있으면 affirm 도 재개 확인으로 받는다(_react_resume_question — 대답 칸 yes 도 affirm 으로 바꿔 읽는다).
-    assert (yes.intent, yes.need_confirm, yes.answer, yes.question_id) == ("affirm", False, "yes", "q7")
+    # Task 3.5b 수정 2차: 지름길이 낸 확정 resume 은 그대로 나간다 — 규칙 yes 는 LLM 대답이 비었고 의도가 affirm 일 때만
+    # 서므로 대답 칸도 빈 값이다(미션은 이 질문이 열려 있으면 확정 resume 을 재개 확인으로 받는다, _react_resume_question).
+    assert (yes.intent, yes.need_confirm, yes.answer, yes.question_id) == ("resume", False, "", "q7")
 
 
 def test_p9_held_resume_paths_are_skipped_when_answers_are_on():
