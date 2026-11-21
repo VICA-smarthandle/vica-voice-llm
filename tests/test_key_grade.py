@@ -145,3 +145,20 @@ def test_short_call_answers_are_wake_whatever_the_wording():
         assert reaction_of(VicaIntent(intent="unknown", reply=said), None, DESTS).action == "wake", said
     for said in ("네, 화장실로 안내해드릴까요?", "잘 듣지 못했습니다. 다시 말씀해 주세요.", "네, 알겠습니다."):
         assert reaction_of(VicaIntent(intent="unknown", reply=said), None, DESTS).action == "reask", said
+
+
+def test_dismiss_follows_what_the_mission_does_with_it():
+    """미션(계획 Task 2.6): 미션 질문이 열려 있으면 dismiss 를 거절로 읽고, 아니면 끝맺는 말을 한다."""
+    bye = SimpleNamespace(intent="dismiss", reply="", ask_text="")
+    assert reaction_of(bye, asked("yesno", "다녀오실 동안 여기서 기다릴까요?"), DESTS) == Reaction("no")
+    assert reaction_of(bye, asked("confirm", "화장실로 안내해드릴까요?", (TOILET.id,)), DESTS) == Reaction("no")
+    assert reaction_of(bye, asked("open", "네?"), DESTS) == Reaction("bye")
+    assert reaction_of(bye, asked("open", "어디로 안내해드릴까요?"), DESTS) == Reaction("bye")
+    assert reaction_of(bye, None, DESTS) == Reaction("bye")
+
+
+def test_ending_the_talk_is_a_right_answer_where_no_was_expected_after_a_call():
+    """원칙 14 — "네?" 뒤의 "아니야"는 옛 답지에서 거절(아무 일도 안 일어남)이었다. 끝맺는 말로 받는 것도 맞는 반응이다."""
+    assert grade_key({"action": "no"}, Reaction("bye"), kind="open") == ("ok", 0)
+    assert grade_key({"action": "no"}, Reaction("bye"), kind="yesno")[0] == "wrong"     # 미션 질문의 거절을 끝맺는 말로 받으면 안 된다
+    assert grade_key({"action": "bye"}, Reaction("no"), kind="open")[0] != "ok"          # 반대는 아니다 — 끝맺는 말이 안 나온다

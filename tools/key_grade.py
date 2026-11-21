@@ -69,8 +69,12 @@ def reaction_of(intent, question: Optional[OpenQuestion], destinations: Sequence
     asked = question.text if question is not None else ""
     said = (getattr(intent, "ask_text", "") or getattr(intent, "reply", "") or "").strip()
     i = intent.intent
-    if i in ("not_for_robot", "dismiss", "repeat"):
-        return Reaction({"not_for_robot": "silent", "dismiss": "bye", "repeat": "repeat"}[i])
+    if i == "dismiss":
+        # 미션(Task 2.6): 미션 질문이 열려 있으면 거절로 읽고, 아니면("네?" · 넘겨받은 열린 질문 · 질문 없음) 끝맺는 말을 한다.
+        # 주행 중(취소 확인으로 감)은 여기서 가르지 못한다 — 행에 그 상황이 거의 없다.
+        return Reaction("no" if question is not None and kind != "open" else "bye")
+    if i in ("not_for_robot", "repeat"):
+        return Reaction({"not_for_robot": "silent", "repeat": "repeat"}[i])
     if i in ("affirm", "deny"):
         return Reaction("yes" if i == "affirm" else "no")
     if i == "navigate":
@@ -121,6 +125,8 @@ def grade_key(key: dict, reaction: Reaction, kind: str = "") -> tuple[str, int]:
     if _same(key, reaction):
         return "ok", 0
     want = key.get("action", "")
+    if want == "no" and reaction.action == "bye" and kind == "open":
+        return "ok", 0                                 # 원칙 14 — 호출 뒤의 거절을 끝맺는 말로 받음
     principle = 3 if reaction.action == "go" else PRINCIPLE.get(want, 0)
     if reaction.action == "reask":
         return "reask", principle

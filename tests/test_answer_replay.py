@@ -345,3 +345,12 @@ def test_recut_switch_goes_into_the_environment_before_the_parser_loads():
     assert answer_replay.recut_env(True) == {"VICA_RECUT": "on"}
     assert answer_replay.recut_env(False) == {"VICA_RECUT": "off"}
     assert "_recut_" in answer_replay.result_name("gpt", "", False, False, True, "labels", False, "20261121-1300")
+
+
+def test_regrade_rereads_saved_dismiss_the_way_the_mission_takes_it(dests):
+    """예전 채점기로 저장된 dismiss 는 bye 로 적혀 있다 — 미션 질문이 열려 있던 행은 거절로 다시 읽는다."""
+    bye = {"action": "bye", "target": "", "minutes": "", "say": ""}
+    asked = {**KEY_ROW, "kind": "yesno", "question": "여기서 기다릴까요?", "intent": "dismiss", "reaction": bye}
+    assert answer_replay.regrade({"rows": [asked]}, {"9.0": _key("no")})["rows"][0]["reaction"]["action"] == "no"
+    called = {**KEY_ROW, "kind": "open", "question": "네?", "intent": "dismiss", "reaction": bye}
+    assert answer_replay.regrade({"rows": [called]}, {"9.0": _key("no")})["rows"][0]["key_status"] == "ok"

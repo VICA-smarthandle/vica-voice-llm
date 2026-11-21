@@ -238,6 +238,8 @@ def regrade(run: dict, key: dict) -> dict:
         reaction = Reaction(**r["reaction"])
         if r.get("intent") == "unknown" and reaction.action == "reask" and is_wake_answer(reaction.say):
             reaction = Reaction("wake", say=reaction.say)       # 옛 채점기로 저장된 호출 응답("네, 말씀하세요.")
+        if r.get("intent") == "dismiss":                        # 미션 질문이 열려 있었으면 거절, 아니면 끝맺는 말
+            reaction = Reaction("no" if kind and kind != "open" else "bye")
         status, principle = grade_key(key_row, reaction, kind)
         rows.append({**r, "reaction": asdict(reaction), "key_status": status, "principle": principle, "set": key_row.get("set", ""),
                      "key_action": key_row.get("action", ""), "key_target": key_row.get("target", "")})
