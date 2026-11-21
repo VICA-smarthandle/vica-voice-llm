@@ -45,11 +45,11 @@
 
 ## Review Focus
 
-- 외부 API 가 새 칸을 null·문자열·목록 밖 값으로 낸다 → 발화 하나가 통째로 실패하지 않고 빈 값으로 읽힌다 → Task 2-2 `test_recut_draft_tolerates_bad_values`
-- `clarify_wanted` 에 긴급어나 긴 문장이 들어온다 → 로봇이 그 말을 소리 내면 긴급어 감시가 자기 목소리에 걸린다. "말씀하신 곳"으로 바꾼다 → Task 2-1 `test_p11_not_available_never_speaks_emergency_words`
-- 되돌리기 어려운 상태(확인 질문 중·주행 중)에 `dismiss` 가 온다 → 확인 없이 접거나 취소하지 않는다 → Task 2-6 반응표 `bye` 열
-- 늦게 온 대답(메시지의 `question_id` 가 지금 열린 질문과 다름) → 대답으로 처리하지 않고 지금처럼 의도로 처리한다 → Task 3-2 `test_stale_question_id_is_not_an_answer`
-- "비카야"만 들림·나에게 한 말이 아님·"다시 말해줘" → 되묻기 횟수에 세지 않고, 알아들은 말이 오면 횟수가 0 으로 돌아간다 → Task 3-6 `test_p8_understood_utterance_resets`, Task 3-9 `test_p13_wake_only_is_not_counted_in_arrival_question`
+- 외부 API 가 새 칸을 null·문자열·목록 밖 값으로 낸다 → 발화 하나가 통째로 실패하지 않고 빈 값으로 읽힌다 → Task 2.2 `test_recut_draft_tolerates_bad_values`
+- `clarify_wanted` 에 긴급어나 긴 문장이 들어온다 → 로봇이 그 말을 소리 내면 긴급어 감시가 자기 목소리에 걸린다. "말씀하신 곳"으로 바꾼다 → Task 2.1 `test_p11_not_available_never_speaks_emergency_words`
+- 되돌리기 어려운 상태(확인 질문 중·주행 중)에 `dismiss` 가 온다 → 확인 없이 접거나 취소하지 않는다 → Task 2.6 반응표 `bye` 열
+- 늦게 온 대답(메시지의 `question_id` 가 지금 열린 질문과 다름) → 대답으로 처리하지 않고 지금처럼 의도로 처리한다 → Task 3.2 `test_stale_question_id_is_not_an_answer`
+- "비카야"만 들림·나에게 한 말이 아님·"다시 말해줘" → 되묻기 횟수에 세지 않고, 알아들은 말이 오면 횟수가 0 으로 돌아간다 → Task 3.6 `test_p8_understood_utterance_resets`, Task 3.9 `test_p13_wake_only_is_not_counted_in_arrival_question`
 
 ---
 
@@ -58,7 +58,7 @@
 1. **본 말로 고친다.** 스위치를 켠 재생을 `set=seen` 행에 돌린다(gpt·Realtime 은 승인 뒤, Mi:dm 은 주행 묶음이 꺼졌을 때). 맞지 않은 행을 읽고 지시문 문장만 고친다. 코드 틀과 스키마를 고쳐야 하면 해당 과제로 돌아간다.
 2. **고정한다.** 커밋한 뒤에는 3~5번이 끝날 때까지 지시문을 고치지 않는다.
 3. **안 본 말로 잰다.** `set=heldout` 행에 같은 재생을 돌린다. 결과 파일의 행 내용은 열지 않는다.
-4. **실패 기준과 견준다**(설계 3절). 기준값은 Task 1-4 의 `key_baseline.md` 다.
+4. **실패 기준과 견준다**(설계 3절). 기준값은 Task 1.4 의 `key_baseline.md` 다.
 
    | 항목 | 실패 |
    |---|---|
@@ -75,7 +75,7 @@
 
 # 1단계 — 답지를 새 형식으로, 지금 구조 다시 재기 (제품 코드 0)
 
-### Task 1-1: 새 답지 파일 만들기 (설계 8절 답지)
+### Task 1.1: 새 답지 파일 만들기 (설계 8절 답지)
 
 **Files:**
 - Create: `~/vica_data/voice_answer_audit_20261113/review2/build_key.py`
@@ -95,21 +95,21 @@
 - [ ] **Step 2: 실행한다.** `cd ~/VICA-smarthandle/vica-voice-llm && .venv/bin/python ~/vica_data/voice_answer_audit_20261113/review2/build_key.py`
   Expected: `rule` 이 182행 안팎, `pending` 이 26행 이하, 사람끼리 21행.
 
-### Task 1-2: 확인 사이트가 남은 행만 보이게 하고 사용자 확인을 받는다
+### Task 1.2: 확인 사이트가 남은 행만 보이게 하고 사용자 확인을 받는다
 
 **Files:**
 - Modify: `~/vica_data/voice_answer_audit_20261113/review2/review_site2.py`
 
 **Interfaces:**
-- Consumes: Task 1-1 의 `answer_key.csv`(`source=pending` 행)
+- Consumes: Task 1.1 의 `answer_key.csv`(`source=pending` 행)
 - Produces: `answer_key_results.json` 에 남은 행의 판정. 행동 목록에 `bye`("대화를 끝내는 말로 받기") 추가.
 
 - [ ] **Step 1:** 첫 화면의 목록을 `source=pending` 행만으로 바꾸고 맨 위에 "남은 N행"을 적는다. 전체 보기는 링크로 남긴다. `ACTIONS` 에 `"bye": "대화를 끝내는 말로 받기"` 를 더한다.
 - [ ] **Step 2:** 서버를 다시 띄운다(`pgrep -f review_site2.py` 로 pid 를 본 뒤 `kill <pid>`, `python3 review_site2.py`). 주소는 그대로 `http://100.110.180.95:8787/<token>/`.
-- [ ] **Step 3: 사용자에게 남은 행 확인을 요청한다.** 끝나면 Task 1-1 Step 2 를 다시 돌린다.
+- [ ] **Step 3: 사용자에게 남은 행 확인을 요청한다.** 끝나면 Task 1.1 Step 2 를 다시 돌린다.
   Expected: `pending` 0행. 0 이 아니면 그 행 번호를 사용자에게 알린다.
 
-### Task 1-3: 새 채점기 (설계 G2 · 8절 측정 규칙)
+### Task 1.3: 새 채점기 (설계 G2 · 8절 측정 규칙)
 
 **Files:**
 - Create: `tools/key_grade.py`
@@ -179,7 +179,7 @@ def test_drop_and_pending_rows_are_not_graded():
 - [ ] **Step 4:** 같은 명령 → PASS
 - [ ] **Step 5:** `git commit -m "feat(tools): 새 답지 채점기 — 로봇이 한 일(행동·대상)을 답지와 견주고 깨진 원칙 번호를 낸다" -- tools/key_grade.py tests/test_key_grade.py`
 
-### Task 1-4: 재생 도구에 새 답지 채점을 붙이고 지금 구조를 다시 잰다
+### Task 1.4: 재생 도구에 새 답지 채점을 붙이고 지금 구조를 다시 잰다
 
 **Files:**
 - Modify: `tools/answer_replay.py`(`replay`·`_report_md`·`main`)
@@ -187,7 +187,7 @@ def test_drop_and_pending_rows_are_not_graded():
 - Output: `~/vica_data/voice_answer_audit_20261113/key_baseline.md`
 
 **Interfaces:**
-- Consumes: Task 1-3 의 `reaction_of`·`grade_key`·`load_key` · `src.one_voice.demote_unasked_confirm`·`hand_over_question`
+- Consumes: Task 1.3 의 `reaction_of`·`grade_key`·`load_key` · `src.one_voice.demote_unasked_confirm`·`hand_over_question`
 - Produces: `--key <answer_key.csv>` 와 `--set seen|heldout|all`(기본 `all`). 결과 행에 `intent`·`dest`·`nc`·`reply`·`ask_text`·`reaction`(행동·대상·분·문장)·`key_status`·`principle`·`set` 이 더해진다. 요약에 `set` 별 건수(`ok`·`reask`·`wrong`·`mismatch`), `wrong` 중 반응 `silent` 건수, `go` 건수, 원칙 번호별 건수.
 
 - [ ] **Step 1: 실패하는 시험 작성** — `replay(rows, interpret, destinations_for, key=...)` 에 가짜 `interpret` 를 넣는다.
@@ -211,14 +211,14 @@ def test_heldout_rows_are_counted_but_not_listed_in_the_report():
   - gpt: `--path gpt --rounds 3`(208행 × 3회, **승인 뒤**) — 11-18 기준 파일에는 로봇이 한 문장이 없어 되묻기 종류를 가를 수 없으므로 다시 돌린다.
   - Realtime: `--path realtime --rounds 1 --pause 1.0`(**승인 뒤**)
   - 사람끼리 21행: 세 경로 모두 `--labels …/review2/people_talk_labels.csv --rounds 1`
-- [ ] **Step 6: 본 말에서 `ok` 가 아닌 행을 사람 눈으로 읽는다**(설계 8절: 채점 변환을 새로 만들면 숫자를 적기 전에 읽는다). 변환이 틀렸으면 Task 1-3 으로 돌아가 고치고 다시 채점한다.
+- [ ] **Step 6: 본 말에서 `ok` 가 아닌 행을 사람 눈으로 읽는다**(설계 8절: 채점 변환을 새로 만들면 숫자를 적기 전에 읽는다). 변환이 틀렸으면 Task 1.3 으로 돌아가 고치고 다시 채점한다.
 - [ ] **Step 7:** `key_baseline.md` 에 경로별·`set` 별 숫자, `wrong` 중 `silent` 건수, p50 을 적고 사용자에게 보고한다. 옛 채점(안 본 말 `wrong` 7건)과 다른 까닭을 한 줄로 적는다.
 
 ---
 
 # 2단계 — 말을 고르는 쪽 (설계 6.1 · 6.2 · 6.3)
 
-### Task 2-1: 문장 틀과 스위치 (순수 함수)
+### Task 2.1: 문장 틀과 스위치 (순수 함수)
 
 **Files:**
 - Create: `src/intent_recut.py`
@@ -236,7 +236,7 @@ def test_heldout_rows_are_counted_but_not_listed_in_the_report():
   - `clarify_reply(kind: str, wanted: str, names: Sequence[str]) -> str`
   - `clue_line(question: Optional[OpenQuestion]) -> str` · `with_clue(block: str, question: Optional[OpenQuestion]) -> str`
   - `speaker_line(verdict: str) -> str`
-  - `PROMPT_INTENTS: str` · `PROMPT_ORDER: str`(Task 2-3 이 쓴다)
+  - `PROMPT_INTENTS: str` · `PROMPT_ORDER: str`(Task 2.3 이 쓴다)
 
 - [ ] **Step 1: 실패하는 시험 작성**
 
@@ -284,11 +284,11 @@ def test_p19_speaker_line():
   - `not_available`: `wanted` 를 앞뒤 공백을 떼고 쓴다. 비었거나, 20자를 넘거나, 줄바꿈·물음표가 있거나, `emergency_filter.detect_emergency(wanted)` 가 값을 내면 `UNNAMED_PLACE` 를 쓴다. 조사는 `mission_phrases.josa_eun_neun`.
   - `clarify_reply`: `several` 은 이름이 둘 이상일 때만 `replies.choose_between(names)`.
   - `clue_line` 의 종류 이름은 `answer_field._KIND_KO` 를 쓴다(모르는 종류는 "질문").
-  - `PROMPT_INTENTS`·`PROMPT_ORDER` 의 글은 Task 2-3 에 있다.
+  - `PROMPT_INTENTS`·`PROMPT_ORDER` 의 글은 Task 2.3 에 있다.
 - [ ] **Step 4:** 같은 명령 → PASS. `… tests/test_spoken_text.py -q -p no:cacheprovider` 도 PASS(새 고정 문구에 긴급어 없음).
 - [ ] **Step 5:** `git commit -m "feat(voice): 재단 스위치 VICA_RECUT·되묻는 문장 틀(여러 곳·없는 곳·목적지 안 말함)·[지금 상황] 단서 줄(기본 꺼짐)" -- src/intent_recut.py src/replies.py tests/conftest.py tests/test_intent_recut.py`
 
-### Task 2-2: 출력 스키마에 새 값과 새 칸
+### Task 2.2: 출력 스키마에 새 값과 새 칸
 
 **Files:**
 - Modify: `src/schema.py:54-66`, `src/langchain_intent_parser.py:80-145`(`_IntentDraft`·`_draft_cls`)·`598-614`(`_ollama_structured`), `src/realtime_intent.py:30-31`·`96-124`
@@ -334,14 +334,14 @@ def test_both_switches_give_both_sets_of_fields(monkeypatch):
 - [ ] **Step 4:** 같은 명령 → PASS. `… tests/test_parser_answer.py tests/test_parser_backend.py tests/test_help_request_voice.py -q -p no:cacheprovider` 도 PASS.
 - [ ] **Step 5:** `git commit -m "feat(voice): 출력 스키마 — not_for_robot·dismiss 값과 clarify 상황 칸(VICA_RECUT 켰을 때만)" -- src/schema.py src/langchain_intent_parser.py src/realtime_intent.py tests/test_parser_recut.py tests/test_realtime_intent.py`
 
-### Task 2-3: 지시문 두 벌을 같은 말로 고친다
+### Task 2.3: 지시문 두 벌을 같은 말로 고친다
 
 **Files:**
 - Modify: `src/intent_recut.py`(`PROMPT_INTENTS`·`PROMPT_ORDER`), `src/langchain_intent_parser.py:184-273`(`_build_system_prompt`)·`1114-1286`(`build_audio_prompt`)·`1306-1307`·`1327-1328`, `src/local_rules.py:33-40`
 - Test: `tests/test_prompt_recut.py`(새 파일)
 
 **Interfaces:**
-- Consumes: Task 2-1 의 `on`·`with_clue`, Task 2-2 의 칸 이름
+- Consumes: Task 2.1 의 `on`·`with_clue`, Task 2.2 의 칸 이름
 - Produces: 꺼졌을 때 두 지시문의 글자는 지금과 한 글자도 다르지 않다. 켜졌을 때 두 지시문이 `PROMPT_INTENTS`·`PROMPT_ORDER` 를 글자 그대로 싣는다.
 
 두 지시문이 함께 싣는 글:
@@ -423,14 +423,14 @@ def test_p7_clue_line_reaches_all_three_prompts(monkeypatch):
 - [ ] **Step 4:** 같은 명령 → PASS. 지시문 글자를 보는 기존 시험도 PASS: `… tests/test_parser_audio.py tests/test_prompt_rules_1011.py tests/test_mission_reactions_voice.py tests/test_local_rules.py tests/test_parser_answer.py tests/test_approach_question_voice.py -q -p no:cacheprovider`
 - [ ] **Step 5:** `git commit -m "feat(voice): 지시문 두 벌 — 판단 순서와 clarify·unknown·not_for_robot·dismiss 를 같은 글로(VICA_RECUT 켰을 때만)" -- src/intent_recut.py src/langchain_intent_parser.py src/local_rules.py tests/test_prompt_recut.py`
 
-### Task 2-4: 뒤처리 — 문장을 틀에서 만들고 새 값을 일찍 돌려보낸다
+### Task 2.4: 뒤처리 — 문장을 틀에서 만들고 새 값을 일찍 돌려보낸다
 
 **Files:**
 - Modify: `src/intent_recut.py`, `src/langchain_intent_parser.py:1385-1456`(`deliver_audio_draft`)·`1569-1710`(`_finalize`)
 - Test: `tests/test_parser_recut.py`
 
 **Interfaces:**
-- Consumes: Task 2-1 의 `clarify_reply`, Task 2-2 의 `_RecutDraft`, `replies.RETRY_PROMPT`·`WAKE_GREETING`, 해석기의 `_WAKE_WORDS`·`_CHOICE_TAIL`
+- Consumes: Task 2.1 의 `clarify_reply`, Task 2.2 의 `_RecutDraft`, `replies.RETRY_PROMPT`·`WAKE_GREETING`, 해석기의 `_WAKE_WORDS`·`_CHOICE_TAIL`
 - Produces:
   - `intent_recut.early(draft) -> Optional[VicaIntent]` — `not_for_robot`·`dismiss` 면 `reply=""`·`need_confirm=False` 인 의도, 아니면 None
   - `intent_recut.settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], heard: str) -> VicaIntent`
@@ -481,7 +481,7 @@ def test_off_keeps_the_models_own_clarify_sentence():
 - [ ] **Step 4:** 같은 명령 → PASS. `… tests/test_reply_fallback.py tests/test_parser_audio.py tests/test_destination_tie_1011.py tests/test_audio_shared_alias.py tests/test_text_shared_alias_1024.py tests/test_private_destinations.py -q -p no:cacheprovider` 도 PASS.
 - [ ] **Step 5:** `git commit -m "feat(voice): 뒤처리 — 되묻는 문장을 틀에서 만들고 not_for_robot·dismiss 는 맨 앞에서 돌려보낸다(VICA_RECUT)" -- src/intent_recut.py src/langchain_intent_parser.py tests/test_parser_recut.py`
 
-### Task 2-5: 음성 노드 — "나에게 한 말이 아님"은 미션으로 보내지 않는다
+### Task 2.5: 음성 노드 — "나에게 한 말이 아님"은 미션으로 보내지 않는다
 
 **Files:**
 - Modify: `src/ros_node.py:462-510`(`_publish_intent`)·`667-724`(`_on_user_audio`)
@@ -510,7 +510,7 @@ def test_p19_audio_path_passes_the_speaker_clue():
 - [ ] **Step 4:** 같은 명령 → PASS. `… tests/test_one_voice_wiring.py tests/test_answer_wiring.py tests/test_relisten_drop_1024.py -q -p no:cacheprovider` 도 PASS.
 - [ ] **Step 5:** `git commit -m "feat(voice): 의도 노드 — not_for_robot 은 로그만 남기고 미션으로 보내지 않음, 소리 경로에 화자 단서 줄" -- src/ros_node.py tests/test_recut_wiring.py`
 
-### Task 2-6: 미션 — 대화 끝내기 (설계 6.3, 원칙 14)
+### Task 2.6: 미션 — 대화 끝내기 (설계 6.3, 원칙 14)
 
 **Files:**
 - Modify: 미션 `vica_mission_manager/mission_logic.py`(`MSG_*` 694 부근 · `_react_voice_intent` 1977-2008), `test/reaction_states.py:295-306`, `test/test_reaction_table.py:54`·`56-345`
@@ -538,7 +538,7 @@ def test_p19_audio_path_passes_the_speaker_clue():
 - [ ] **Step 4:** 미션 `python3 -m pytest test/test_reaction_table.py test/test_reaction_rules.py test/test_spoken_text.py -q` → PASS. 음성 `… tests/test_mission_phrases.py tests/test_spoken_text.py -q -p no:cacheprovider` → PASS.
 - [ ] **Step 5:** 저장소마다 커밋. 미션 `feat(mission): 대화 끝내기 dismiss — 안내 중이 아니면 끝맺는 말, 질문 중이면 거절, 주행 중이면 취소 확인(원칙 14)`, 음성 `feat(voice): 미션 문장 사본에 끝맺는 말`.
 
-### Task 2-7: 2단계 측정과 닫기 (설계 7절 P3 포함)
+### Task 2.7: 2단계 측정과 닫기 (설계 7절 P3 포함)
 
 **Files:**
 - Modify: `tools/answer_replay.py`(`--recut`: `VICA_RECUT=on` 을 해석기 import 전에 넣는다 — `answer_env` 와 같은 방식), `tests/test_answer_replay.py`
@@ -546,7 +546,7 @@ def test_p19_audio_path_passes_the_speaker_clue():
 
 - [ ] **Step 1:** `--recut` 을 더하고 시험한다(`recut_env(True) == {"VICA_RECUT": "on"}`). 커밋.
 - [ ] **Step 2: "단계 닫기" 1~4번.** 재는 묶음은 208행과 사람끼리 21행이다. 사람끼리 한 말에서 `silent` 로 간 수(설계 6.1: 18행과 21건)를 따로 적는다.
-- [ ] **Step 3: 로컬(Mi:dm) 판정**(P3). `--path midm --recut --rounds 3` 을 꺼진 기준(Task 1-4)과 견준다. 안 본 말의 `wrong` 이 늘거나 `ok` 가 3 넘게 줄면 로컬 경로는 옛 지시문과 스키마로 두기로 하고, Task 4-1(로컬 대피에 따로 만든 messages)을 이 단계로 앞당겨 구현한 뒤 다시 잰다.
+- [ ] **Step 3: 로컬(Mi:dm) 판정**(P3). `--path midm --recut --rounds 3` 을 꺼진 기준(Task 1.4)과 견준다. 안 본 말의 `wrong` 이 늘거나 `ok` 가 3 넘게 줄면 로컬 경로는 옛 지시문과 스키마로 두기로 하고, Task 4.1(로컬 대피에 따로 만든 messages)을 이 단계로 앞당겨 구현한 뒤 다시 잰다.
 - [ ] **Step 4: 장면표를 쓴다.** 장면: 옆 사람과 이야기하기(확인 질문 중 / "네?" 직후 / 안내 없음) · 없는 곳 말하기 · 화장실이 둘인 지도에서 "화장실" · 목적지 없이 "안내해 줘" · 안내 없을 때 "됐어" · 주행 중 "됐어 그만" · 확인 질문에 "됐어". 장면마다 기대 문장과 깨질 수 있는 원칙 번호를 적는다.
 - [ ] **Step 5: "단계 닫기" 5~6번.** 운영 `.env` 에 `VICA_RECUT=on` 을 넣는 것과 노드 재기동은 사용자에게 요청한다. 글자 경로가 질문 뒤 창의 `unknown`·`clarify` 를 버리는 동작(`is_relisten_noise`, 설계 10절)이 실기에서 원칙 8 과 부딪히는지 본 대로 보고한다 — 고칠지는 사용자가 정한다.
 
@@ -554,7 +554,7 @@ def test_p19_audio_path_passes_the_speaker_clue():
 
 # 3단계 — 미션과 맞닿은 쪽 (설계 6.6 · 6.7 · 6.8)
 
-### Task 3-1: 고른 뒤 바로 출발 33건이 남았는지 확인 (설계 6.7, 원칙 3)
+### Task 3.1: 고른 뒤 바로 출발 33건이 남았는지 확인 (설계 6.7, 원칙 3)
 
 **Files:**
 - Create: `~/vica_data/voice_answer_audit_20261113/recut/check_choice_confirm.py`
@@ -573,7 +573,7 @@ def test_p3_pick_from_choice_is_demoted_to_a_confirm_question():
 
 - [ ] **Step 3:** Run `… tests/test_one_voice.py -q -p no:cacheprovider` → PASS(코드 변경 없음). 남는 행이 없으면 6.7 의 이 항목은 닫는다. 커밋 `test(voice): 보기에서 고른 뒤에도 확인 질문(원칙 3) 못 박음`.
 
-### Task 3-2: 대답 칸을 메시지에 싣는다 (11-18 설계 4.4)
+### Task 3.2: 대답 칸을 메시지에 싣는다 (11-18 설계 4.4)
 
 **Files:**
 - Modify: 미션 `src/vica_interfaces/msg/VicaIntent.msg`, `vica_mission_manager/question_record.py`, `vica_mission_manager/mission_logic.py:202-222`(`IntentData`), `vica_mission_manager/mission_manager_node.py:957-985`
@@ -608,14 +608,14 @@ def test_answer_fields_go_to_the_mission_when_the_message_has_them():
 - [ ] **Step 5: 메시지 빌드는 사용자와 맞춘다.** 주행 묶음이 꺼졌는지 확인한 뒤 `cd ~/VICA-smarthandle/vica_ros2_ws && colcon build --packages-select vica_interfaces`. 빌드 뒤에는 `/vica/intent` 를 쓰는 노드(음성 의도 노드와 미션)를 **함께** 재기동해야 한다 — 한쪽만 다시 뜨면 메시지 꼴이 달라 의도가 전달되지 않는다. 재기동은 사용자에게 요청한다.
 - [ ] **Step 6:** 저장소마다 커밋. 미션 `feat(interfaces): VicaIntent 에 대답 칸(question_id·answer·answer_value)`, 음성 `feat(voice): 대답 칸을 메시지에 실음(메시지에 칸이 있을 때만)`.
 
-### Task 3-3: 미션이 대답 칸으로 처리한다 (11-18 설계 4.5, 원칙 6)
+### Task 3.3: 미션이 대답 칸으로 처리한다 (11-18 설계 4.5, 원칙 6)
 
 **Files:**
 - Modify: 미션 `mission_logic.py:1528-1564`(`__init__`)·`1977-2008`(`_react_voice_intent`)·`2563-2572`(같은 곳 재제안 = 승낙), `mission_manager_node.py`(파라미터 `answer_field` 선언·전달, 341 · 439 부근), launch 파일(인자 `answer_field`, 기본 false)
 - Test: 미션 `test/test_answer_field_mission.py`(새 파일)
 
 **Interfaces:**
-- Consumes: Task 3-2 의 `IntentData.answer`·`answer_value`
+- Consumes: Task 3.2 의 `IntentData.answer`·`answer_value`
 - Produces: `MissionLogic(answer_field: bool = False)` · `MissionLogic._intent_from_answer(self, intent: IntentData) -> IntentData`
 
 `answer_field` 가 켜져 있고 `intent.answer` 가 있을 때, 반응표로 가기 전에 바꿔 읽는다:
@@ -663,7 +663,7 @@ def test_other_and_off_follow_the_intent():
 - [ ] **Step 4:** Run → PASS. `python3 -m pytest test -q` 통과 수가 기준 이상.
 - [ ] **Step 5:** `git commit -m "feat(mission): 대답 칸으로 처리 — 열린 질문의 대답이면 answer 로, 아니면 지금처럼 의도로(파라미터 answer_field, 기본 꺼짐)" -- <고친 파일>`
 
-### Task 3-4: "다시 출발할까요?"를 미션이 묻는다 (11-18 설계 4.4·4.5)
+### Task 3.4: "다시 출발할까요?"를 미션이 묻는다 (11-18 설계 4.4·4.5)
 
 **Files:**
 - Modify: 미션 `mission_logic.py`(`_react_paused` 2209-2220 · `MSG_*` 690 부근)
@@ -706,7 +706,7 @@ def test_resume_proposals_reach_the_mission_when_answers_are_on(monkeypatch):
 - [ ] **Step 4:** 미션 `python3 -m pytest test/test_answer_field_mission.py test/test_reaction_table.py -q` → PASS. 음성 `… tests/test_answer_wiring.py tests/test_one_voice.py tests/test_command_intents.py -q -p no:cacheprovider` → PASS.
 - [ ] **Step 5:** 저장소마다 커밋.
 
-### Task 3-5: 대답 칸 — 로컬과 Realtime 을 맞춘다 (11-18 설계 5.1)
+### Task 3.5: 대답 칸 — 로컬과 Realtime 을 맞춘다 (11-18 설계 5.1)
 
 **Files:**
 - Modify: 음성 `src/answer_field.py`, `src/langchain_intent_parser.py:598-614`(`_ollama_structured`), `src/realtime_intent.py:96-124`, `tests/conftest.py`
@@ -736,7 +736,7 @@ def test_realtime_must_fill_answer_when_a_question_is_open(monkeypatch):
 - [ ] **Step 3:** 구현한다.
 - [ ] **Step 4:** Run → PASS. 커밋 `feat(voice): 대답 칸 — 로컬은 규칙 대답만(VICA_ANSWER_LOCAL), Realtime 은 질문이 열렸을 때 answer 필수`.
 
-### Task 3-6: 되묻기 사다리 (순수 모듈, 설계 6.8, 원칙 8)
+### Task 3.6: 되묻기 사다리 (순수 모듈, 설계 6.8, 원칙 8)
 
 **Files:**
 - Create: 미션 `vica_mission_manager/reask_ladder.py`
@@ -778,14 +778,14 @@ def test_p8_understood_utterance_resets():
 
 - [ ] **Step 2~5:** Run `python3 -m pytest test/test_reask_ladder.py -q` → FAIL → 구현 → PASS → 커밋 `feat(mission): 되묻기 사다리 모듈(옛 방식·세 단계)`.
 
-### Task 3-7: 질문마다 따로 있는 "한 번 다시" 표시를 사다리 하나로 (동작 변화 없음)
+### Task 3.7: 질문마다 따로 있는 "한 번 다시" 표시를 사다리 하나로 (동작 변화 없음)
 
 **Files:**
 - Modify: 미션 `mission_logic.py` — 표시 일곱 개와 쓰이는 줄: `_confirm_reasked`(1837 · 2169 · 2171 · 2178 · 5381) · `_cancel_reasked`(1839 · 2083 · 2085 · 3229 · 3240) · `_help_confirm_reasked`(1765 · 3303 · 3305 · 3361 · 3400 · 3427) · `_help_cancel_reasked`(1769 · 3287 · 3289 · 3315 · 3414 · 3433) · `_wait_need_reasked`(1813 · 2304 · 2311 · 2343 · 5196) · `_wait_finish_reasked`(1812 · 2323 · 2326 · 2337 · 2354 · 2753 · 5195) · `_arrival_retried`(1780 · 2249 · 2268 · 4479 · 4608 · 5051 · 5062 · 5160 · 5178)
 - Test: 기존 미션 시험 전체
 
 **Interfaces:**
-- Consumes: Task 3-6 의 `ReaskLadder`
+- Consumes: Task 3.6 의 `ReaskLadder`
 - Produces:
   - `self._ladder = ReaskLadder(three_step=False)` 하나. 표시를 세우던 자리는 `self._ladder.next(...)` 의 결과로 가르고, 지우던 자리는 `self._ladder.reset()` 이다.
   - `MissionLogic._resay_open_question(self, now: float) -> Optional[list]` — 지금 상태에서 미션이 쥔 열린 질문을 다시 말하는 동작(없으면 None). 표시마다 흩어져 있던 "같은 질문을 다시" 코드를 이 함수가 부른다.
@@ -796,7 +796,7 @@ def test_p8_understood_utterance_resets():
 - [ ] **Step 3:** `python3 -m pytest test -q` → Step 1 과 같은 수. 시험을 고쳐야 통과한다면 동작이 바뀐 것이다 — 되돌리고 원인을 찾는다.
 - [ ] **Step 4:** `git commit -m "refactor(mission): 질문마다 따로 있던 다시 묻기 표시 일곱 개를 사다리 하나로(동작 그대로)" -- <고친 파일>`
 
-### Task 3-8: 세 단계 되묻기 (설계 6.8 · 7절 P5, 원칙 8 · 31)
+### Task 3.8: 세 단계 되묻기 (설계 6.8 · 7절 P5, 원칙 8 · 31)
 
 **Files:**
 - Modify: 미션 `mission_logic.py`(`Say` 257-272 · `__init__` · 사다리를 쓰는 자리 · `on_intent` 2524-2527 · `_say_handed_question` 1963-1975), `mission_manager_node.py`(`_open_question` 2521-2531 · 파라미터 `reask_ladder`), launch 파일
@@ -857,7 +857,7 @@ def test_off_still_reasks_the_same_question_once():
 - [ ] **Step 4:** Run → PASS. 미션 `python3 -m pytest test -q` 통과 수가 기준 이상, 음성 `… tests/test_mission_phrases.py tests/test_spoken_text.py -q -p no:cacheprovider` → PASS.
 - [ ] **Step 5:** 저장소마다 커밋. 미션 `feat(mission): 되묻기 세 단계 — 다시 말씀·더 크게 또박또박·(주행 중만)직원 도움, 질문 없는 상태도 되묻는다(파라미터 reask_ladder, 기본 꺼짐)`.
 
-### Task 3-9: "비카야" 뒤 처리 (설계 6.7 · 7절 P1, 원칙 13 · 3)
+### Task 3.9: "비카야" 뒤 처리 (설계 6.7 · 7절 P1, 원칙 13 · 3)
 
 **Files:**
 - Modify: 미션 `mission_logic.py`(`on_wake` 4552-4623 · `_react_voice_intent` 1977-2008 · `__init__`), `mission_manager_node.py`(파라미터 `wake_revive`), launch 파일
@@ -925,12 +925,12 @@ def test_off_keeps_todays_wake_behaviour():
 - [ ] **Step 4:** Run → PASS. `python3 -m pytest test -q` 통과 수가 기준 이상.
 - [ ] **Step 5:** `git commit -m "feat(mission): 비카야 뒤 처리 — 되돌리기 어려운 질문은 접었다가 승낙이 오면 다시 묻는다, 호출만 들린 것은 세지 않는다(파라미터 wake_revive, 기본 꺼짐)" -- <고친 파일>`
 
-### Task 3-10: 3단계 측정과 닫기
+### Task 3.10: 3단계 측정과 닫기
 
 **Files:**
 - Create: `~/vica_data/field_test_<날짜>_recut3/scenes.md`
 
-- [ ] **Step 1: "단계 닫기" 1~4번.** 음성은 `--recut --answer` 로 잰다. Mi:dm 은 `VICA_ANSWER_LOCAL` 을 끈 값과 켠 값을 둘 다 재고(11-20 에는 켠 쪽이 `ok` 139 → 117 로 떨어졌다) 나은 쪽을 권한다. Realtime 은 대답 칸을 비운 비율(11-19 약 절반)이 Task 3-5 뒤에 얼마가 됐는지 적는다.
+- [ ] **Step 1: "단계 닫기" 1~4번.** 음성은 `--recut --answer` 로 잰다. Mi:dm 은 `VICA_ANSWER_LOCAL` 을 끈 값과 켠 값을 둘 다 재고(11-20 에는 켠 쪽이 `ok` 139 → 117 로 떨어졌다) 나은 쪽을 권한다. Realtime 은 대답 칸을 비운 비율(11-19 약 절반)이 Task 3.5 뒤에 얼마가 됐는지 적는다.
 - [ ] **Step 2: 장면표.** 11-18 설계의 장면(온라인 확인 중 "거기 어디야" → 출발하지 않음 · "다시 가자" → 항상 묻는다 · "다시 출발할까요?"에 "아니" · 오프라인 네 장면)에 더해: 확인 질문 중 "비카야" → "네?" → "응, 가자"(다시 확인 질문) · 취소 질문 중 "비카야" → "응" · 도착 질문 중 "비카야"만 세 번 · 확인 질문에 못 알아듣는 말 세 번(주행 밖 / 주행 중) · 보기에서 고르기.
 - [ ] **Step 3: "단계 닫기" 5~6번.** 켤 것은 음성 `.env` `VICA_ANSWER=on`, 미션 launch 의 `answer_field`·`reask_ladder`·`wake_revive` 다. 셋을 한꺼번에 켜지 않고 하나씩 켜며 실기한다(대답 칸 → 사다리 → 호출).
 
@@ -938,7 +938,7 @@ def test_off_keeps_todays_wake_behaviour():
 
 # 4단계 — 새 기능 (설계 6.4 · 6.5)
 
-### Task 4-1: 로컬 대피에 따로 만든 messages 를 넘긴다 (설계 7절 P3, 원칙 16)
+### Task 4.1: 로컬 대피에 따로 만든 messages 를 넘긴다 (설계 7절 P3, 원칙 16)
 
 **Files:**
 - Modify: 음성 `src/llm_backend.py:137-154`(`invoke`), `src/langchain_intent_parser.py:1038-1050`
@@ -965,7 +965,7 @@ def test_without_it_the_same_messages_are_reused():
 
 - [ ] **Step 2~5:** Run → FAIL → 구현 → PASS → 커밋 `feat(voice): 로컬 대피에 따로 만든 지시문을 넘길 수 있게(외부 API 전용 기능을 로컬에 싣지 않으려고)`.
 
-### Task 4-2: 정해진 대답 둘 (설계 6.4 · 7절 P2·P4, 원칙 28 · 29)
+### Task 4.2: 정해진 대답 둘 (설계 6.4 · 7절 P2·P4, 원칙 28 · 29)
 
 **Files:**
 - Create: 음성 `src/fixed_answers.py`
@@ -986,7 +986,7 @@ def test_without_it_the_same_messages_are_reused():
 
 처리:
 - `places` → `VicaIntent(intent="question", reply=places_sentence(places_names(destinations)))`. 음성이 말한다(지금 `question` 의 길). 갈 수 있는 곳이 하나도 없으면 LLM 이 낸 `question` 처리로 둔다.
-- `repeat` → 열린 질문이 있고 그 글이 "네?"가 아니면 `VicaIntent(intent="repeat", reply="")` 를 미션에 보낸다(미션이 그 질문을 다시 말한다 — Task 4-3). 아니면 `VicaIntent(intent="question", reply=last_said(...))` 로 음성이 다시 말한다. 다시 할 말이 없으면 `unknown`(되묻는다).
+- `repeat` → 열린 질문이 있고 그 글이 "네?"가 아니면 `VicaIntent(intent="repeat", reply="")` 를 미션에 보낸다(미션이 그 질문을 다시 말한다 — Task 4.3). 아니면 `VicaIntent(intent="question", reply=last_said(...))` 로 음성이 다시 말한다. 다시 할 말이 없으면 `unknown`(되묻는다).
 
 - [ ] **Step 1: 실패하는 시험 작성**
 
@@ -1017,17 +1017,17 @@ def test_off_schema_and_prompts_have_no_repeat_or_places():
 
 - [ ] **Step 2:** Run `… tests/test_fixed_answers.py -q -p no:cacheprovider` → FAIL
 - [ ] **Step 3:** 구현한다. `repeat` 의 마지막 말은 의도 노드가 가진 `self._robot_recent` 에서 오므로 `settle_repeat` 는 `_publish_intent` 안(미션에 보내기 전)에서 부른다. 조사 로/으로는 `destination_loader._josa_euro` 를 쓴다.
-- [ ] **Step 4:** Run → PASS. Task 2-2 · 2-3 의 시험과 `… tests/test_spoken_text.py -q -p no:cacheprovider` 도 PASS.
+- [ ] **Step 4:** Run → PASS. Task 2.2 · 2-3 의 시험과 `… tests/test_spoken_text.py -q -p no:cacheprovider` 도 PASS.
 - [ ] **Step 5:** `git commit -m "feat(voice): 정해진 대답 — 다시 말해줘·갈 수 있는 곳(문장은 코드, VICA_TALK 켰을 때만·외부 API 경로만)" -- <고친 파일>`
 
-### Task 4-3: 미션 — "다시 말해줘"에 열린 질문을 다시 말한다 (원칙 28)
+### Task 4.3: 미션 — "다시 말해줘"에 열린 질문을 다시 말한다 (원칙 28)
 
 **Files:**
 - Modify: 미션 `mission_logic.py`(`_react_voice_intent`), `test/reaction_states.py`, `test/test_reaction_table.py`
 - Test: 미션 `test/test_reaction_table.py`, `test/test_reask_three_steps.py`
 
 **Interfaces:**
-- Consumes: Task 3-7 의 `_resay_open_question`
+- Consumes: Task 3.7 의 `_resay_open_question`
 - Produces: `repeat` 의도가 오면 `_resay_open_question(now)` 의 결과를 돌려준다(시한을 다시 잰다, 되묻기 횟수는 그대로). 미션이 쥔 질문이 없으면 `[]`.
 
 - [ ] **Step 1: 실패하는 시험 작성** — `REQUESTS["again"] = intent("repeat")`, `COLS` 끝에 `"again"`. `EXPECT` 의 `again` 칸은 미션 질문이 열린 행에서는 `((<그 질문 문장>,), <같은 상태>)`, 나머지는 `((), <같은 상태>)`.
@@ -1041,7 +1041,7 @@ def test_p28_repeat_does_not_use_up_a_reask_step():
 
 - [ ] **Step 2~5:** Run → FAIL → 구현 → PASS(`python3 -m pytest test -q` 통과 수 기준 이상) → 커밋 `feat(mission): 다시 말해줘 — 열린 질문을 한 번 더, 되묻기 횟수에 세지 않음(원칙 28)`.
 
-### Task 4-4: 잡담 길 (설계 6.5, 원칙 25 · 26)
+### Task 4.4: 잡담 길 (설계 6.5, 원칙 25 · 26)
 
 **Files:**
 - Create: 음성 `src/vica_facts.py`
@@ -1071,9 +1071,9 @@ def test_off_prompts_are_unchanged():
     assert "VISION COMPANION" not in parser._build_system_prompt(DESTS)
 ```
 
-- [ ] **Step 2~5:** Run → FAIL → 구현(`_build_system_prompt` 에 `for_local_backend: bool = False` 를 더하고 `parse_intent` 가 Task 4-1 의 `local_messages` 로 넘긴다) → PASS → 커밋 `feat(voice): 잡담 길 — 비카 자신에 대한 내용과 가벼운 말 한 문장(VICA_TALK, 외부 API 경로만)`.
+- [ ] **Step 2~5:** Run → FAIL → 구현(`_build_system_prompt` 에 `for_local_backend: bool = False` 를 더하고 `parse_intent` 가 Task 4.1 의 `local_messages` 로 넘긴다) → PASS → 커밋 `feat(voice): 잡담 길 — 비카 자신에 대한 내용과 가벼운 말 한 문장(VICA_TALK, 외부 API 경로만)`.
 
-### Task 4-5: 4단계 측정과 닫기
+### Task 4.5: 4단계 측정과 닫기
 
 **Files:**
 - Create: `~/vica_data/voice_answer_audit_20261113/recut/talk_scenes.csv`(장면 묶음), `~/vica_data/field_test_<날짜>_recut4/scenes.md`
