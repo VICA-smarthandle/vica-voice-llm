@@ -194,6 +194,25 @@ def choose_between(names) -> str:
     return f"{', '.join(names)} 중 어디로 갈까요?"
 
 
+# --- 없는 목적지 되묻기 (2026-11-20 재단, 원칙 11) ---------------------------------
+#
+# 되묻는 문장은 LLM 이 짓지 않고 이 틀에서 만든다. {what} 은 사용자가 찾는 곳, {josa} 는 '은/는'.
+NOT_AVAILABLE = "제가 아는 목적지 중에서 {what}{josa} 없는데, 어디로 안내해드릴까요?"
+UNNAMED_PLACE = "말씀하신 곳"
+_WANTED_MAX_CHARS = 20
+
+
+def not_available(wanted: str) -> str:
+    """없는 곳을 찾을 때 되묻는 말. 찾는 곳 이름이 비었거나 길거나 줄바꿈·물음표·긴급어가 있으면 '말씀하신 곳'으로 말한다."""
+    from .emergency_filter import detect_emergency   # 지연 import — emergency_filter 가 이 모듈을 import 한다
+
+    what = (wanted or "").strip()
+    if (not what or len(what) > _WANTED_MAX_CHARS or "\n" in what or "?" in what or "？" in what
+            or detect_emergency(what)):
+        what = UNNAMED_PLACE
+    return NOT_AVAILABLE.format(what=what, josa=josa_eun_neun(what))
+
+
 def all_phrases() -> dict[str, str]:
     """이 모듈이 가진 고정 문구 전체 (검사·감수용). 문구 묶음(tuple)도 편다."""
     phrases: dict[str, str] = {}
