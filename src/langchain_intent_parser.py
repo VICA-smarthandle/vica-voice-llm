@@ -866,9 +866,11 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
                 need_confirm=False,
             )
         if word in _NEGATIVES:
-            if pending_command == "cancel":
+            if pending_command == "cancel" or (pending_command == "resume" and answer_field.on()):
                 # "안내를 취소할까요?"에 아니요 — 미션이 받고 "안내를 계속하겠습니다."라고
                 # 답한다(2026-10-08 반응표). 여기서 따로 말하면 두 목소리다.
+                # 대답 칸이 켜졌으면 "다시 출발할까요?"도 미션이 물은 질문이다(Task 3.4) — 미션이 받고
+                # "알겠습니다. 다시 출발하려면 말씀해 주세요."라고 답한다(원칙 9).
                 return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
             return VicaIntent(
                 intent="unknown",

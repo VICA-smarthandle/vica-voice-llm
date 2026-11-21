@@ -157,7 +157,14 @@ def should_forward_intent(intent) -> bool:
     이미 굴러가는 결함이 됐다(2026-08-26 실기). 질문의 답("네")은 파서의
     확인 단축이 확정 resume(need_confirm=False)으로 만들어 그때 보낸다.
     취소는 미션 안에 확인 게이트가 있으므로(실주행 검증 경로) 그대로 보낸다.
+
+    대답 칸이 켜졌으면(.env VICA_ANSWER=on, Task 3.4) resume 제안도 보낸다 — 미션(파라미터 answer_field)이
+    "다시 출발할까요?"를 묻고 대답을 받는다(원칙 3 · 9, 11-18 설계 4.4·4.5).
     """
+    from .answer_field import on as answers_on   # 늦은 import — answer_field 가 이 모듈을 import 한다
+
+    if answers_on():
+        return True
     return not (
         getattr(intent, "intent", "") == "resume"
         and bool(getattr(intent, "need_confirm", False))

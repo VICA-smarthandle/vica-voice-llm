@@ -10,12 +10,22 @@ from __future__ import annotations
 import re
 from typing import Optional, Sequence
 
+from . import answer_field
 from .question_record import OpenQuestion
 from .replies import RESUME_CONFIRM, expects_answer
 from .schema import DestinationData, VicaIntent
 
 # 고르기 질문 끝 — replies.choose_between 의 "… 중 어디로 갈까요?"와 LLM 이 지은 "… 중에 어디로 갈까요?".
 _CHOICE_TAIL = re.compile(r"\s*중에?\s*어디로 갈까요\?$")
+
+
+def mission_asks_resume(intent: VicaIntent) -> bool:
+    """재개 제안을 미션이 묻는가(원칙 3 · 9, 11-18 설계 4.4·4.5, Task 3.4) — 대답 칸이 켜졌을 때(.env VICA_ANSWER=on)만 참.
+
+    켜지면 음성은 "다시 출발할까요?"를 쥐지 않는다: 재개 제안을 그대로 미션에 보내고(schema.should_forward_intent), 문장은 넘기지도
+    말하지도 않으며(hand_over_question), 대화 기록에도 적지 않는다 — 미션이 실제로 물었는지 이 노드는 모른다(미션 answer_field 가
+    꺼져 있으면 묻지 않는다). 꺼지면 늘 거짓 — 지금 그대로(음성이 쥔 질문, 2026-08-26)."""
+    return answer_field.on() and intent.intent == "resume" and bool(intent.need_confirm)
 
 
 def _choice_option_ids(head: str, destinations: Sequence[DestinationData]) -> list[str]:
@@ -40,6 +50,9 @@ def hand_over_question(intent: VicaIntent, destinations: Sequence[DestinationDat
             "reply": "", "ask_text": reply, "ask_kind": "choice",
             "ask_option_ids": _choice_option_ids(reply[:tail.start()], destinations)})
     if intent.intent == "navigate" and intent.need_confirm and intent.matched_destination_id:
+        return intent.model_copy(update={"reply": ""})
+    if mission_asks_resume(intent):
+        # 원칙 3 · 9 — 켜지면 미션이 재개 제안을 받고 스스로 "다시 출발할까요?"를 묻는다. 문장은 넘기지 않는다(Task 3.4).
         return intent.model_copy(update={"reply": ""})
     if intent.intent == "resume" and intent.need_confirm:
         # 정해진 문장만 넘긴다 — LLM 이 덧붙인 말("…로봇은 그대로 서 있어요.")은 버린다(11-18 사용자). 해석기의
@@ -70,13 +83,17 @@ def demote_unasked_confirm(intent: VicaIntent, question: Optional[OpenQuestion],
 
 def voice_may_speak(intent: VicaIntent, question: Optional[OpenQuestion]) -> bool:
     """음성 노드가 이 의도의 reply 를 말해도 되나. 미션 질문이 열려 있으면 사용자 질문의 답만(설계 4.4).
-    "다시 출발할까요?"는 판단을 음성이 쥔 질문이라(결정 B) 그 대답("알겠습니다. 계속 진행할게요.")도 음성이 말한다."""
-    if intent.safety_flag == "emergency" or question is None or question.text == RESUME_CONFIRM:
+    "다시 출발할까요?"는 판단을 음성이 쥔 질문이라(결정 B) 그 대답("알겠습니다. 계속 진행할게요.")도 음성이 말한다.
+    대답 칸이 켜졌으면(Task 3.4) 그 질문도 미션이 묻고 대답도 미션이 한다(MSG_PAUSE_KEPT) — 다른 미션 질문과 같다(원칙 9)."""
+    if intent.safety_flag == "emergency" or question is None:
+        return True
+    if question.text == RESUME_CONFIRM and not answer_field.on():
         return True
     return intent.intent == "question"
 
 
 def held_resume_carrier(intent: VicaIntent) -> VicaIntent:
-    """확인 전 resume 은 미션에 보내지 않는다(schema.should_forward_intent) — 그 질문 문장만 실어 보낼 의도."""
+    """확인 전 resume 은 미션에 보내지 않는다(schema.should_forward_intent) — 그 질문 문장만 실어 보낼 의도.
+    대답 칸이 켜졌으면 쓰이지 않는다 — resume 제안을 그대로 보낸다(Task 3.4)."""
     return VicaIntent(intent="clarify", need_confirm=False, confidence=1.0, reply="",
                       ask_text=intent.ask_text, ask_kind=intent.ask_kind)

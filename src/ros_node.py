@@ -57,7 +57,8 @@ from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
-from .one_voice import demote_unasked_confirm, hand_over_question, held_resume_carrier, voice_may_speak
+from .one_voice import (demote_unasked_confirm, hand_over_question, held_resume_carrier, mission_asks_resume,
+                        voice_may_speak)
 from .wake_echo import strip_wake_echo
 from .ros_convert import intent_to_msg, msg_to_robot_state, supports_ask_fields
 from .schema import should_forward_intent, RobotState, VicaIntent
@@ -471,7 +472,9 @@ class LlmIntentNode(Node):
         """
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
-        intent = reask_held_resume(intent, self._history.messages)
+        #      대답 칸이 켜졌으면(Task 3.4) 그 질문은 미션이 쥔다 — 다시 묻기도 미션이 한다.
+        if not answer_field.on():
+            intent = reask_held_resume(intent, self._history.messages)
         question = self._question          # 미션은 의도를 받자마자 질문을 닫는다 — 내보내기 전에 잡아 둔다
         spk = self._spk_link.take(link_text or text, time.time())
         if spk is None and self._audio_spk is not None:
@@ -544,6 +547,11 @@ class LlmIntentNode(Node):
                     f"[확정 막음] 열린 확인 질문이 없어 제안으로 낮춤: dest={intent.matched_destination_id}")
             intent = asked
         history_line = (intent.ask_text or intent.reply) if scripted else intent.reply
+        if mission_asks_resume(intent):
+            # Task 3.4 — "다시 출발할까요?"는 미션이 묻는다. 미션이 실제로 물었는지 이 노드는 모른다(미션 answer_field 가
+            # 꺼져 있으면 묻지 않는다) — 기록에 그 질문을 적으면 다음 "다시 가자"가 확정 재개가 된다(_finalize 의
+            # pending_command). 소리 모드는 미션이 실제로 말한 줄이 /vica/tts_done 으로 들어온다.
+            history_line = ""
         if self._hand_over:
             handed = hand_over_question(intent, self._destinations)
             if handed is not intent:
@@ -552,7 +560,8 @@ class LlmIntentNode(Node):
             intent = handed
 
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
-        #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
+        #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent. 대답 칸이 켜졌으면
+        #    보류하지 않는다 — 미션이 "다시 출발할까요?"를 묻는다(Task 3.4).
         if should_forward_intent(intent):
             self._intent_pub.publish(intent_to_msg(intent))
             self._board.on_intent(intent)
@@ -604,7 +613,8 @@ class LlmIntentNode(Node):
 
     def _on_listen_state_for_resume(self, msg: String) -> None:
         """듣기 창이 빈손으로 닫혔다. 마지막 로봇 말이 음성이 쥔 "다시 출발할까요?"이고 아직
-        다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다."""
+        다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다.
+        대답 칸이 켜졌으면(Task 3.4) 이 질문은 미션이 쥐므로 다시 묻지 않는다(예약 질문의 대답 없음은 그대로)."""
         state = msg.data or ""
         if not state.startswith("empty"):
             return
@@ -618,6 +628,8 @@ class LlmIntentNode(Node):
                 self.get_logger().info(f"[예약] 대답 없음({state[:24]}) — {'다시 묻는다' if out.kind else '취소'}")
                 self._reservation_say(out, "")
                 return
+        if answer_field.on():
+            return   # Task 3.4 — "다시 출발할까요?"는 미션이 쥔다. 대답 없음의 다시 묻기도 미션 시계가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         if not should_reask_resume_on_silence(self._history.messages, last_text,
                                               time.time() - last_t):

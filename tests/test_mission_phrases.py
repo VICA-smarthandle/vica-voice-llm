@@ -115,6 +115,10 @@ class TestSentences:
         assert replies.RETRY_PROMPT == ml.MSG_REASK_RETRY
         assert mp.REASK_LOUDER == ml.MSG_REASK_LOUDER
 
+    def test_p3_resume_confirm_matches_mission(self, ml):
+        """Task 3.4 — 미션이 묻는 "다시 출발할까요?"는 음성 RESUME_CONFIRM 과 같은 글자(사본을 따로 두지 않는다)."""
+        assert replies.RESUME_CONFIRM == ml.MSG_RESUME_CONFIRM
+
     def test_p8_reask_louder_is_prewarmed(self):
         """② "더 크게, 또박또박"은 녹음이 없어 미리 합성한다(DISMISS_ACK 와 같은 목록)."""
         assert mp.REASK_LOUDER in mp.standalone_prewarm([])
@@ -214,3 +218,9 @@ class TestBaked:
     def test_wake_greeting_is_baked(self):
         manifest = json.loads((ASSETS_DIR / "baked" / "manifest.json").read_text(encoding="utf-8"))
         assert replies.WAKE_GREETING in manifest.values()
+
+    def test_p3_resume_confirm_is_baked(self):
+        """미션이 묻는 "다시 출발할까요?"(Task 3.4)도 구운 녹음을 쓴다 — 그때 합성으로 늦어지지 않는다."""
+        manifest = json.loads((ASSETS_DIR / "baked" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest.get("reply_resume_confirm.wav") == replies.RESUME_CONFIRM
+        assert (ASSETS_DIR / "baked" / "reply_resume_confirm.wav").exists()
