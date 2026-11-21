@@ -65,23 +65,22 @@ def _voice_says(text: str) -> VicaIntent:
 
 
 def settle_repeat(question: Optional[OpenQuestion], robot_recent: Sequence[tuple[float, str]]) -> VicaIntent:
-    """repeat 를 정한다(원칙 28 · 9, 수정 1차). 누가 쥔 질문인지는 미션이 가른다 — 음성은 종류로 짐작하지 않는다.
+    """repeat 를 정한다(원칙 28 · 9, 수정 1·2차). 누가 쥔 질문인지는 미션이 가른다 — 음성은 종류로 짐작하지 않는다.
 
-    1. 열린 질문이 없다: 음성이 마지막 말을 다시 한다. 없으면 unknown(되묻는 말).
-    2. 열린 질문이 "네?"다: 최근 로봇 말 중 질문 꼴의 가장 마지막 말을 실어 repeat 를 미션에 보낸다(미션이 쥐거나 접어 둔 질문이
-       있으면 그것을, 없으면 그 글을 말한다). 질문 꼴이 없으면 음성이 마지막 평서문을 다시 말하고, 그것도 없으면 글 없이 미션에.
+    1·2. 열린 질문이 없거나 "네?"다: "네?"·대기 알림을 건너뛴 마지막 말(last_said) 하나만 본다 — 더 앞의 질문을 찾아 올라가지
+         않는다(이미 끝난 질문을 다시 묻게 된다, 재검토 N2). 질문 꼴이면 그 글을 실어 repeat 를 미션에 보낸다(미션이 쥐거나 접어 둔
+         질문이 있으면 그것을, 없으면 그 글을 말한다 — 음성이 넘긴 말이 재개 질문을 닫지 않게, M1). 평서문이면 음성이 다시 말한다.
+         말이 없으면: 기록 없음은 unknown(되묻는 말), "네?"는 글 없이 미션에(쥐거나 접어 둔 오래된 질문이 있으면 미션이 말한다).
     3. 그 밖의 열린 질문: 그 질문의 글·종류·보기를 실어 repeat 를 미션에 보낸다. 고르기 질문(choice)만 음성이 그 글을 다시 넘긴다.
     대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게.
     """
-    if question is None:
+    if question is None or (question.text or "").strip() == WAKE_GREETING:
         said = last_said(robot_recent)
-        return _voice_says(said) if said else VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False)
-    if (question.text or "").strip() == WAKE_GREETING:
-        asked = next((line for line in _said_lines(robot_recent) if expects_answer(line)), "")
-        if asked:
-            return _to_mission(asked, "open")
-        said = last_said(robot_recent)
-        return _voice_says(said) if said else _to_mission()
+        if said:
+            return _to_mission(said, "open") if expects_answer(said) else _voice_says(said)
+        if question is None:
+            return VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False)
+        return _to_mission()
     if question.kind in _VOICE_HANDED_KINDS:
         return _voice_says(question.text)
     return _to_mission(question.text, question.kind, question.option_ids)

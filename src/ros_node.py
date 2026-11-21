@@ -490,11 +490,11 @@ class LlmIntentNode(Node):
             self.get_logger().info(
                 f"[끼어들지 않음] 나에게 한 말이 아님: '{text}' 화자={intent.speaker_verdict or '-'}")
             return
-        # 2-0a') 다시 말해줘(원칙 28 · 9) — 열린 질문이 있으면 그 글을 실어 repeat 를 미션에 보낸다: 미션이 쥐거나 접어 둔 질문이
-        #        있으면 그것을, 없으면 실려 간 글을 말한다(누가 쥐었는지는 미션이 가른다, 음성은 말하지 않는다). 열린 질문이 없으면
-        #        음성이 마지막 말(_robot_recent — /vica/tts_done 으로 들어온 미션·음성 말, "네?"·대기 알림 빼고)을 다시 한다. 갈래는
-        #        fixed_answers.settle_repeat. 대답 칸은 싣지 않는다 — 미션이 repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은
-        #        그대로 싣는다. 꺼져 있으면 이 값이 만들어지지 않는다.
+        # 2-0a') 다시 말해줘(원칙 28 · 9) — 질문이면(열린 질문 기록, 또는 기록이 없거나 "네?"일 때 마지막 말이 질문 꼴) 그 글을 실어
+        #        repeat 를 미션에 보낸다: 미션이 쥐거나 접어 둔 질문이 있으면 그것을, 없으면 실려 간 글을 말한다(누가 쥐었는지는
+        #        미션이 가른다, 음성은 말하지 않는다). 마지막 말이 평서문이면 음성이 다시 한다(_robot_recent — /vica/tts_done 으로
+        #        들어온 미션·음성 말, "네?"·대기 알림 빼고). 갈래는 fixed_answers.settle_repeat. 대답 칸은 싣지 않는다 — 미션이
+        #        repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은 그대로 싣는다. 꺼져 있으면 이 값이 만들어지지 않는다.
         if intent.intent == fixed_answers.REPEAT:
             settled = fixed_answers.settle_repeat(question, self._robot_recent)
             self.get_logger().info(

@@ -84,28 +84,39 @@ def _bare(out):
     return (out.intent, out.reply, out.ask_text, out.ask_kind, tuple(out.ask_option_ids), out.answer, out.question_id)
 
 
-def test_p28_rule1_no_open_question_voice_says_its_last_sentence_again():
+def test_p28_rule1_no_open_question_last_sentence_decides():
+    # 수정 2차 M1 — 질문 꼴이면 음성이 말해 넘기지 않고 repeat 에 실어 미션에 보낸다(미션이 그 질문을 아직 쥐고 있으면 자기 질문으로
+    # 다시 말한다 — 음성이 넘긴 말이 재개 질문을 닫는 길이 없다). 평서문이면 음성이 다시 말하고, 없으면 되묻는다.
     settle_repeat = fa().settle_repeat
     out = settle_repeat(None, [(1.0, "화장실 안내를 시작합니다.")])
     assert (out.intent, out.reply, out.ask_text) == ("question", "화장실 안내를 시작합니다.", "")
-    assert settle_repeat(None, [(1.0, NOT_AVAILABLE_ASK)]).reply == NOT_AVAILABLE_ASK   # 질문 꼴이면 노드가 지금 길로 넘긴다
+    assert _bare(settle_repeat(None, [(1.0, "다시 출발할까요?")])) == ("repeat", "", "다시 출발할까요?", "open", (), "", "")
+    assert _bare(settle_repeat(None, [(1.0, NOT_AVAILABLE_ASK)])) == ("repeat", "", NOT_AVAILABLE_ASK, "open", (), "", "")
     out = settle_repeat(None, [(1.0, "네?"), (2.0, " 네? ")])
     assert (out.intent, out.reply) == ("unknown", RETRY_PROMPT)
 
 
-def test_p28_rule2_after_wake_greeting_the_latest_question_goes_to_the_mission():
+def test_p28_rule2_after_wake_greeting_only_the_last_sentence_counts():
+    # 수정 2차 N2 — "네?"·대기 알림을 건너뛴 마지막 말 하나만 본다(더 앞의 질문 꼴을 찾아 올라가지 않는다).
     settle_repeat, wake = fa().settle_repeat, OpenQuestion("q0", "open", "네?", (), 0.0)
-    # "네?" 아래의 질문 — 미션이 쥐거나 접어 두었으면 그것을, 아니면 실려 간 글을 미션이 말한다(음성은 말하지 않는다)
+    # 마지막 말이 질문 꼴 — 미션이 쥐거나 접어 두었으면 그것을, 아니면 실려 간 글을 미션이 말한다(음성은 말하지 않는다)
     recent = [(1.0, "화장실로 안내해드릴까요?"), (2.0, "네?")]
     assert _bare(settle_repeat(wake, recent)) == ("repeat", "", "화장실로 안내해드릴까요?", "open", (), "", "")
-    # 질문 뒤에 평서문이 있어도 가장 마지막 질문 꼴의 말
+    # 마지막 말이 평서문 — 앞에 질문이 있어도 음성이 그 평서문을 다시 말한다
     recent = [(1.0, "다시 출발할까요?"), (2.0, "화장실 안내를 시작합니다."), (3.0, "네?")]
-    assert settle_repeat(wake, recent).ask_text == "다시 출발할까요?"
-    # 질문 꼴이 없고 평서문만 — 음성이 다시 말한다
-    out = settle_repeat(wake, [(1.0, "화장실에 도착했습니다."), (2.0, "네?")])
-    assert (out.intent, out.reply, out.ask_text) == ("question", "화장실에 도착했습니다.", "")
+    out = settle_repeat(wake, recent)
+    assert (out.intent, out.reply, out.ask_text) == ("question", "화장실 안내를 시작합니다.", "")
     # 아무 말도 없다 — 글 없이 미션에(쥐거나 접어 둔 오래된 질문이 있으면 미션이 다시 말한다)
     assert _bare(settle_repeat(wake, [(2.0, "네?")])) == ("repeat", "", "", "", (), "", "")
+
+
+def test_p28_n2_a_refused_question_is_not_asked_again():
+    # 재검토 N2(review42/f1_voice2.py) — 확인 질문 → "아니" → 미션 "안내 요청이 취소되었습니다." → "비카야" → "네?" → "뭐라고?".
+    # 거절한 질문을 다시 묻지 않고(그 뒤 "네"가 말없이 버려졌다) 마지막 말을 다시 한다.
+    wake = OpenQuestion("q0", "open", "네?", (), 0.0)
+    recent = [(1.0, "화장실로 안내해드릴까요?"), (4.0, "안내 요청이 취소되었습니다."), (8.0, "네?")]
+    out = fa().settle_repeat(wake, recent)
+    assert (out.intent, out.reply, out.ask_text) == ("question", "안내 요청이 취소되었습니다.", "")
 
 
 @pytest.mark.parametrize("kind,text,ids", [
@@ -496,6 +507,23 @@ def test_p28_rule3_node_handed_choice_question_is_handed_again_as_a_choice(node_
     assert [(m["intent"], m["ask_text"], m["ask_kind"], tuple(m["ask_option_ids"])) for m in sent] == [
         ("question", choose, "choice", ("wc", "social"))]
     assert said == []
+
+
+def test_p28_m1_node_no_open_question_last_question_goes_to_the_mission(node_mod, monkeypatch):
+    # 수정 2차 M1 — 질문 기록은 닫혔는데 마지막 말이 질문 꼴: 미션에 실어 보낸다(음성이 말하지도 넘기지도 않는다).
+    talk_on(monkeypatch)
+    me = _node(None, [(1.0, "다시 출발할까요?")], history=(HumanMessage("다시 가자"), AIMessage("다시 출발할까요?")))
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [_row(m) for m in sent] == [("repeat", "", "다시 출발할까요?", "open", (), "", "")]
+    assert said == [] and isinstance(me._history.messages[-1], HumanMessage)
+
+
+def test_p28_n2_node_refused_question_is_not_asked_again(node_mod, monkeypatch):
+    talk_on(monkeypatch)
+    me = _node(WAKE, [(1.0, ASKED.text), (4.0, "안내 요청이 취소되었습니다."), (8.0, "네?")])
+    sent, said = _publish(node_mod, me, REPEAT)
+    assert [(m["intent"], m["reply"], m["ask_text"]) for m in sent] == [("question", "안내 요청이 취소되었습니다.", "")]
+    assert len(said) == 1 and said[0].endswith(":안내 요청이 취소되었습니다.")
 
 
 def test_p28_p8_node_nothing_to_repeat_asks_again(node_mod, monkeypatch):
