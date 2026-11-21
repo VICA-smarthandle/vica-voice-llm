@@ -344,7 +344,7 @@ def _build_system_prompt(
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
 - 부정만 하고 목적지를 안 말하면 clarify{no_dest}.""" + (local_rules.prompt_rules(recut) if local else "") + (
         answer_field.with_question(intent_recut.with_clue(ledger, question) if recut else ledger,
-                                   question if ask_question else None))
+                                   question if ask_question else None, recut=recut))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지

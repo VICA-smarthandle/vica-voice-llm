@@ -47,6 +47,10 @@ _NOT_FOR_ROBOT = "not_for_robot"
 # 네/아니요 규칙 대답이 서는 의도(LLM 대답이 비었을 때, 수정 2차) — 같은 읽기일 때만 대답 칸을 채운다.
 _YES_NO_INTENT = {"yes": "affirm", "no": "deny"}
 _INVERTED_NOTE = ". 필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no"   # 지금 지시문의 affirm·deny 기준과 같은 방향
+# 재단이 켜졌을 때 질문 줄 끝에 붙는 말(원칙 7). 질문 줄은 answer 값을 하나 고르라고만 해서, 사람끼리 한 말에도 값을 고르려다
+# unknown·unclear 가 됐다(2026-11-21 3단계 측정: 사람끼리 21행에서 대꾸 안 함 16 → 12). [판단 순서] 1번이 먼저임을 이 줄에도 적는다.
+_NOT_FOR_ROBOT_NOTE = (" 이 줄이 [판단 순서]의 '로봇이 방금 한 말'이다. 판단 순서 1번이 먼저다 — 로봇에게 한 말이 아니면 "
+                       "intent 는 not_for_robot, answer 는 빈 문자열이다.")
 _HEADER = "\n[지금 상황]\n"
 
 _narrowed_cache: dict = {}
@@ -66,28 +70,39 @@ def local_on() -> bool:
     return on() and os.environ.get("VICA_ANSWER_LOCAL", "").strip().lower() == "on"
 
 
+def _recut_on() -> bool:
+    """재단 스위치(VICA_RECUT). intent_recut.on() 과 같은 판정 — 그 모듈이 이 모듈을 import 해서 여기서 직접 읽는다(순환 import)."""
+    return os.environ.get("VICA_RECUT", "").strip().lower() == "on"
+
+
 def allowed(kind: str) -> tuple[str, ...]:
     """이 종류의 질문이 받는 answer 값. 모르는 종류(옛 미션·빈 값)는 전부."""
     own = _OWN.get(kind)
     return (own, *_COMMON) if own else ANSWERS
 
 
-def question_line(question: Optional[OpenQuestion]) -> str:
-    """[지금 상황]에 넣을 한 줄 — 로봇이 물은 질문과 그 종류가 받는 값. 열린 질문이 없으면 빈 글자."""
+def question_line(question: Optional[OpenQuestion], recut: Optional[bool] = None) -> str:
+    """[지금 상황]에 넣을 한 줄 — 로봇이 물은 질문과 그 종류가 받는 값. 열린 질문이 없으면 빈 글자.
+
+    recut = 이 지시문이 재단(새 값 not_for_robot · [판단 순서])을 싣는가. None 이면 스위치(VICA_RECUT)대로다. 재단이 켜져도
+    Ollama 가 답하는 호출의 지시문은 재단을 싣지 않으므로(원칙 16) 해석기가 그 호출에는 False 를 넘긴다.
+    """
     if question is None:
         return ""
+    recut = _recut_on() if recut is None else recut
     note = _INVERTED_NOTE if question.kind == "yesno_inverted" else ""
     values = allowed(question.kind)
     meanings = " · ".join(f"{v} {_MEANING[v]}" for v in values)
     return (f'- 로봇이 물은 질문: "{question.text}" '
-            f"({_KIND_KO.get(question.kind, '질문')} — answer 는 {'·'.join(values)} 중 하나: {meanings}{note})")
+            f"({_KIND_KO.get(question.kind, '질문')} — answer 는 {'·'.join(values)} 중 하나: {meanings}{note})"
+            f"{_NOT_FOR_ROBOT_NOTE if recut else ''}")
 
 
-def with_question(block: str, question: Optional[OpenQuestion]) -> str:
-    """[지금 상황] 글 끝에 질문 줄을 붙인다. 꺼졌거나 열린 질문이 없으면 그대로, 글이 비면 머리글을 단다."""
+def with_question(block: str, question: Optional[OpenQuestion], recut: Optional[bool] = None) -> str:
+    """[지금 상황] 글 끝에 질문 줄을 붙인다. 꺼졌거나 열린 질문이 없으면 그대로, 글이 비면 머리글을 단다. recut 은 question_line 과 같다."""
     if not on() or question is None:
         return block
-    line = question_line(question)
+    line = question_line(question, recut)
     if not block:
         return _HEADER + line + "\n"
     return block.rstrip("\n") + "\n" + line + "\n"

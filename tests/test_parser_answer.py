@@ -394,3 +394,17 @@ def test_local_off_cloud_answer_unchanged(monkeypatch, backends):
     monkeypatch.setattr(parser, "PROVIDER", "openai")
     parser.parse_intent("그냥", DESTS, question=q("confirm"))
     assert [c[0] for c in calls] == ["cloud"] and af.question_line(q("confirm")) in _sys(calls[0][2])
+
+
+def test_p16_question_line_for_a_local_call_never_mentions_not_for_robot(monkeypatch):
+    """재단·대답 칸·로컬 대답 칸이 모두 켜져도 Ollama 가 답하는 호출의 지시문은 재단을 싣지 않는다(원칙 16) — 질문 줄의
+    not_for_robot 덧붙임도 빠진다. 외부 API 가 답하는 호출의 질문 줄에는 붙는다."""
+    from src import langchain_intent_parser as lip
+    from src.question_record import OpenQuestion
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_RECUT", "on")
+    asked = OpenQuestion("q", "confirm", "화장실로 안내해드릴까요?", (), 0.0)
+    cloud = lip._build_system_prompt([], None, question=asked)
+    local = lip._build_system_prompt([], None, question=asked, recut=False)
+    assert "로봇이 물은 질문" in cloud and "not_for_robot, answer 는 빈 문자열" in cloud
+    assert "로봇이 물은 질문" in local and "not_for_robot" not in local
