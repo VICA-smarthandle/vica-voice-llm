@@ -234,3 +234,11 @@ def test_off_audio_choice_naming_a_private_place_is_as_before(monkeypatch):
     monkeypatch.delenv("VICA_RECUT", raising=False)
     out = audio(parser._IntentDraft(intent="clarify", reply="407호나 비공개 408호 중에 어디로 갈까요?"))
     assert out.reply == "407호와 비공개 408호 중 어디로 갈까요?"
+
+
+# ---- Task 2.4 수정 3차: 모델이 options 를 못 채워도 문장에 이름을 제대로 적었으면 고르기 틀로 -----------------------------
+def test_p4_choice_sentence_without_options_is_rebuilt_from_listed_names(monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    for reply in ("남자 화장실과 여자 화장실 중 어디로 갈까요?", "남자 화장실이나 여자 화장실 중에 어디로 갈까요?"):
+        out = finalize(draft(intent="clarify", clarify_kind="", clarify_options=[], reply=reply))
+        assert out.reply == CHOOSE_TOILETS

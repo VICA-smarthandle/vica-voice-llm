@@ -107,13 +107,6 @@ def _is_wake(heard: str) -> bool:
     return parser._normalize_short_reply(heard) in parser._WAKE_WORDS
 
 
-def _all_approachable(head: str, destinations: Sequence[DestinationData]) -> bool:
-    """고르기 문장 앞부분에 이름이 든 목적지가 둘 이상이고 전부 갈 수 있는 곳이다(원칙 18)."""
-    ids = _choice_option_ids(head, destinations)
-    by_id = {d.id: d for d in destinations}
-    return len(ids) >= 2 and all(by_id[i].is_approachable for i in ids)
-
-
 def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], heard: str) -> VicaIntent:
     """뒤처리 끝(원칙 4·8·11·18): clarify 의 문장을 코드 틀에서 만들고 unknown 의 문장을 정해진 되묻는 말로 둔다.
 
@@ -123,19 +116,24 @@ def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], h
         return result
     if result.intent == "clarify":
         reply = (result.reply or "").strip()
-        tail = _CHOICE_TAIL.search(reply)
-        if tail and reply != (getattr(draft, "reply", "") or "").strip() and _all_approachable(reply[:tail.start()], destinations):
-            return result                      # 코드가 이미 만든 고르기 문장(_ask_which 등) — 모델이 지은 문장과 다를 때만
         ok = {d.name: d for d in destinations if d.name and d.is_approachable}
         options = list(dict.fromkeys(n for n in (getattr(draft, "clarify_options", None) or []) if n in ok))
         wanted = getattr(draft, "clarify_wanted", "") or ""
         if len(options) >= 2:
             kind = "several"
-        elif getattr(draft, "clarify_kind", "") == "not_available" or draft.intent == "navigate":
-            kind = "not_available"             # 목록에 없는 곳(navigate 가 코드에서 clarify 로 낮춰진 경우 포함)
-            wanted = wanted or (draft.destination_candidate or "")
         else:
-            kind = "no_destination"
+            tail = _CHOICE_TAIL.search(reply)
+            named = _choice_option_ids(reply[:tail.start()], destinations) if tail else []
+            by_id = {d.id: d for d in destinations}
+            if len(named) >= 2 and all(by_id[i].is_approachable for i in named):
+                if reply != (getattr(draft, "reply", "") or "").strip():
+                    return result              # 코드가 만든 고르기 문장(_ask_which 등)
+                options, kind = [by_id[i].name for i in named], "several"   # 모델 문장 — 이름은 목록에서 확인한 것, 문장은 틀
+            elif getattr(draft, "clarify_kind", "") == "not_available" or draft.intent == "navigate":
+                kind = "not_available"         # 목록에 없는 곳(navigate 가 코드에서 clarify 로 낮춰진 경우 포함)
+                wanted = wanted or (draft.destination_candidate or "")
+            else:
+                kind = "no_destination"
         return result.model_copy(update={"reply": clarify_reply(kind, wanted, options)})
     if result.intent == "unknown":
         if result.reply == LLM_UNAVAILABLE:
