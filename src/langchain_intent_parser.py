@@ -1412,7 +1412,8 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
     dialog_state = robot_state.dialog_state if robot_state else ""
     shared = _audio_shared_guess(draft, heard, destinations, dialog_state)
     intent = deliver_audio_draft(draft, destinations, dialog_state,
-                                 robot_state.active_destination if robot_state else "", shared=shared)
+                                 robot_state.active_destination if robot_state else "", shared=shared,
+                                 heard=heard)
     # 규칙이 모델 결정을 바꿨으면 [RT] 로그 줄의 src 로 보이게 한다.
     src = "llm+고르기규칙" if shared else "llm"
     if _audio_short_answer(intent, heard, dialog_state):
@@ -1447,7 +1448,18 @@ def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bo
 
 def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
                         dialog_state: str = "", active: str = "",
-                        shared: Sequence[DestinationData] = ()) -> VicaIntent:
+                        shared: Sequence[DestinationData] = (), heard: str = "") -> VicaIntent:
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11)."""
+    early = intent_recut.early(draft)
+    if early is not None:
+        return early
+    return intent_recut.settle(_deliver_audio_draft(draft, destinations, dialog_state, active, shared),
+                               draft, destinations, heard)
+
+
+def _deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
+                         dialog_state: str = "", active: str = "",
+                         shared: Sequence[DestinationData] = ()) -> VicaIntent:
     """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만.
 
     shared 는 _audio_shared_guess 가 찾은 '여러 곳에 걸린 말에 모델이 한쪽을 짐작한' 후보들이다 — 둘 이상이면
@@ -1630,6 +1642,24 @@ def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state
 
 
 def _finalize(
+    draft: _IntentDraft,
+    destinations: Sequence[DestinationData],
+    pending: Optional[DestinationData] = None,
+    pending_command: Optional[str] = None,
+    user_text: str = "",
+    local: bool = False,
+    robot_state: Optional[RobotState] = None,
+) -> VicaIntent:
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11)."""
+    early = intent_recut.early(draft)
+    if early is not None:
+        return early
+    return intent_recut.settle(
+        _finalize_core(draft, destinations, pending, pending_command, user_text, local, robot_state),
+        draft, destinations, user_text)
+
+
+def _finalize_core(
     draft: _IntentDraft,
     destinations: Sequence[DestinationData],
     pending: Optional[DestinationData] = None,

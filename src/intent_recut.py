@@ -9,8 +9,11 @@ import os
 from typing import Optional, Sequence
 
 from . import answer_field
+from .one_voice import _CHOICE_TAIL
 from .question_record import OpenQuestion
-from .replies import ASK_DESTINATION, choose_between, not_available
+from .replies import (ASK_DESTINATION, LLM_UNAVAILABLE, RETRY_PROMPT, WAKE_GREETING, choose_between,
+                      not_available)
+from .schema import DestinationData, VicaIntent
 
 NOT_FOR_ROBOT = "not_for_robot"
 DISMISS = "dismiss"
@@ -85,3 +88,49 @@ def speaker_line(verdict: str) -> str:
     if verdict == "fail":
         return "- 이 말의 목소리: 안내를 요청한 사용자와 다르다"
     return ""
+
+
+def early(draft) -> Optional[VicaIntent]:
+    """뒤처리 맨 앞(원칙 7·31): not_for_robot·dismiss 면 문장·목적지 없는 의도로 바로 돌려보낸다. 꺼졌거나 다른 값이면 None.
+
+    긴급어는 이 함수보다 앞 단계(emergency_filter)가 처리한다 — 여기서 다루지 않는다.
+    """
+    if not on() or getattr(draft, "intent", "") not in (NOT_FOR_ROBOT, DISMISS):
+        return None
+    return VicaIntent(intent=draft.intent, reply="", need_confirm=False,
+                      confidence=getattr(draft, "confidence", None) or 0.0)
+
+
+def _is_wake(heard: str) -> bool:
+    # 해석기가 이미 쓰는 정규화·호출어 집합 — 해석기가 이 모듈을 import 하므로 함수 안에서 늦게 가져온다(순환 방지).
+    from . import langchain_intent_parser as parser
+    return parser._normalize_short_reply(heard) in parser._WAKE_WORDS
+
+
+def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], heard: str) -> VicaIntent:
+    """뒤처리 끝(원칙 4·8·11·18): clarify 의 문장을 코드 틀에서 만들고 unknown 의 문장을 정해진 되묻는 말로 둔다.
+
+    꺼졌거나 긴급이면 받은 결과 그대로. 호출어만 들렸거나 reply 가 "네?"인 unknown 은 "네?"로 둔다.
+    """
+    if not on() or result.safety_flag == "emergency":
+        return result
+    if result.intent == "clarify":
+        if _CHOICE_TAIL.search(result.reply or "") and getattr(draft, "clarify_kind", "") not in CLARIFY_KINDS:
+            return result                      # 코드가 이미 만든 고르기 문장(_ask_which 등) — 모델이 종류를 적었으면 모델 말이다
+        ok = {d.name: d for d in destinations if d.name and d.is_approachable}
+        options = list(dict.fromkeys(n for n in (getattr(draft, "clarify_options", None) or []) if n in ok))
+        wanted = getattr(draft, "clarify_wanted", "") or ""
+        if len(options) >= 2:
+            kind = "several"
+        elif getattr(draft, "clarify_kind", "") == "not_available" or draft.intent == "navigate":
+            kind = "not_available"             # 목록에 없는 곳(navigate 가 코드에서 clarify 로 낮춰진 경우 포함)
+            wanted = wanted or (draft.destination_candidate or "")
+        else:
+            kind = "no_destination"
+        return result.model_copy(update={"reply": clarify_reply(kind, wanted, options)})
+    if result.intent == "unknown":
+        if result.reply == LLM_UNAVAILABLE:
+            return result
+        wake = (result.reply or "").strip() == WAKE_GREETING or _is_wake(heard or "")
+        return result.model_copy(update={"reply": WAKE_GREETING if wake else RETRY_PROMPT})
+    return result
