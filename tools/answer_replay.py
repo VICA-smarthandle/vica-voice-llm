@@ -5,6 +5,8 @@
 
 midm·gpt = 받아쓴 글자 → parse_intent(글자 경로). realtime = 저장 소리(~/vica_data/listen_clips) → parse_intent_audio.
 --answer = 대답 칸(VICA_ANSWER)을 켠 채로 잰다(3-나-2 1단계): 해석기에 질문 기록을 넘기고 answer 로 채점한다.
+새 답지(--key)와 함께면 미션이 대답 칸을 의도보다 먼저 읽는 동작(미션 파라미터 answer_field)으로 채점한다(3단계).
+--answer-local = 로컬 모델에도 질문 줄·대답 칸을 준다(VICA_ANSWER_LOCAL). 없으면 로컬은 짧은 대답 규칙의 대답만 싣는다.
 --key = 새 답지(로봇이 해야 할 일)로도 채점한다(설계 2026-11-20 G2): 해석 결과를 미션이 받는 꼴로 만든 뒤 로봇이 한 일을
 답지와 견준다(tools.key_grade). 안 본 말(set=heldout)은 보고서에 숫자만 싣는다 — 고치는 동안 행 내용을 읽지 않으려고.
 결과: 정답 파일 옆 replay_<path>[_answer][_key-<정답 파일>]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
@@ -32,7 +34,7 @@ from src.replies import LLM_UNAVAILABLE
 from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
 from tools.answer_grade import answer_of, grade, pred_of, question_destination_id
-from tools.key_grade import Reaction, grade_key, is_wake_answer, load_key, reaction_of
+from tools.key_grade import Reaction, grade_key, is_wake_answer, load_key, mission_reaction
 
 STOP_AFTER_ERRORS = 5
 CLIPS_DIR = Path.home() / "vica_data" / "listen_clips"
@@ -76,9 +78,10 @@ def tools_env(on: bool) -> dict:
     return {"VICA_TOOLS_TEXT": value, "VICA_TOOLS_AUDIO": value}
 
 
-def answer_env(on: bool) -> dict:
-    """--answer: 대답 칸 스위치(2026-11-19). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
-    return {"VICA_ANSWER": "on" if on else "off"}
+def answer_env(on: bool, local: bool = False) -> dict:
+    """--answer: 대답 칸 스위치(2026-11-19). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다.
+    --answer-local: 로컬 모델에도 질문 줄·대답 칸을 준다(VICA_ANSWER_LOCAL, Task 3.5) — --answer 가 켜졌을 때만."""
+    return {"VICA_ANSWER": "on" if on else "off", "VICA_ANSWER_LOCAL": "on" if on and local else "off"}
 
 
 def recut_env(on: bool) -> dict:
@@ -165,22 +168,25 @@ def select_rows(rows: list[dict], key: dict, which: str) -> list[dict]:
 
 
 def result_name(path: str, tag: str, tools: bool, answer: bool, recut: bool, labels_stem: str, keyed: bool,
-                stamp: str) -> str:
+                stamp: str, answer_local: bool = False) -> str:
     """결과 파일 이름. 새 답지 채점은 정답 파일 이름을 넣는다 — 같은 분에 다른 묶음을 돌려도 덮어쓰지 않게."""
-    return (f"replay_{path}{'-' + tag if tag else ''}{'_tools' if tools else ''}{'_answer' if answer else ''}"
+    answered = ("_answer-local" if answer_local else "_answer") if answer else ""
+    return (f"replay_{path}{'-' + tag if tag else ''}{'_tools' if tools else ''}{answered}"
             f"{'_recut' if recut else ''}{'_key-' + labels_stem if keyed else ''}_{stamp}")
 
 
-def key_fields(row: dict, key: dict, intent, question: OpenQuestion, dests: Sequence) -> dict:  # noqa: ANN001
+def key_fields(row: dict, key: dict, intent, question: OpenQuestion, dests: Sequence,  # noqa: ANN001
+               mission_answers: bool = False) -> dict:
     """새 답지 채점 칸. intent 가 None 이면 아무 말도 못 들은 행(되묻기로 본다). 그 밖에는 음성 노드처럼 미션이 받는
-    꼴로 만든 뒤(확인 질문 없는 확정 navigate 를 제안으로 낮춤 → 질문 문장을 넘김) 로봇이 한 일을 읽는다."""
+    꼴로 만든 뒤(확인 질문 없는 확정 navigate 를 제안으로 낮춤 → 질문 문장을 넘김) 로봇이 한 일을 읽는다.
+    mission_answers = 미션이 대답 칸을 의도보다 먼저 읽는가(3단계, 미션 파라미터 answer_field — key_grade.mission_reaction)."""
     if intent is None:
         sent, reaction = None, Reaction("reask")
     elif isinstance(intent, ReserveCall):
         sent, reaction = None, Reaction("etc")
     else:
         sent = hand_over_question(demote_unasked_confirm(intent, question, dests), dests)
-        reaction = reaction_of(sent, question, dests)
+        reaction = mission_reaction(sent, question, dests, answer_field=mission_answers)
     out = {"intent": sent.intent if sent else "", "dest": (sent.matched_destination_id or "") if sent else "",
            "nc": sent.need_confirm if sent else "", "ask_text": sent.ask_text if sent else "", "reaction": asdict(reaction)}
     key_row = key.get(row["ts"])
@@ -235,7 +241,8 @@ def regrade(run: dict, key: dict) -> dict:
 
 
 def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]],
-           rule_text: Callable[[dict], str] = parsed_text_for, key: Optional[dict] = None) -> dict:
+           rule_text: Callable[[dict], str] = parsed_text_for, key: Optional[dict] = None,
+           mission_answers: bool = False) -> dict:
     """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약. key(새 답지)를 주면 key_status 등도 붙인다.
 
     행에는 두 읽기를 다 남긴다 — pred(대답 칸 우선, 채점에 쓴 값)와 pred_intent(의도 칸만 = 1단계에서 로봇이 실제로
@@ -254,7 +261,7 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             both = {"pred_intent": "unclear", "pred_intent_value": "", "answer": "", "answer_value": "", "answer_src": "",
                     "reply": ""}
             if key is not None:
-                both.update(key_fields(row, key, None, question_for(row, dests), dests))
+                both.update(key_fields(row, key, None, question_for(row, dests), dests, mission_answers))
         else:
             try:
                 intent, latency = interpret(row)
@@ -276,7 +283,8 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             if isinstance(intent, ReserveCall):
                 # 정답 묶음에는 예약 발화가 없다 — 도구 출력에서 reserve_facility 가 나오면 묻지 않은 동작이다.
                 errors_in_row = 0
-                keyed = key_fields(row, key, intent, question_for(row, dests), dests) if key is not None else {}
+                keyed = (key_fields(row, key, intent, question_for(row, dests), dests, mission_answers)
+                         if key is not None else {})
                 out_rows.append({**rec, "status": "wrong", "pred": "reserve", "pred_value": "", "latency": latency,
                                  "why": "reserve_facility", **keyed})
                 continue
@@ -290,7 +298,7 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
                     "answer": answer, "answer_value": value, "answer_src": src,
                     "reply": getattr(intent, "reply", "") or ""}
             if key is not None:
-                both.update(key_fields(row, key, intent, question_for(row, dests), dests))
+                both.update(key_fields(row, key, intent, question_for(row, dests), dests, mission_answers))
             why = (f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
                    f"/answer={answer or '-'}")
         errors_in_row = 0
@@ -362,7 +370,10 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
-    ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
+    ap.add_argument("--answer", action="store_true",
+                    help="대답 칸(VICA_ANSWER)을 켠 채로 잰다 — 새 답지 채점은 미션이 대답 칸을 먼저 읽는 동작(answer_field)으로 한다")
+    ap.add_argument("--answer-local", action="store_true",
+                    help="--answer 와 함께: 로컬 모델에도 질문 줄·대답 칸을 준다(VICA_ANSWER_LOCAL). 없으면 로컬은 규칙 대답만")
     ap.add_argument("--recut", action="store_true", help="재단 스위치(VICA_RECUT)를 켠 채로 잰다 — 새 값·되묻는 문장 틀")
     ap.add_argument("--model", default="", help="글자 경로(midm·gpt)의 모델 이름을 바꿔 잰다 — 예: 다른 로컬 모델(Ollama 태그)")
     ap.add_argument("--key", default="", help="새 답지(answer_key.csv) — 로봇이 한 일을 답지와 견줘 채점한다")
@@ -376,11 +387,11 @@ def main() -> None:
     env = path_env(args.path, None if args.local_rules == "auto" else args.local_rules == "on")
     os.environ.update(env)
     os.environ.update(tools_env(args.tools))
-    os.environ.update(answer_env(args.answer))
+    os.environ.update(answer_env(args.answer, args.answer_local))
     os.environ.update(recut_env(args.recut))
     model = args.model or MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {'켬' if args.answer else '끔'} · 재단 {'켬' if args.recut else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {('켬(로컬에도)' if args.answer_local else '켬(미션이 먼저 읽음)') if args.answer else '끔'} · 재단 {'켬' if args.recut else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -415,6 +426,7 @@ def main() -> None:
         return intent, time.monotonic() - t0
 
     clips = []
+    heard_by_ts: dict = {}
     if args.path == "realtime":
         with open(CLIPS_DIR / "clips.jsonl", encoding="utf-8") as f:
             clips = [json.loads(line) for line in f if line.strip()]
@@ -429,8 +441,9 @@ def main() -> None:
             pcm = w.readframes(w.getnframes())
         dests, history, state = context(row)
         asked = question_for(row, dests)
-        intent, _heard, latency, _info = call_with_retry(
+        intent, heard, latency, _info = call_with_retry(
             lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state, question=asked))
+        heard_by_ts[row["ts"]] = heard     # answer_src(rule·llm)를 운영 코드가 규칙에 댄 글자(Realtime 이 들은 글자)로 가른다
         time.sleep(args.pause)
         return intent, latency     # 짧은 대답 규칙은 운영 코드(_deliver_realtime_result)가 쓴다 — 측정 = 운영(Task 3.5b)
 
@@ -438,7 +451,8 @@ def main() -> None:
     runs = []
     for i in range(args.rounds):
         run = replay(rows, interpret, destinations_for,
-                     rule_text=transcript_for if args.path == "realtime" else parsed_text_for, key=key)
+                     rule_text=(lambda row: heard_by_ts.get(row["ts"], "")) if args.path == "realtime" else parsed_text_for,
+                     key=key, mission_answers=args.answer)
         c = run["counts"]
         print(f"[{args.path}] {i + 1}회차: ok {c.get('ok', 0)} reask {c.get('reask', 0)} wrong {c.get('wrong', 0)} "
               f"mismatch {c.get('mismatch', 0)} "
@@ -453,7 +467,8 @@ def main() -> None:
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
     base = labels_path.parent / result_name(args.path, model_tag(args.model) if args.model else "", args.tools,
-                                            args.answer, args.recut, labels_path.stem, key is not None, stamp)
+                                            args.answer, args.recut, labels_path.stem, key is not None, stamp,
+                                            answer_local=args.answer and args.answer_local)
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")

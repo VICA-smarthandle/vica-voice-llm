@@ -153,8 +153,16 @@ def test_tools_switch_is_set_before_the_parser_is_imported():
 
 
 def test_answer_switch_env():
-    assert answer_replay.answer_env(True) == {"VICA_ANSWER": "on"}
-    assert answer_replay.answer_env(False) == {"VICA_ANSWER": "off"}
+    assert answer_replay.answer_env(True) == {"VICA_ANSWER": "on", "VICA_ANSWER_LOCAL": "off"}
+    assert answer_replay.answer_env(False) == {"VICA_ANSWER": "off", "VICA_ANSWER_LOCAL": "off"}
+
+
+def test_answer_local_switch_env_and_file_name():
+    """--answer-local(계획 Task 3.10): 로컬 모델에도 질문 줄·대답 칸을 준 값을 따로 잰다. --answer 없이는 켜지지 않는다."""
+    assert answer_replay.answer_env(True, local=True) == {"VICA_ANSWER": "on", "VICA_ANSWER_LOCAL": "on"}
+    assert answer_replay.answer_env(False, local=True) == {"VICA_ANSWER": "off", "VICA_ANSWER_LOCAL": "off"}
+    name = answer_replay.result_name("midm", "", False, True, False, "labels", False, "20261121-1700", answer_local=True)
+    assert name == "replay_midm_answer-local_20261121-1700"
 
 
 def test_question_for_maps_the_row(dests):
@@ -337,3 +345,18 @@ def test_regrade_rereads_saved_dismiss_the_way_the_mission_takes_it(dests):
     assert answer_replay.regrade({"rows": [asked]}, {"9.0": _key("no")})["rows"][0]["reaction"]["action"] == "no"
     called = {**KEY_ROW, "kind": "open", "question": "네?", "intent": "dismiss", "reaction": bye}
     assert answer_replay.regrade({"rows": [called]}, {"9.0": _key("no")})["rows"][0]["key_status"] == "ok"
+
+
+def test_p6_key_grading_reads_the_answer_field_like_the_mission_when_answers_are_on(dests):
+    """--answer(3단계): 미션이 대답 칸을 의도보다 먼저 읽는다(key_grade.mission_reaction) — 확인 질문 중 같은 곳 이름을
+    destination 으로 내면 승낙이 아니라 같은 질문을 다시 한다. 꺼져 있으면 지금 채점 그대로."""
+    asked = {**KEY_ROW, "kind": "confirm", "question": "사회복지로 안내해드릴까요?", "answer_text": "사회복지"}
+    same = VicaIntent(intent="navigate", matched_destination_id="d1", need_confirm=True, question_id="replay",
+                      answer="destination", answer_value="d1")
+    off = replay([asked], lambda row: (same, 0.5), lambda _p: dests, key={"9.0": _key("yes")})
+    on = replay([asked], lambda row: (same, 0.5), lambda _p: dests, key={"9.0": _key("yes")}, mission_answers=True)
+    assert (off["rows"][0]["reaction"]["action"], off["rows"][0]["key_status"]) == ("yes", "ok")
+    assert (on["rows"][0]["reaction"]["action"], on["rows"][0]["key_status"]) == ("reask", "reask")
+    yes = VicaIntent(intent="unknown", question_id="replay", answer="yes")           # 의도는 못 알아들음, 대답 칸은 승낙
+    read = replay([asked], lambda row: (yes, 0.5), lambda _p: dests, key={"9.0": _key("yes")}, mission_answers=True)
+    assert read["rows"][0]["key_status"] == "ok"
