@@ -154,18 +154,6 @@ def transcript_for(row: dict) -> str:
     return strip_wake_echo(stt, question, row.get("dialog_state", ""))
 
 
-def with_transcript_rule(intent, row: dict, question: OpenQuestion):  # noqa: ANN001
-    """소리 경로 행 — 받아쓴 글자가 통째로 짧은 대답(네/아니요 · N분)이면 Realtime 의 대답 대신 그 규칙의 대답으로
-    채점한다(설계 2026-11-18 4.3-3, 바탕 설계 D11). 분은 Realtime 도 시간으로 읽었을 때 값만 바로잡는다
-    (answer_field.transcript_wins). 대답 칸이 꺼졌거나 규칙에 안 맞거나 예약 호출이면 받은 결과 그대로."""
-    if isinstance(intent, ReserveCall):
-        return intent
-    ruled = answer_field.short_answer(transcript_for(row), question)
-    if not answer_field.transcript_wins(ruled, getattr(intent, "answer", "")):
-        return intent
-    return intent.model_copy(update={"question_id": question.id, "answer": ruled[0], "answer_value": ruled[1]})
-
-
 KEY_NOT_OK = ("reask", "wrong", "mismatch")
 
 
@@ -444,7 +432,7 @@ def main() -> None:
         intent, _heard, latency, _info = call_with_retry(
             lambda: parse_intent_audio(pcm, dests, history=history, robot_state=state, question=asked))
         time.sleep(args.pause)
-        return with_transcript_rule(intent, row, asked), latency
+        return intent, latency     # 짧은 대답 규칙은 운영 코드(_deliver_realtime_result)가 쓴다 — 측정 = 운영(Task 3.5b)
 
     interpret = interpret_audio if args.path == "realtime" else interpret_text
     runs = []

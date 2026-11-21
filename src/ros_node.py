@@ -597,7 +597,8 @@ class LlmIntentNode(Node):
         )
         self.get_logger().info(question_record.log_line(question, time.time()))
         if answer_field.on():
-            # 대답 칸(3-나-2 1단계) — 기록만 한다. 미션으로 나가는 메시지에는 아직 싣지 않는다(ros_convert).
+            # 대답 칸 — 이 말에 채워진 대답 값을 한 줄로 남긴다. 미션으로 나가는 메시지에는 칸이 있으면 ros_convert 가
+            # 싣는다(Task 3.2).
             self.get_logger().info(answer_field.log_line(intent, question))
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).

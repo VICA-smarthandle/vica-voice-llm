@@ -1,7 +1,8 @@
 """대답 칸(answer) — 열린 질문에 대한 이 말의 대답 값 (설계 2026-11-18 answer-interpretation 4.1~4.3, 3-나-2 1단계).
 
-LLM 이 열린 질문(질문 기록 /vica/question)의 종류를 알고 answer 를 함께 낸다. 1단계에서는 로그와 재생 채점에만 쓴다 —
-미션으로는 나가지 않는다. 전부 `.env` VICA_ANSWER=on 일 때만 움직인다(기본 꺼짐 = 예전 동작 그대로).
+LLM 이 열린 질문(질문 기록 /vica/question)의 종류를 알고 answer 를 함께 낸다. 메시지에 칸이 있으면 미션으로 나간다
+(ros_convert, Task 3.2). 이미 있는 짧은 대답 규칙(short_answer)이 서면(standing) 의도도 그 대답에 맞춘다(fill, Task 3.5b).
+전부 `.env` VICA_ANSWER=on 일 때만 움직인다(기본 꺼짐 = 예전 동작 그대로).
 여기는 ROS·LLM 을 모르는 순수 판단만 둔다 — 장치 없이 시험된다.
 """
 from __future__ import annotations
@@ -37,7 +38,10 @@ _MEANING = {"yes": "승낙", "no": "거절", "destination": "다른 곳으로 �
             "choice": "보기 중 하나를 고름(destination_candidate 에 그곳)", "minutes": "시간을 말함(wait_minutes 에 분)",
             "other": "질문과 상관없는 명령이나 질문", "unclear": "못 알아들음"}
 _YES_NO_KINDS = ("confirm", "yesno", "yesno_inverted")
+# 분 규칙이 서는 LLM 의 읽기(원칙 6, standing) — 대답이 이 셋이고 의도가 아래 넷일 때만. not_for_robot 은
+# intent_recut.NOT_FOR_ROBOT 과 같은 글자다 — intent_recut 이 이 모듈을 import 해서 글자 그대로 둔다(순환 import).
 _MINUTES_CORRECTS = ("", "minutes", "unclear")
+_MINUTES_INTENTS = ("wait", "unknown", "clarify", "not_for_robot")
 _INVERTED_NOTE = ". 필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no"   # 지금 지시문의 affirm·deny 기준과 같은 방향
 _HEADER = "\n[지금 상황]\n"
 
@@ -109,38 +113,57 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
     return None
 
 
-def transcript_wins(ruled: Optional[tuple[str, str]], heard_answer: str) -> bool:
-    """소리 모드 — 받아쓴 글자의 규칙 대답(ruled)을 Realtime 이 낸 대답(heard_answer) 대신 써도 되나(바탕 설계 D11).
+def standing(ruled: Optional[tuple[str, str]], intent_name: str, llm_answer: str) -> bool:
+    """규칙 대답(ruled)이 LLM 의 읽기 대신 서는가(Task 3.5b 규칙 1, 원칙 6 — 바탕 설계 D11). 글자·소리 경로가 같이 쓴다.
 
-    통째로 네/아니요면 쓴다. 분은 값 바로잡기만 한다 — Realtime 도 시간으로 읽었거나(minutes) 대답을 못 냈을 때만.
-    parse_wait_minutes 는 문장 속의 분도 읽어서("십 분 말고 그냥 끝내 줘") Realtime 의 거절·다른 말을 덮으면 안 된다(검토 I3).
+    통째로 네/아니요면 늘 선다. 분은 LLM 이 이 말을 다른 뜻으로 읽지 않았을 때만 — LLM 대답(llm_answer)이 빈 값·minutes·
+    unclear 이고 의도(intent_name)가 wait·unknown·clarify·not_for_robot 일 때. parse_wait_minutes 는 문장 속의 분도 읽어서
+    ("십 분 말고 그냥 끝내 줘") LLM 의 거절·다른 말을 덮으면 미션이 그 분만큼 기다린다(검토 I3).
     """
     if ruled is None:
         return False
-    return ruled[0] != "minutes" or (heard_answer or "") in _MINUTES_CORRECTS
+    if ruled[0] != "minutes":
+        return True
+    return (llm_answer or "").strip() in _MINUTES_CORRECTS and intent_name in _MINUTES_INTENTS
+
+
+def _ruled(intent: VicaIntent, question: OpenQuestion, ruled: tuple[str, str]) -> VicaIntent:
+    """선 규칙 대답을 실은 사본(Task 3.5b 규칙 2). 설명서에 적힌 칸만 바꾸고 다른 칸(확신·화자 …)은 그대로 둔다."""
+    answer, value = ruled
+    update = {"question_id": question.id, "answer": answer, "answer_value": value}
+    if answer in ("yes", "no"):
+        # 원칙 6: 통째 네/아니요 → affirm/deny. 글자 경로 지름길·소리 경로 _audio_short_answer 와 같은 꼴이다 — 판단 근거만
+        # 대화 상태가 아니라 질문 기록이다. affirm·deny 의 말은 미션 몫이라 문장·목적지 칸을 비운다.
+        update.update(intent="affirm" if answer == "yes" else "deny", reply="", ask_text="", ask_kind="",
+                      need_confirm=False, destination_candidate=None, matched_destination_id="")
+    elif intent.intent != "wait":
+        # 원칙 7: unknown·clarify·not_for_robot(다른 뜻은 standing 이 걸렀다) → 그 분만큼 wait. 물은 질문의 대답을 버리지 않는다.
+        update.update(intent="wait", wait_minutes=int(value), reply="", ask_text="", need_confirm=False)
+    return intent.model_copy(update=update)
 
 
 def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[tuple[str, str]] = None,
          llm_answer: str = "") -> VicaIntent:
     """의도에 question_id·answer·answer_value 를 채운 사본. 꺼짐·질문 없음·긴급이면 받은 의도 그대로.
 
-    규칙 대답(ruled)이 있으면 그것, 없으면 LLM 이 낸 값이다. 허용 밖의 값, 목적지 id 없는 destination·choice,
-    분 없는 minutes 는 unclear 로 바꾼다(설계 4.1 — 외부 API 는 형식을 강제하지 않는다).
+    규칙 대답(ruled)이 서면(standing) 대답 칸은 그 값이고 의도도 그 대답에 맞춘다(_ruled) — 그래서 규칙 대답이 선 말은
+    not_for_robot 으로 나가지 않는다(원칙 6 이 원칙 7 보다 먼저 — 로봇이 물었고 그 대답이 왔다). 서지 않으면 LLM 이 낸 값이다.
+    허용 밖의 값, 목적지 id 없는 destination·choice, 분 없는 minutes 는 unclear 로 바꾼다(설계 4.1 — 외부 API 는 형식을
+    강제하지 않는다).
     """
     if not on() or question is None or intent.safety_flag == "emergency":
         return intent
-    if ruled is not None:
-        answer, value = ruled
-    else:
-        answer, value = (llm_answer or "").strip(), ""
-        if answer and answer not in allowed(question.kind):
-            answer = "unclear"
-        elif answer in ("destination", "choice"):
-            value = intent.matched_destination_id or ""
-            answer = answer if value else "unclear"
-        elif answer == "minutes":
-            value = str(intent.wait_minutes) if intent.wait_minutes > 0 else ""
-            answer = answer if value else "unclear"
+    if standing(ruled, intent.intent, llm_answer):
+        return _ruled(intent, question, ruled)
+    answer, value = (llm_answer or "").strip(), ""
+    if answer and answer not in allowed(question.kind):
+        answer = "unclear"
+    elif answer in ("destination", "choice"):
+        value = intent.matched_destination_id or ""
+        answer = answer if value else "unclear"
+    elif answer == "minutes":
+        value = str(intent.wait_minutes) if intent.wait_minutes > 0 else ""
+        answer = answer if value else "unclear"
     return intent.model_copy(update={"question_id": question.id, "answer": answer, "answer_value": value})
 
 

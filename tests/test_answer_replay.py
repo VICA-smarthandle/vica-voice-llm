@@ -173,18 +173,13 @@ def test_replay_grades_by_the_answer_field(rows_labeled, dests):
     assert run["rows"][0]["status"] == "ok" and run["rows"][0]["pred"] == "yes"
 
 
-def test_transcript_rule_wins_on_the_audio_path(monkeypatch, rows_labeled, dests):
-    from src.reservation_flow import ReserveCall
-    monkeypatch.setenv("VICA_ANSWER", "on")
-    row = {**rows_labeled[1], "stt": "삼십분."}                 # kind=minutes
-    asked = answer_replay.question_for(row, dests)
-    heard = VicaIntent(intent="wait", wait_minutes=15, answer="minutes", answer_value="15")
-    fixed = answer_replay.with_transcript_rule(heard, row, asked)
-    assert (fixed.answer, fixed.answer_value, fixed.wait_minutes) == ("minutes", "30", 15)
-    long = {**rows_labeled[1], "stt": "화장실 가고 싶어"}
-    assert answer_replay.with_transcript_rule(heard, long, asked) is heard
-    call = ReserveCall(facility="세미나실")
-    assert answer_replay.with_transcript_rule(call, row, asked) is call
+def test_p6_audio_path_grades_what_the_parser_returned():
+    """Task 3.5b: 짧은 대답 규칙은 운영 코드(_deliver_realtime_result)가 쓴다 — 재생 도구가 Realtime 결과를 따로 덮지 않는다
+    (측정 = 운영)."""
+    import inspect
+    assert not hasattr(answer_replay, "with_transcript_rule")
+    source = inspect.getsource(answer_replay.main)
+    assert "with_transcript_rule" not in source and "return intent, latency" in source
 
 
 def test_rows_keep_both_readings_and_the_source(monkeypatch, rows_labeled, dests):
@@ -202,22 +197,10 @@ def test_rows_keep_both_readings_and_the_source(monkeypatch, rows_labeled, dests
     assert (plain["pred"], plain["pred_intent"], plain["answer"], plain["answer_src"]) == ("no", "no", "", "")
 
 
-def test_audio_rule_needs_a_real_transcript(monkeypatch, rows_labeled, dests):
-    """받아쓴 글자(stt)가 없던 발화에 Realtime 이 들은 글자로 규칙을 대지 않는다 — 운영에는 없던 글자다(검토 M1)."""
-    monkeypatch.setenv("VICA_ANSWER", "on")
+def test_transcript_for_reads_only_the_local_transcript(rows_labeled):
+    """transcript_for 는 그때의 받아쓴 글자(stt)만 읽는다 — 없으면 들은 글자(answer_text)로 채우지 않고 빈 글자(검토 M1)."""
     row = {**rows_labeled[1], "stt": "", "answer_text": "1분"}       # kind=minutes
-    asked = answer_replay.question_for(row, dests)
-    heard = VicaIntent(intent="wait", wait_minutes=15, answer="minutes", answer_value="15")
-    assert answer_replay.with_transcript_rule(heard, row, asked) is heard
     assert answer_replay.transcript_for(row) == "" and answer_replay.transcript_for({**row, "stt": " 삼십분. "}) == "삼십분."
-
-
-def test_audio_minutes_rule_does_not_override_a_refusal(monkeypatch, rows_labeled, dests):
-    monkeypatch.setenv("VICA_ANSWER", "on")
-    row = {**rows_labeled[1], "stt": "십 분 말고 그냥 안내 끝내 줘"}
-    asked = answer_replay.question_for(row, dests)
-    refused = VicaIntent(intent="deny", answer="no")
-    assert answer_replay.with_transcript_rule(refused, row, asked) is refused
 
 
 def test_rows_keep_the_reply_sentence(rows_labeled, dests):

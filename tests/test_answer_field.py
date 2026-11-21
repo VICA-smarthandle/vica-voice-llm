@@ -1,10 +1,12 @@
 """대답 칸(3-나-2 1단계, 설계 2026-11-18 4.1~4.3)."""
+from typing import get_args
+
 import pytest
 from pydantic import BaseModel
 
 from src import answer_field as af
 from src.question_record import OpenQuestion
-from src.schema import VicaIntent
+from src.schema import VicaIntent, VicaIntentType
 
 BASE = ("no", "destination", "other", "unclear")
 
@@ -103,21 +105,135 @@ def test_short_answer_minutes(on):
     assert af.short_answer("삼십분.", None) is None
 
 
-def test_transcript_rule_only_corrects_minutes():
-    assert af.transcript_wins(("yes", ""), "destination") is True       # 통째 네/아니요는 받아쓴 글자가 이긴다(D11)
-    assert af.transcript_wins(("no", ""), "yes") is True
-    for heard in ("minutes", "", "unclear"):
-        assert af.transcript_wins(("minutes", "30"), heard) is True      # 분은 값 바로잡기
-    for heard in ("no", "other", "destination", "yes"):
-        assert af.transcript_wins(("minutes", "10"), heard) is False     # "십 분 말고 그냥 끝내 줘" — Realtime 의 거절을 덮지 않는다
-    assert af.transcript_wins(None, "yes") is False
+# ----- 규칙 대답이 서는 조건(Task 3.5b, 원칙 6·7) — transcript_wins 를 대신한다 -----------------------------------------
+INTENTS = get_args(VicaIntentType)
+LLM_ANSWERS = ("", *af.ANSWERS, " minutes ")
+MINUTES_READ_INTENTS = {"wait", "unknown", "clarify", "not_for_robot"}     # 설명서 규칙 1 의 글자 그대로
+MINUTES_READ_ANSWERS = {"", "minutes", "unclear"}
+
+
+def test_p6_standing_whole_yes_no_always_stands():
+    for ruled in (("yes", ""), ("no", "")):
+        for name in INTENTS:
+            for llm in LLM_ANSWERS:
+                assert af.standing(ruled, name, llm) is True, (ruled, name, llm)
+
+
+def test_p6_standing_minutes_only_when_the_llm_did_not_read_it_otherwise():
+    for name in INTENTS:
+        for llm in LLM_ANSWERS:
+            want = name in MINUTES_READ_INTENTS and llm.strip() in MINUTES_READ_ANSWERS
+            assert af.standing(("minutes", "10"), name, llm) is want, (name, llm)
+
+
+@pytest.mark.parametrize("name,llm,want", [
+    ("finish", "no", False),          # "십 분 말고 그냥 끝내 줘" — LLM 의 거절을 덮지 않는다(검토 I3)
+    ("finish", "", False),            # 로컬 — 대답 칸이 없어도 의도가 다른 뜻이면 서지 않는다
+    ("pause", "", False), ("cancel", "", False), ("deny", "", False), ("navigate", "", False),
+    ("question", "", False), ("dismiss", "", False), ("affirm", "", False),
+    ("wait", "no", False), ("wait", "destination", False), ("wait", "other", False),
+    ("wait", "minutes", True), ("wait", "", True), ("unknown", "unclear", True),
+    ("clarify", "", True), ("not_for_robot", "", True),
+])
+def test_p6_standing_minutes_cases(name, llm, want):
+    assert af.standing(("minutes", "10"), name, llm) is want
+
+
+def test_p6_standing_needs_a_rule_answer():
+    for name in INTENTS:
+        assert af.standing(None, name, "yes") is False
+    assert not hasattr(af, "transcript_wins")          # 두 벌로 남기지 않는다
+
+
+def test_p6_minutes_rule_does_not_override_another_reading(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said_no = af.fill(VicaIntent(intent="finish"), q("minutes"), ("minutes", "10"), "no")      # "십 분 말고 그냥 끝내 줘"
+    assert (said_no.intent, said_no.answer, said_no.answer_value) == ("finish", "no", "")
+    no_field = af.fill(VicaIntent(intent="finish"), q("minutes"), ("minutes", "10"), "")       # 로컬 — 대답 칸 없음
+    assert (no_field.intent, no_field.answer) == ("finish", "")
+
+
+def test_p6_minutes_rule_corrects_the_value_when_the_llm_also_read_minutes(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    out = af.fill(VicaIntent(intent="wait", wait_minutes=13), q("minutes"), ("minutes", "15"), "minutes")
+    assert (out.intent, out.answer, out.answer_value) == ("wait", "minutes", "15")
+    assert out.wait_minutes == 13                      # 의도가 wait 면 그대로 — answer_value 만 규칙의 분(규칙 2)
+
+
+def test_p7_an_answer_to_the_robots_question_is_never_dropped(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    # not_for_robot 은 VicaIntent 가 받는 값이다(schema.VicaIntentType — 스위치와 무관하게 스키마에 있다)
+    yes = af.fill(VicaIntent(intent="not_for_robot"), q("confirm"), ("yes", ""), "")
+    assert (yes.intent, yes.answer, yes.reply) == ("affirm", "yes", "")
+    mins = af.fill(VicaIntent(intent="not_for_robot"), q("minutes"), ("minutes", "10"), "")
+    assert (mins.intent, mins.wait_minutes, mins.answer, mins.answer_value) == ("wait", 10, "minutes", "10")
+
+
+def test_p7_a_standing_rule_answer_never_leaves_as_not_for_robot(on):
+    for kind, ruled in (("confirm", ("yes", "")), ("yesno", ("no", "")), ("yesno_inverted", ("yes", "")),
+                        ("minutes", ("minutes", "5"))):
+        for llm in ("", "unclear"):
+            out = af.fill(VicaIntent(intent="not_for_robot"), q(kind), ruled, llm)
+            assert out.intent != "not_for_robot" and (out.answer, out.answer_value) == ruled, (kind, llm)
+
+
+def test_p6_whole_yes_no_replaces_what_the_llm_made_of_it(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    out = af.fill(VicaIntent(intent="navigate", matched_destination_id="t", need_confirm=True, reply="화장실로 안내해드릴까요?"),
+                  q("confirm"), ("no", ""), "destination")
+    assert (out.intent, out.answer, out.matched_destination_id, out.reply, out.need_confirm) == ("deny", "no", "", "", False)
+
+
+def test_p6_whole_yes_no_clears_the_sentence_fields_and_keeps_the_rest(on):
+    asked = VicaIntent(intent="question", destination_candidate="화장실", matched_destination_id="wc", need_confirm=True,
+                       reply="무엇을 도와드릴까요?", ask_text="무엇을 도와드릴까요?", ask_kind="open", confidence=0.4,
+                       speaker_verdict="pass", speaker_score=0.8, speaker_joined=0.7)
+    out = af.fill(asked, q("yesno"), ("yes", ""), "other")
+    assert (out.intent, out.answer, out.answer_value, out.question_id) == ("affirm", "yes", "", "q1")
+    assert (out.reply, out.ask_text, out.ask_kind, out.need_confirm) == ("", "", "", False)
+    assert (out.destination_candidate, out.matched_destination_id) == (None, "")
+    assert (out.confidence, out.safety_flag) == (0.4, "normal")                       # 다른 칸은 그대로
+    assert (out.speaker_verdict, out.speaker_score, out.speaker_joined) == ("pass", 0.8, 0.7)
+    assert asked.intent == "question" and asked.reply == "무엇을 도와드릴까요?"       # 받은 의도는 바꾸지 않는다(사본)
+    already = af.fill(VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False), q("confirm"), ("no", ""), "")
+    assert (already.intent, already.answer, already.confidence) == ("deny", "no", 1.0)
+    inverted = af.fill(VicaIntent(intent="unknown"), q("yesno_inverted", "안내가 필요 없으신가요?"), ("yes", ""), "")
+    assert (inverted.intent, inverted.answer) == ("affirm", "yes")    # 들은 대로 — 뜻은 미션이 질문 종류로 읽는다
+
+
+@pytest.mark.parametrize("name", ["unknown", "clarify", "not_for_robot"])
+def test_p6_minutes_rule_turns_a_non_reading_into_wait(on, name):
+    out = af.fill(VicaIntent(intent=name, reply="다시 말씀해 주시겠어요?", ask_text="다시 말씀해 주시겠어요?",
+                             need_confirm=True, confidence=0.3), q("minutes"), ("minutes", "10"), "unclear")
+    assert (out.intent, out.wait_minutes, out.answer, out.answer_value) == ("wait", 10, "minutes", "10")
+    assert (out.reply, out.ask_text, out.need_confirm, out.confidence) == ("", "", False, 0.3)
+
+
+def test_p6_minutes_rule_that_does_not_stand_keeps_the_llm_answer(on):
+    paused = af.fill(VicaIntent(intent="pause", reply="네, 잠시 멈출게요."), q("minutes"), ("minutes", "5"), "")
+    assert (paused.intent, paused.answer, paused.answer_value, paused.reply) == ("pause", "", "", "네, 잠시 멈출게요.")
+    asked = af.fill(VicaIntent(intent="question", reply="지금 3시예요."), q("minutes"), ("minutes", "5"), "other")
+    assert (asked.intent, asked.answer) == ("question", "other")
+    odd = af.fill(VicaIntent(intent="finish"), q("minutes"), ("minutes", "5"), "banana")
+    assert odd.answer == "unclear"                                   # 서지 않으면 지금처럼 LLM 값을 다듬는다
+
+
+def test_off_or_no_question_changes_nothing(monkeypatch):
+    stray = VicaIntent(intent="unknown", reply="x")
+    assert af.fill(stray, q("confirm"), ("yes", ""), "") is stray               # 꺼짐
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    assert af.fill(stray, None, ("yes", ""), "") is stray                       # 열린 질문 없음
+    urgent = VicaIntent(intent="unknown", safety_flag="emergency")
+    assert af.fill(urgent, q("minutes"), ("minutes", "10"), "") is urgent      # 긴급
+    assert af.fill(urgent, q("confirm"), ("no", ""), "") is urgent
 
 
 def test_fill_rule_first_then_llm(on):
     nav = VicaIntent(intent="navigate", matched_destination_id="info", need_confirm=True)
     ruled = af.fill(nav, q("yesno"), ("yes", ""), "destination")
     assert (ruled.question_id, ruled.answer, ruled.answer_value) == ("q1", "yes", "")
-    assert (ruled.intent, ruled.matched_destination_id, ruled.need_confirm) == ("navigate", "info", True)
+    # Task 3.5b(규칙 2): 통째 네/아니요가 서면 의도도 affirm 이다 — 예전에는 navigate 를 그대로 두었다.
+    assert (ruled.intent, ruled.matched_destination_id, ruled.need_confirm) == ("affirm", "", False)
     by_llm = af.fill(nav, q(), None, "destination")
     assert (by_llm.answer, by_llm.answer_value) == ("destination", "info")
     waited = af.fill(VicaIntent(intent="wait", wait_minutes=10), q("minutes"), None, "minutes")

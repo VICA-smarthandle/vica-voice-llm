@@ -1095,8 +1095,9 @@ def parse_intent(
     situation 은 LLM 노드의 [지금 상황] 블록(2026-10-07 글자 경로에도 붙임).
     도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
     question 은 이 말이 들어올 때 열려 있던 질문(질문 기록). 대답 칸이 켜졌으면(VICA_ANSWER=on) 돌려주는 의도에
-    question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 먼저, 그 밖은 LLM 이 낸 값이다(설계
-    2026-11-18 4.3). 의도 칸은 지금 길 그대로 정한다.
+    question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 서면 그것, 그 밖은 LLM 이 낸 값이다(설계
+    2026-11-18 4.3). 의도 칸은 지금 길로 정하고, 규칙 대답이 서면 그 대답에 맞춘다 — 나가는 곳마다 같은 answer_field.fill 을
+    지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
@@ -1447,8 +1448,9 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
                              ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info).
 
-    대답 칸이 켜졌으면 모델이 낸 answer 를 의도에 싣는다(모델 값 그대로 — 받아쓴 글자의 짧은 대답 규칙과 견주는 일은
-    노드 로그와 재생 도구가 한다, 3-나-2 1단계)."""
+    대답 칸이 켜졌으면 Realtime 이 들은 글자(heard)에 짧은 대답 규칙을 대고 글자 경로와 같은 answer_field.fill 을 지난다
+    (Task 3.5b, 원칙 6·7) — 규칙 대답이 서면 그것, 아니면 모델이 낸 answer 다. 규칙이 모델의 의도나 대답을 바꿨으면
+    info["src"] 에 "+대답규칙" 을 붙이고 바뀌기 전 값을 로그 한 줄로 남긴다."""
     heard = result.heard_text.strip()
     if result.tool == RESERVE:
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).
@@ -1466,8 +1468,18 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
     src = "llm+고르기규칙" if shared else "llm"
     if _audio_short_answer(intent, heard, dialog_state):
         src += "+짧은답규칙"
-    intent = answer_field.fill(intent, question, None, getattr(draft, "answer", "") or "")
-    return intent, heard, result.latency_sec, {"src": src, "usage": result.usage}
+    # 원칙 6·7: 규칙에 대는 글자는 Realtime 이 들은 글자다 — 로컬 받아쓰기(/user_text)는 기다리지 않는다(다른 토픽으로
+    # 다른 때에 와서 기다리면 지연·순서에 따라 결과가 갈린다). 노드의 '[대답] 받아쓴 글자 규칙=…' 줄은 견주는 기록으로 남는다.
+    llm_answer = getattr(draft, "answer", "") or ""
+    ruled = answer_field.short_answer(heard, question)
+    filled = answer_field.fill(intent, question, ruled, llm_answer)
+    if ruled is not None:
+        by_llm = answer_field.fill(intent, question, None, llm_answer)
+        if (filled.intent, filled.answer, filled.answer_value) != (by_llm.intent, by_llm.answer, by_llm.answer_value):
+            src += "+대답규칙"
+            _log("info", f"[대답규칙] 규칙 전 intent={by_llm.intent} answer={by_llm.answer or '-'}/{by_llm.answer_value or '-'}"
+                         f" → intent={filled.intent} answer={filled.answer}/{filled.answer_value or '-'} heard='{heard}'")
+    return filled, heard, result.latency_sec, {"src": src, "usage": result.usage}
 
 
 def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bool:

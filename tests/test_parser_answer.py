@@ -82,8 +82,87 @@ def test_rule_beats_the_llm_answer(on, monkeypatch):
     manager = use(monkeypatch, Manager(parser._AnswerDraft(intent="unknown", reply="네?", answer="other")))
     out = parser.parse_intent("네", DESTS, history=[], robot_state=RobotState(dialog_state="idle"),
                               question=q("yesno", "여기서 대기할까요?"))
-    assert len(manager.kinds) == 1          # 로컬 규칙은 대답을 기다리는 단계가 아니면 LLM 에 묻는다 — 의도는 그 길 그대로
-    assert (out.intent, out.answer) == ("unknown", "yes")
+    assert len(manager.kinds) == 1          # 로컬 규칙은 대답을 기다리는 단계가 아니면 LLM 에 묻는다
+    # Task 3.5b(규칙 2): 통째 "네"는 질문 기록이 판단 근거다 — LLM 의 unknown·"네?"를 affirm·빈 문장으로 바꾼다.
+    assert (out.intent, out.answer, out.reply, out.need_confirm) == ("affirm", "yes", "", False)
+
+
+MINUTES_Q = ("minutes", "몇 분쯤 걸리실까요?")
+
+
+def test_p6_text_path_minutes_rule_yields_to_another_reading(on, monkeypatch):
+    """"십 분 말고 그냥 끝내 줘" — 분 규칙(문장 속의 분도 읽는다)이 LLM 의 finish·no 를 덮으면 미션이 10분 기다린다."""
+    use(monkeypatch, Manager(parser._AnswerDraft(intent="finish", answer="no")))
+    out = parser.parse_intent("십 분 말고 그냥 끝내 줘", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.answer, out.answer_value, out.question_id) == ("finish", "no", "", "q1")
+
+
+def test_p6_text_path_minutes_rule_corrects_a_minutes_reading(on, monkeypatch):
+    use(monkeypatch, Manager(parser._AnswerDraft(intent="wait", wait_minutes=20, answer="minutes")))
+    out = parser.parse_intent("삼십 분", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.answer, out.answer_value) == ("wait", "minutes", "30")
+
+
+@pytest.mark.parametrize("llm_answer", ["", "unclear"])
+def test_p7_text_path_answer_is_not_dropped_as_not_for_robot(on, monkeypatch, llm_answer):
+    """재단이 켜지면 LLM 이 "십 분 정도요"를 not_for_robot 으로 내는 일이 있다(2단계 측정 1건) — 노드가 버리지 않게 wait 로."""
+    monkeypatch.setenv("VICA_RECUT", "on")
+    use(monkeypatch, Manager(parser._RecutAnswerDraft(intent="not_for_robot", answer=llm_answer)))
+    out = parser.parse_intent("십 분 정도요", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.wait_minutes, out.reply, out.need_confirm) == ("wait", 10, "", False)
+    assert (out.answer, out.answer_value) == ("minutes", "10")
+
+
+def test_p7_text_path_yes_is_not_dropped_as_not_for_robot(on, monkeypatch):
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setenv("VICA_LOCAL_RULES", "1")       # 대답을 기다리는 단계가 아니라 지름길 없이 LLM 에 간다
+    monkeypatch.setenv("VICA_INTENT_INPUT", "text")
+    manager = use(monkeypatch, Manager(parser._RecutAnswerDraft(intent="not_for_robot", answer="")))
+    out = parser.parse_intent("네", DESTS, history=[], robot_state=RobotState(dialog_state="idle"), question=q())
+    assert len(manager.kinds) == 1
+    assert (out.intent, out.answer, out.reply) == ("affirm", "yes", "")
+
+
+def test_p6_text_path_whole_no_replaces_the_llm_destination(on, monkeypatch):
+    monkeypatch.setenv("VICA_LOCAL_RULES", "1")
+    monkeypatch.setenv("VICA_INTENT_INPUT", "text")
+    manager = use(monkeypatch, Manager(parser._AnswerDraft(intent="navigate", destination_candidate="안내소",
+                                                           answer="destination")))
+    out = parser.parse_intent("아니요", DESTS, history=[], robot_state=RobotState(dialog_state="idle"), question=q())
+    assert len(manager.kinds) == 1                     # LLM 이 낸 목적지 제안을 규칙이 바꾼다(지름길이 아니다)
+    assert (out.intent, out.answer, out.matched_destination_id, out.destination_candidate, out.reply, out.need_confirm) == (
+        "deny", "no", "", None, "", False)
+
+
+def test_p6_text_path_shortcut_meets_the_same_minutes_condition(on, monkeypatch):
+    """지름길·_mission_question_answer 가 낸 의도에도 규칙 1 의 분 조건이 걸린다(규칙 4)."""
+    use(monkeypatch, Manager())
+    waited = parser.parse_intent("오 분", DESTS, history=[AIMessage(MINUTES_Q[1])],
+                                 robot_state=RobotState(dialog_state="asking_wait_time"), question=q(*MINUTES_Q))
+    assert (waited.intent, waited.wait_minutes, waited.answer, waited.answer_value) == ("wait", 5, "minutes", "5")
+    # pause 지름길은 통째 낱말만 보아 분이 든 말이 걸리지 않는다 — 걸렸다면 나갈 꼴을 fill 로 본다.
+    paused = af.fill(parser.VicaIntent(intent="pause", reply=parser.PAUSE_ACK, need_confirm=False),
+                     q(*MINUTES_Q), ("minutes", "5"))
+    assert (paused.intent, paused.answer, paused.reply) == ("pause", "", parser.PAUSE_ACK)
+
+
+def test_p6_text_path_llm_failure_keeps_a_standing_rule_answer(on, monkeypatch):
+    """LLM 을 못 써도 나가는 곳은 같은 fill 을 지난다(규칙 4) — 통째 분 대답은 wait 로 나간다."""
+    class Down(Manager):
+        def invoke(self, messages, local_messages=None):
+            raise RuntimeError("cloud down")
+
+    use(monkeypatch, Down())
+    out = parser.parse_intent("오 분", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.wait_minutes, out.reply, out.answer, out.answer_value) == ("wait", 5, "", "minutes", "5")
+    other = parser.parse_intent("모르겠어", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (other.intent, other.reply, other.answer) == ("unknown", parser.LLM_UNAVAILABLE, "")
+
+
+def test_text_path_is_unchanged_when_off(monkeypatch):
+    use(monkeypatch, Manager(parser._IntentDraft(intent="finish")))
+    out = parser.parse_intent("십 분 말고 그냥 끝내 줘", DESTS, history=[AIMessage(MINUTES_Q[1])], question=q(*MINUTES_Q))
+    assert (out.intent, out.answer, out.question_id) == ("finish", "", "")
 
 
 def test_no_question_no_answer(on, monkeypatch):
