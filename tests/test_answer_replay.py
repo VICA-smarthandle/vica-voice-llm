@@ -234,3 +234,81 @@ def test_model_tag_for_file_names():
     assert answer_replay.model_tag("midm2-mini") == "midm2-mini"
     assert answer_replay.model_tag("hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M") == "gemma-4-E2B-it-GGUF-Q4_K_M"
     assert answer_replay.model_tag("") == ""
+
+
+# ---- 새 답지 채점(설계 2026-11-20 G2 · 8절, 계획 Task 1-4) ------------------------------------------------------------
+KEY_ROW = {"date": "11-04", "time": "10:00:00", "dest_yaml": "x", "stt": "", "ts": "9.0", "kind": "open",
+           "question": "네?", "answer_text": "화장실 가자", "label_answer": "destination", "label_value": "d2"}
+
+
+def _key(action: str, set_: str = "seen", **more) -> dict:
+    return {"action": action, "target": "", "minutes": "", "set": set_, "source": "rule", "drop": "", **more}
+
+
+def test_key_grading_uses_what_the_mission_receives(dests):
+    """확인 질문 없이 나온 확정 navigate 는 음성 노드가 제안으로 낮춘다(demote_unasked_confirm) — 반응은 go 가 아니라 confirm."""
+    confirmed = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=False)
+    run = replay([KEY_ROW], lambda row: (confirmed, 0.5), lambda _p: dests, key={"9.0": _key("confirm", target="d2")})
+    row = run["rows"][0]
+    assert row["reaction"]["action"] == "confirm" and row["key_status"] == "ok" and row["set"] == "seen"
+    assert run["key"]["seen"] == {"ok": 1}
+
+
+def test_key_grading_reads_the_handed_over_question(dests):
+    """되묻는 문장은 미션에 넘어간다(hand_over_question) — 넘어간 문장으로 which · reask 를 가른다."""
+    which = VicaIntent(intent="clarify", need_confirm=False, reply="사회복지와 화장실 중 어디로 갈까요?")
+    run = replay([KEY_ROW], lambda row: (which, 0.5), lambda _p: dests, key={"9.0": _key("which")})
+    assert run["rows"][0]["ask_text"] == "사회복지와 화장실 중 어디로 갈까요?" and run["rows"][0]["key_status"] == "ok"
+
+
+def test_key_summary_counts_dropped_requests_and_principles(dests):
+    rows = [{**KEY_ROW, "ts": "1.0"},
+            {**KEY_ROW, "ts": "2.0", "kind": "confirm", "question": "사회복지로 안내해드릴까요?", "answer_text": "응"}]
+    key = {"1.0": _key("confirm", "heldout", target="d2"), "2.0": _key("yes", "heldout")}
+    run = replay(rows, lambda row: (VicaIntent(intent="unknown"), 0.5), lambda _p: dests, key=key)
+    assert run["key"]["heldout"] == {"wrong": 1, "reask": 1}       # "네?" 뒤의 말을 버림 · 확인 질문은 미션이 다시 물음
+    assert run["key_dropped"] == {"heldout": 1} and run["key_go"] == {}
+    assert run["key_principles"]["heldout"] == {5: 1, 6: 1}
+
+
+def test_key_counts_departure_without_confirm_only_when_it_reaches_the_mission(dests):
+    asked = {**KEY_ROW, "kind": "confirm", "question": "화장실로 안내해드릴까요?", "answer_text": "사회복지로 가자"}
+    other = VicaIntent(intent="navigate", matched_destination_id="d1", need_confirm=False)   # 묻지 않은 곳으로 확정
+    run = replay([asked], lambda row: (other, 0.5), lambda _p: dests, key={"9.0": _key("confirm", target="d1")})
+    assert run["rows"][0]["reaction"]["action"] == "confirm" and run["key_go"] == {}          # 음성 노드가 낮춘다
+
+
+def test_rows_without_a_key_row_are_not_graded(dests):
+    run = replay([KEY_ROW], lambda row: (VicaIntent(intent="affirm"), 0.5), lambda _p: dests, key={})
+    assert run["rows"][0]["key_status"] == "nokey" and run["key"] == {}
+
+
+def test_without_a_key_the_result_is_as_before(rows_labeled, dests):
+    out = replay(rows_labeled, lambda row: (VicaIntent(intent="affirm"), 1.2), lambda _p: dests)
+    assert "key" not in out and "key_status" not in out["rows"][0]
+
+
+def test_select_rows_by_set():
+    rows = [{"ts": "1.0"}, {"ts": "2.0"}, {"ts": "3.0"}]
+    key = {"1.0": _key("yes", "seen"), "2.0": _key("yes", "heldout")}
+    assert answer_replay.select_rows(rows, key, "seen") == [{"ts": "1.0"}]
+    assert answer_replay.select_rows(rows, key, "heldout") == [{"ts": "2.0"}]
+    assert answer_replay.select_rows(rows, key, "all") == rows
+
+
+def test_heldout_rows_are_counted_but_not_listed_in_the_report(dests):
+    rows = [{**KEY_ROW, "ts": "1.0", "answer_text": "본 말 문장"},
+            {**KEY_ROW, "ts": "2.0", "date": "10-21", "answer_text": "안 본 말 문장"}]
+    key = {"1.0": _key("silent", "seen"), "2.0": _key("silent", "heldout")}
+    moved = VicaIntent(intent="navigate", matched_destination_id="d2", need_confirm=True)
+    run = replay(rows, lambda row: (moved, 0.5), lambda _p: dests, key=key)
+    md = answer_replay._report_md("gpt", [run], setup="")
+    assert "본 말 문장" in md and "안 본 말 문장" not in md
+    assert "heldout" in md and "원칙 7" in md
+
+
+def test_result_name_keeps_runs_on_different_label_files_apart():
+    a = answer_replay.result_name("gpt", "", False, False, False, "labels_208_confirmed", True, "20261121-1100")
+    b = answer_replay.result_name("gpt", "", False, False, False, "people_talk_labels", True, "20261121-1100")
+    assert a != b and a.startswith("replay_gpt_key-labels_208_confirmed")
+    assert answer_replay.result_name("gpt", "", False, True, False, "labeled", False, "20261121-1100") == "replay_gpt_answer_20261121-1100"

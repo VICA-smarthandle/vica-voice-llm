@@ -1,10 +1,13 @@
 """정답 묶음을 지금 구조의 해석 경로에 다시 넣어 기준 점수를 잰다 (설계 2026-11-14 5절).
 
     .venv/bin/python -m tools.answer_replay --path midm|gpt|realtime --labels .../labeled.csv [--rounds 3] [--answer]
+                                            [--key .../review2/answer_key.csv [--set seen|heldout|all]]
 
 midm·gpt = 받아쓴 글자 → parse_intent(글자 경로). realtime = 저장 소리(~/vica_data/listen_clips) → parse_intent_audio.
 --answer = 대답 칸(VICA_ANSWER)을 켠 채로 잰다(3-나-2 1단계): 해석기에 질문 기록을 넘기고 answer 로 채점한다.
-결과: 정답 파일 옆 replay_<path>[_answer]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
+--key = 새 답지(로봇이 해야 할 일)로도 채점한다(설계 2026-11-20 G2): 해석 결과를 미션이 받는 꼴로 만든 뒤 로봇이 한 일을
+답지와 견준다(tools.key_grade). 안 본 말(set=heldout)은 보고서에 숫자만 싣는다 — 고치는 동안 행 내용을 읽지 않으려고.
+결과: 정답 파일 옆 replay_<path>[_answer][_key-<정답 파일>]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
 """
 from __future__ import annotations
 
@@ -18,16 +21,18 @@ import sys
 import time
 import wave
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from src import answer_field
-from src.one_voice import _choice_option_ids
+from src.one_voice import _choice_option_ids, demote_unasked_confirm, hand_over_question
 from src.question_record import OpenQuestion
 from src.replies import LLM_UNAVAILABLE
 from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
 from tools.answer_grade import answer_of, grade, pred_of, question_destination_id
+from tools.key_grade import Reaction, grade_key, load_key, reaction_of
 
 STOP_AFTER_ERRORS = 5
 CLIPS_DIR = Path.home() / "vica_data" / "listen_clips"
@@ -156,9 +161,65 @@ def with_transcript_rule(intent, row: dict, question: OpenQuestion):  # noqa: AN
     return intent.model_copy(update={"question_id": question.id, "answer": ruled[0], "answer_value": ruled[1]})
 
 
+KEY_NOT_OK = ("reask", "wrong", "mismatch")
+
+
+def select_rows(rows: list[dict], key: dict, which: str) -> list[dict]:
+    """--set: 답지의 묶음(seen = 본 말 · heldout = 안 본 말)에 든 행만. all 이면 전부."""
+    if which == "all":
+        return rows
+    return [r for r in rows if (key.get(r["ts"]) or {}).get("set") == which]
+
+
+def result_name(path: str, tag: str, tools: bool, answer: bool, recut: bool, labels_stem: str, keyed: bool,
+                stamp: str) -> str:
+    """결과 파일 이름. 새 답지 채점은 정답 파일 이름을 넣는다 — 같은 분에 다른 묶음을 돌려도 덮어쓰지 않게."""
+    return (f"replay_{path}{'-' + tag if tag else ''}{'_tools' if tools else ''}{'_answer' if answer else ''}"
+            f"{'_recut' if recut else ''}{'_key-' + labels_stem if keyed else ''}_{stamp}")
+
+
+def key_fields(row: dict, key: dict, intent, question: OpenQuestion, dests: Sequence) -> dict:  # noqa: ANN001
+    """새 답지 채점 칸. intent 가 None 이면 아무 말도 못 들은 행(되묻기로 본다). 그 밖에는 음성 노드처럼 미션이 받는
+    꼴로 만든 뒤(확인 질문 없는 확정 navigate 를 제안으로 낮춤 → 질문 문장을 넘김) 로봇이 한 일을 읽는다."""
+    if intent is None:
+        sent, reaction = None, Reaction("reask")
+    elif isinstance(intent, ReserveCall):
+        sent, reaction = None, Reaction("etc")
+    else:
+        sent = hand_over_question(demote_unasked_confirm(intent, question, dests), dests)
+        reaction = reaction_of(sent, question, dests)
+    out = {"intent": sent.intent if sent else "", "dest": (sent.matched_destination_id or "") if sent else "",
+           "nc": sent.need_confirm if sent else "", "ask_text": sent.ask_text if sent else "", "reaction": asdict(reaction)}
+    key_row = key.get(row["ts"])
+    if key_row is None:
+        return {**out, "key_status": "nokey", "principle": 0, "set": "", "key_action": "", "key_target": ""}
+    status, principle = grade_key(key_row, reaction, question.kind)
+    return {**out, "key_status": status, "principle": principle, "set": key_row.get("set", ""),
+            "key_action": key_row.get("action", ""), "key_target": key_row.get("target", "")}
+
+
+def key_summary(rows: list[dict]) -> dict:
+    """묶음(set)별 판정 수 · 버린 진짜 요청(wrong 중 반응 silent) · 확인 없이 출발(go) · 깨진 원칙 번호별 수."""
+    counts, dropped, go, principles = {}, Counter(), Counter(), {}
+    for r in rows:
+        status, set_ = r.get("key_status", ""), r.get("set", "")
+        if not status or status == "nokey":
+            continue
+        counts.setdefault(set_, Counter())[status] += 1
+        action = r["reaction"]["action"]
+        if status == "wrong" and action == "silent":
+            dropped[set_] += 1
+        if action == "go":
+            go[set_] += 1
+        if status in KEY_NOT_OK:
+            principles.setdefault(set_, Counter())[r["principle"]] += 1
+    return {"key": {k: dict(v) for k, v in counts.items()}, "key_dropped": dict(dropped), "key_go": dict(go),
+            "key_principles": {k: dict(v) for k, v in principles.items()}}
+
+
 def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_for: Callable[[str], Optional[Sequence]],
-           rule_text: Callable[[dict], str] = parsed_text_for) -> dict:
-    """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약.
+           rule_text: Callable[[dict], str] = parsed_text_for, key: Optional[dict] = None) -> dict:
+    """행마다 status(ok·reask·wrong·skip·error)·pred·latency 와 요약. key(새 답지)를 주면 key_status 등도 붙인다.
 
     행에는 두 읽기를 다 남긴다 — pred(대답 칸 우선, 채점에 쓴 값)와 pred_intent(의도 칸만 = 1단계에서 로봇이 실제로
     하는 동작), 그리고 answer·answer_src(rule = 짧은 대답 규칙 · llm). rule_text 는 그 경로가 규칙에 대는 글자다.
@@ -175,6 +236,8 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             pred, pv, latency, why = "unclear", "", 0.0, "빈 글자"
             both = {"pred_intent": "unclear", "pred_intent_value": "", "answer": "", "answer_value": "", "answer_src": "",
                     "reply": ""}
+            if key is not None:
+                both.update(key_fields(row, key, None, question_for(row, dests), dests))
         else:
             try:
                 intent, latency = interpret(row)
@@ -196,8 +259,9 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             if isinstance(intent, ReserveCall):
                 # 정답 묶음에는 예약 발화가 없다 — 도구 출력에서 reserve_facility 가 나오면 묻지 않은 동작이다.
                 errors_in_row = 0
+                keyed = key_fields(row, key, intent, question_for(row, dests), dests) if key is not None else {}
                 out_rows.append({**rec, "status": "wrong", "pred": "reserve", "pred_value": "", "latency": latency,
-                                 "why": "reserve_facility"})
+                                 "why": "reserve_facility", **keyed})
                 continue
             pred, pv = pred_of(intent, row["kind"], row["question"], dests)
             by_intent = answer_of(intent, row["kind"], row["question"], dests)
@@ -208,6 +272,8 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
             both = {"pred_intent": by_intent[0], "pred_intent_value": by_intent[1],
                     "answer": answer, "answer_value": value, "answer_src": src,
                     "reply": getattr(intent, "reply", "") or ""}
+            if key is not None:
+                both.update(key_fields(row, key, intent, question_for(row, dests), dests))
             why = (f"{intent.intent}/{intent.matched_destination_id or '-'}/nc={intent.need_confirm}"
                    f"/answer={answer or '-'}")
         errors_in_row = 0
@@ -219,7 +285,31 @@ def replay(rows: list[dict], interpret: Callable[[dict], tuple], destinations_fo
     lat = [r["latency"] for r in out_rows if r["status"] in ("ok", "reask", "wrong") and r["latency"]]
     return {"rows": out_rows, "counts": Counter(r["status"] for r in out_rows),
             "by_kind": {k: dict(v) for k, v in by_kind.items()},
-            "p50": _quantile(lat, 0.5), "p90": _quantile(lat, 0.9), "stopped": stopped}
+            "p50": _quantile(lat, 0.5), "p90": _quantile(lat, 0.9), "stopped": stopped,
+            **(key_summary(out_rows) if key is not None else {})}
+
+
+def _key_report(runs: list[dict]) -> list[str]:
+    """새 답지 채점 절. 안 본 말(heldout)은 숫자만, 본 말(seen)은 맞지 않은 행을 싣는다."""
+    lines = ["", "## 새 답지 채점 — 원칙을 지켰나", "",
+             "| 묶음 | 회차 | ok | reask | wrong | mismatch | 버린 진짜 요청 | 확인 없이 출발 | 버림·미확인 | 맞지 않은 행의 원칙 |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for set_ in sorted({s for run in runs for s in run["key"]}):
+        for i, run in enumerate(runs, 1):
+            c = run["key"].get(set_, {})
+            broken = " · ".join(f"원칙 {p} ×{n}" for p, n in sorted(run["key_principles"].get(set_, {}).items()))
+            lines.append(f"| {set_} | {i} | {c.get('ok', 0)} | {c.get('reask', 0)} | **{c.get('wrong', 0)}** | "
+                         f"{c.get('mismatch', 0)} | {run['key_dropped'].get(set_, 0)} | {run['key_go'].get(set_, 0)} | "
+                         f"{c.get('drop', 0) + c.get('pending', 0)} | {broken} |")
+    lines += ["", "## 본 말(seen)에서 맞지 않은 행 (1회차)", "",
+              "| 시각 | 질문 | 대답 | 답지 | 로봇이 한 일 | 판정 | 원칙 |", "|---|---|---|---|---|---|---|"]
+    for r in runs[0]["rows"]:
+        if r.get("set") == "seen" and r.get("key_status") in KEY_NOT_OK:
+            did = r["reaction"]
+            lines.append(f"| {r['date']} {r['time']} | {r['question'][:30]} | {r['answer_text'][:30]} | "
+                         f"{r['key_action']} {r['key_target']} | {did['action']} {did['target']}{did['minutes']} "
+                         f"{did['say'][:30]} | {r['key_status']} | {r['principle']} |")
+    return lines
 
 
 def _report_md(path_name: str, runs: list[dict], setup: str = "") -> str:
@@ -240,9 +330,11 @@ def _report_md(path_name: str, runs: list[dict], setup: str = "") -> str:
                      f"{c.get('skip', 0)} | {c.get('error', 0)} |")
     lines += ["", "## wrong 행 (1회차)", "", "| 시각 | 질문 | 대답 | 정답 | 예측 | 의도 |", "|---|---|---|---|---|---|"]
     for r in runs[0]["rows"]:
-        if r["status"] == "wrong":
+        if r["status"] == "wrong" and r.get("set") != "heldout":     # 안 본 말의 행 내용은 싣지 않는다
             lines.append(f"| {r['date']} {r['time']} | {r['question'][:30]} | {r['answer_text'][:30]} | "
                          f"{r['label_answer']} {r['label_value']} | {r['pred']} {r['pred_value']} | {r['why']} |")
+    if "key" in runs[0]:
+        lines += _key_report(runs)
     return "\n".join(lines) + "\n"
 
 
@@ -255,6 +347,9 @@ def main() -> None:
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
     ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
     ap.add_argument("--model", default="", help="글자 경로(midm·gpt)의 모델 이름을 바꿔 잰다 — 예: 다른 로컬 모델(Ollama 태그)")
+    ap.add_argument("--key", default="", help="새 답지(answer_key.csv) — 로봇이 한 일을 답지와 견줘 채점한다")
+    ap.add_argument("--set", choices=("seen", "heldout", "all"), default="all", dest="which",
+                    help="--key 와 함께: 본 말(seen)·안 본 말(heldout)만 돌린다")
     ap.add_argument("--pause", type=float, default=0.0,
                     help="API 를 부른 뒤 쉴 초 — Realtime 은 요청이 몰리면 멈춘다(11-19 사용자). 기본 0")
     args = ap.parse_args()
@@ -275,6 +370,10 @@ def main() -> None:
 
     labels_path = Path(os.path.expanduser(args.labels))
     rows = [r for r in csv.DictReader(open(labels_path, encoding="utf-8")) if r.get("label_answer")]
+    key = load_key(os.path.expanduser(args.key)) if args.key else None
+    if key is not None:
+        rows = select_rows(rows, key, args.which)
+        setup += f" · 새 답지 {Path(args.key).name}(묶음 {args.which}, {len(rows)}행)"
     cache: dict = {}
 
     def destinations_for(path: str):
@@ -320,18 +419,22 @@ def main() -> None:
     runs = []
     for i in range(args.rounds):
         run = replay(rows, interpret, destinations_for,
-                     rule_text=transcript_for if args.path == "realtime" else parsed_text_for)
+                     rule_text=transcript_for if args.path == "realtime" else parsed_text_for, key=key)
         c = run["counts"]
         print(f"[{args.path}] {i + 1}회차: ok {c.get('ok', 0)} reask {c.get('reask', 0)} wrong {c.get('wrong', 0)} "
               f"mismatch {c.get('mismatch', 0)} "
               f"skip {c.get('skip', 0)} error {c.get('error', 0)} p50 {run['p50']:.2f}s p90 {run['p90']:.2f}s", flush=True)
+        for set_, kc in sorted(run.get("key", {}).items()):
+            print(f"    새 답지 {set_}: ok {kc.get('ok', 0)} reask {kc.get('reask', 0)} wrong {kc.get('wrong', 0)} "
+                  f"mismatch {kc.get('mismatch', 0)} · 버린 요청 {run['key_dropped'].get(set_, 0)} · "
+                  f"확인 없이 출발 {run['key_go'].get(set_, 0)}", flush=True)
         runs.append(run)
         if run["stopped"]:
             print("오류가 5건 이어져 멈춤 — 경로(Ollama·인터넷)를 확인하세요", file=sys.stderr)
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
-    tag = f"-{model_tag(args.model)}" if args.model else ""
-    base = labels_path.parent / f"replay_{args.path}{tag}{'_tools' if args.tools else ''}{'_answer' if args.answer else ''}_{stamp}"
+    base = labels_path.parent / result_name(args.path, model_tag(args.model) if args.model else "", args.tools,
+                                            args.answer, False, labels_path.stem, key is not None, stamp)
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")
