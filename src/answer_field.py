@@ -46,6 +46,11 @@ _MINUTES_INTENTS = ("wait",)
 _NOT_FOR_ROBOT = "not_for_robot"
 # 네/아니요 규칙 대답이 서는 의도(LLM 대답이 비었을 때, 수정 2차) — 같은 읽기일 때만 대답 칸을 채운다.
 _YES_NO_INTENT = {"yes": "affirm", "no": "deny"}
+# 대답 값과 정면으로 어긋나는 의도(최종 검토 I1 ①) — yes 인데 거절, no 인데 승낙.
+_CROSSED_INTENT = {"yes": "deny", "no": "affirm"}
+_OPPOSITE = {"yes": "no", "no": "yes"}
+# LLM 의 unclear 를 other 로 바꾸지 않는 의도(최종 검토 I2) — 승낙·거절. 확정 navigate·resume 은 need_confirm 으로 본다(_settled).
+_YES_NO_INTENTS = ("affirm", "deny")
 _INVERTED_NOTE = ". 필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no"   # 지금 지시문의 affirm·deny 기준과 같은 방향
 # 재단이 켜졌을 때 질문 줄 끝에 붙는 말(원칙 7). 질문 줄은 answer 값을 하나 고르라고만 해서, 사람끼리 한 말에도 값을 고르려다
 # unknown·unclear 가 됐다(2026-11-21 3단계 측정: 사람끼리 21행에서 대꾸 안 함 16 → 12). not_for_robot 이면 answer 를 비워도
@@ -185,6 +190,29 @@ def _not_dropped(intent: VicaIntent, question: OpenQuestion) -> VicaIntent:
         "question_id": question.id, "answer": "unclear", "answer_value": ""})
 
 
+def _crossed(llm_answer: str, intent_name: str, ruled: Optional[tuple[str, str]]) -> bool:
+    """원칙 3·6(최종 검토 I1 ①②): LLM 대답(yes·no)이 정면으로 어긋나는가 — ① 의도가 그 반대(yes + deny · no + affirm), 또는
+    ② 짧은 대답 규칙의 대답이 그 반대(들은 글자가 통째로 "아니"인데 yes · 통째로 "네"인데 no). 규칙이 서는 경우(standing)는 이 앞에서
+    끝나므로 ② 는 규칙과 LLM 이 다르게 읽은 때뿐이다."""
+    if llm_answer not in _OPPOSITE:
+        return False
+    if intent_name == _CROSSED_INTENT[llm_answer]:
+        return True
+    return ruled is not None and ruled[0] == _OPPOSITE[llm_answer]
+
+
+def _elsewhere(intent: VicaIntent, question: OpenQuestion) -> bool:
+    """원칙 3(최종 검토 I1 ③): 확인 질문(kind confirm)이 열렸는데 그 질문의 후보(option_ids)가 아닌 목적지로 가는 navigate 인가.
+    후보를 모르면(option_ids 빈 값) 거짓 — 가리지 않는다."""
+    return (question.kind == "confirm" and bool(question.option_ids) and intent.intent == "navigate"
+            and bool(intent.matched_destination_id) and intent.matched_destination_id not in question.option_ids)
+
+
+def _settled(intent: VicaIntent) -> bool:
+    """원칙 3·6(최종 검토 I2): 승낙·거절, 또는 확정(need_confirm 거짓) navigate·resume — 미션이 의도대로 받으면 출발·재출발한다."""
+    return intent.intent in _YES_NO_INTENTS or (intent.intent in ("navigate", "resume") and not intent.need_confirm)
+
+
 def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[tuple[str, str]] = None,
          llm_answer: str = "") -> VicaIntent:
     """의도에 question_id·answer·answer_value 를 채운 사본. 꺼짐·질문 없음·긴급이면 받은 의도 그대로.
@@ -193,6 +221,8 @@ def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[t
     대답 칸 채우기(네/아니요), LLM 도 wait 로 읽은 분의 값 바로잡기(_ruled), 대답으로 보이는 말(네/아니요·분)을 not_for_robot
     으로 버리지 않고 되묻게 하기(_not_dropped). 규칙이 서지 않으면 LLM 이 낸 값이다. 허용 밖의 값, 목적지 id 없는
     destination·choice, 분 없는 minutes 는 unclear 로 바꾼다(설계 4.1 — 외부 API 는 형식을 강제하지 않는다).
+    LLM 의 yes·no 가 의도나 규칙 대답과 정면으로 어긋나면 unclear(되묻기), 확인 질문 중 다른 곳 navigate 의 yes 는 destination 이다
+    (최종 검토 I1 — _crossed·_elsewhere). LLM 의 unclear 는 뜻을 읽은 의도면 other 로 두되 승낙·거절·확정은 그대로다(I2 — _settled).
     """
     if not on() or question is None or intent.safety_flag == "emergency":
         return intent
@@ -201,10 +231,21 @@ def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[t
     if standing(ruled, intent.intent, llm_answer):
         return _ruled(intent, question, ruled)
     answer, value = (llm_answer or "").strip(), ""
-    if answer == "unclear" and intent.intent not in ("unknown", "clarify", _NOT_FOR_ROBOT):
+    if _crossed(answer, intent.intent, ruled):
+        # 원칙 3·6(최종 검토 I1 ①②): 대답 칸이 의도나 들은 글자와 정면으로 어긋난다 — 미션은 대답 칸을 먼저 읽으므로 그대로 두면
+        # 출발·취소·종료로 간다. 어느 쪽으로도 뒤집지 않고 unclear 로 낮춘다: 의도는 그대로, 미션이 같은 질문을 다시 묻는다.
+        answer = "unclear"
+    elif answer == "yes" and _elsewhere(intent, question):
+        # 원칙 3(최종 검토 I1 ③): 확인 질문 중 그 질문의 후보가 아닌 곳으로 가자는 말에 yes — 그 yes 로 물은 곳에 출발하지 않게
+        # 다른 곳(destination, 값은 아래에서 그 id)으로 둔다. 미션이 그곳으로 확인 질문을 한다.
+        answer = "destination"
+    elif (answer == "unclear" and intent.intent not in ("unknown", "clarify", _NOT_FOR_ROBOT)
+          and not _settled(intent)):
         # LLM 이 뜻은 읽고(의도 — 질문·멈춤·취소·다른 곳 …) 대답 칸만 unclear 로 냈다 — 미션이 unclear 를 먼저 읽어 "잘 듣지
         # 못했습니다."라고 하지 않게 other(질문과 상관없는 말)로 둔다: 미션은 의도대로 받는다(2026-11-21 3단계 실기, 확인 질문 중
         # "거기 어디야"). 뜻을 정하지 못한 의도(unknown·clarify)의 unclear 는 그대로 — 미션이 열린 질문을 다시 묻는다.
+        # 승낙·거절·확정(_settled)의 unclear 도 그대로다(원칙 3·6, 최종 검토 I2) — other 면 미션이 의도대로 출발·재출발한다
+        # (재현: 확인 질문 중 '음' + 모델 unknown·unclear → _audio_short_answer 가 affirm 으로 바꾼 뒤 출발).
         answer = "other"
     if answer and answer not in allowed(question.kind):
         answer = "unclear"

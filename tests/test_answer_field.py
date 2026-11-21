@@ -237,7 +237,8 @@ def test_p6_whole_yes_no_does_not_overturn_the_llm_reading(monkeypatch):
     assert (out.intent, out.answer, out.answer_value, out.matched_destination_id, out.reply, out.need_confirm) == (
         "navigate", "destination", "t", "t", "화장실로 안내해드릴까요?", True)
     refused = af.fill(VicaIntent(intent="deny", reply=""), q("yesno", "안내를 취소할까요?"), ("yes", ""), "no")   # '가자'
-    assert (refused.intent, refused.answer) == ("deny", "no")
+    # 최종 검토 I1 ②(11-21): 규칙 yes 와 LLM no 가 반대면 어느 쪽도 따르지 않는다 — 의도는 그대로, 대답 칸 unclear(미션이 다시 묻는다).
+    assert (refused.intent, refused.answer) == ("deny", "unclear")
 
 
 def test_p6_whole_yes_no_only_fills_the_answer_when_the_reading_matches(on):
@@ -361,3 +362,86 @@ def test_p6_unclear_from_the_llm_yields_to_an_understood_intent(on):
     no_id = af.fill(VicaIntent(intent="navigate"), asked, None, "destination")    # 목적지 id 가 없어 생긴 unclear 는 그대로
     assert no_id.answer == "unclear"
     assert af.fill(VicaIntent(intent="question"), asked, None, "other").answer == "other"
+
+
+# ----- 어긋난 대답 칸(최종 검토 I1·I2, 원칙 3·6) — 뒤집지 않고 되묻게 한다 ---------------------------------------------
+CONFIRM_WC = OpenQuestion(id="q1", kind="confirm", text="화장실로 안내해드릴까요?", option_ids=("wc",), opened_at=0.0)
+
+
+@pytest.mark.parametrize("kind", ["confirm", "yesno", "yesno_inverted"])
+def test_p3_i1_llm_answer_against_its_own_intent_is_unclear(on, kind):
+    """원칙 3·6: LLM 의 의도와 대답 칸이 정면으로 어긋나면(deny + yes · affirm + no) unclear 로 낮춘다 — 미션이 대답 칸을 먼저 읽어
+    출발·취소·종료로 가지 않고 같은 질문을 다시 묻는다. 의도는 그대로다(최종 검토 I1 ①, 재현 v1 '아니 됐어 그냥' → 출발)."""
+    said_no = af.fill(VicaIntent(intent="deny", reply=""), q(kind), None, "yes")
+    assert (said_no.intent, said_no.answer, said_no.answer_value, said_no.question_id) == ("deny", "unclear", "", "q1")
+    said_yes = af.fill(VicaIntent(intent="affirm", reply=""), q(kind), None, "no")
+    assert (said_yes.intent, said_yes.answer, said_yes.answer_value) == ("affirm", "unclear", "")
+    assert af.fill(VicaIntent(intent="deny"), q(kind), None, "no").answer == "no"          # 같은 쪽이면 그대로
+    assert af.fill(VicaIntent(intent="affirm"), q(kind), None, "yes").answer == "yes"
+
+
+@pytest.mark.parametrize("kind", ["confirm", "yesno", "yesno_inverted"])
+@pytest.mark.parametrize("name", ["affirm", "deny", "resume", "question", "cancel", "finish", "navigate"])
+def test_p6_i1_rule_answer_opposite_to_the_llm_answer_is_unclear(on, kind, name):
+    """원칙 6: 들은 글자가 통째로 네/아니요(규칙 대답)인데 LLM 대답이 그 반대(yes↔no)면 어느 쪽도 따르지 않는다 — 대답 칸 unclear,
+    의도·다른 칸은 그대로(미션이 unclear 를 먼저 읽어 다시 묻는다). 최종 검토 I1 ②, 재현 v1 '아니' + LLM yes → 출발."""
+    said = VicaIntent(intent=name, reply="", need_confirm=False, confidence=0.6,
+                      matched_destination_id="wc" if name == "navigate" else "")
+    for ruled, llm in ((("no", ""), "yes"), (("yes", ""), "no")):
+        out = af.fill(said, q(kind), ruled, llm)
+        assert (out.intent, out.answer, out.answer_value, out.question_id) == (name, "unclear", "", "q1"), (ruled, llm)
+        assert (out.need_confirm, out.matched_destination_id, out.confidence) == (False, said.matched_destination_id, 0.6)
+    assert af.fill(said, q(kind), ("no", ""), "no").answer == "no"                          # 같은 대답이면 규칙이 선다
+    assert af.fill(said, q(kind), ("yes", ""), "yes").answer == "yes"
+
+
+def test_p3_i1_yes_to_the_confirm_question_for_another_place_is_destination(on):
+    """원칙 3: 확인 질문("화장실로 안내해드릴까요?") 중 LLM 이 그 질문의 후보가 아닌 곳(409호)으로 가는 navigate 를 내고 대답 칸만
+    yes 면 destination(그 id)으로 바꾼다 — 그 yes 로 화장실에 출발하지 않고 미션이 409호로 확인 질문을 한다(최종 검토 I1 ③)."""
+    for nc in (True, False):
+        out = af.fill(VicaIntent(intent="navigate", matched_destination_id="r409", destination_candidate="409호",
+                                 need_confirm=nc), CONFIRM_WC, None, "yes")
+        assert (out.intent, out.answer, out.answer_value, out.question_id) == ("navigate", "destination", "r409", "q1")
+        assert (out.need_confirm, out.matched_destination_id, out.destination_candidate) == (nc, "r409", "409호")
+    same = af.fill(VicaIntent(intent="navigate", matched_destination_id="wc"), CONFIRM_WC, None, "yes")
+    assert (same.answer, same.answer_value) == ("yes", "")              # 그 질문의 후보면 승낙 그대로
+    unknown_options = af.fill(VicaIntent(intent="navigate", matched_destination_id="r409"), q("confirm"), None, "yes")
+    assert unknown_options.answer == "yes"                              # 후보를 모르면(option_ids 빈 값) 쓰지 않는다
+    resume_q = OpenQuestion(id="q2", kind="yesno", text="다시 출발할까요?", option_ids=("wc",), opened_at=0.0)
+    assert af.fill(VicaIntent(intent="navigate", matched_destination_id="r409"), resume_q, None, "yes").answer == "yes"
+    ruled_no = af.fill(VicaIntent(intent="navigate", matched_destination_id="r409"), CONFIRM_WC, ("no", ""), "yes")
+    assert ruled_no.answer == "unclear"                                 # 들은 글자가 통째로 "아니"면 ② 가 먼저(되묻기)
+
+
+@pytest.mark.parametrize("name,nc", [("affirm", False), ("deny", False), ("navigate", False), ("resume", False)])
+def test_p3_i2_unclear_stays_for_a_yes_no_or_settled_intent(on, name, nc):
+    """원칙 3·6: 승낙·거절·확정(affirm · deny · 확정 navigate · 확정 resume)의 unclear 는 other 로 바꾸지 않는다 — other 면 미션이
+    의도대로 출발·재출발한다. unclear 그대로면 미션이 다시 묻는다(최종 검토 I2, 재현 v5 확인 질문 중 '음' → 출발)."""
+    said = VicaIntent(intent=name, need_confirm=nc, matched_destination_id="wc" if name == "navigate" else "")
+    out = af.fill(said, CONFIRM_WC, None, "unclear")
+    assert (out.intent, out.need_confirm, out.answer, out.answer_value) == (name, nc, "unclear", "")
+
+
+@pytest.mark.parametrize("name,nc", [("question", False), ("pause", False), ("cancel", False), ("finish", False),
+                                     ("wait", False), ("help", False), ("dismiss", False),
+                                     ("navigate", True), ("resume", True)])
+def test_p6_i2_unclear_still_yields_to_other_readings(on, name, nc):
+    """그 밖의 의도(질문·멈춤·취소·끝·대기·제안 …)는 지금처럼 other — 미션이 의도대로 받는다(ca81b88, 확인 질문 중 "거기 어디야")."""
+    said = VicaIntent(intent=name, need_confirm=nc, matched_destination_id="r409" if name == "navigate" else "")
+    assert af.fill(said, CONFIRM_WC, None, "unclear").answer == "other"
+
+
+def test_p6_i2_whole_yes_still_fills_over_unclear(on):
+    """d956801 그대로 — "어."(규칙 yes) + affirm + unclear 는 규칙 대답 yes 다(standing). I2 는 규칙 대답이 없는 말('음')의 이야기다."""
+    assert af.fill(VicaIntent(intent="affirm"), CONFIRM_WC, ("yes", ""), "unclear").answer == "yes"
+    assert af.fill(VicaIntent(intent="deny"), CONFIRM_WC, ("no", ""), "unclear").answer == "no"
+
+
+def test_i1_i2_off_returns_the_same_intent(monkeypatch):
+    """꺼짐(VICA_ANSWER 없음)은 받은 의도 그대로 — I1·I2 의 갈래는 모두 이른 반환 뒤에 있다."""
+    monkeypatch.delenv("VICA_ANSWER", raising=False)
+    for said, ruled, llm in (
+            (VicaIntent(intent="deny"), None, "yes"), (VicaIntent(intent="affirm"), ("no", ""), "yes"),
+            (VicaIntent(intent="navigate", matched_destination_id="r409"), None, "yes"),
+            (VicaIntent(intent="affirm"), None, "unclear")):
+        assert af.fill(said, CONFIRM_WC, ruled, llm) is said
