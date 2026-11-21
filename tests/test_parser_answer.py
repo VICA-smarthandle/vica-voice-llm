@@ -406,5 +406,5 @@ def test_p16_question_line_for_a_local_call_never_mentions_not_for_robot(monkeyp
     asked = OpenQuestion("q", "confirm", "화장실로 안내해드릴까요?", (), 0.0)
     cloud = lip._build_system_prompt([], None, question=asked)
     local = lip._build_system_prompt([], None, question=asked, recut=False)
-    assert "로봇이 물은 질문" in cloud and "not_for_robot, answer 는 빈 문자열" in cloud
+    assert "로봇이 물은 질문" in cloud and "not_for_robot 으로 판단한 말이면 answer 는 빈 문자열" in cloud
     assert "로봇이 물은 질문" in local and "not_for_robot" not in local

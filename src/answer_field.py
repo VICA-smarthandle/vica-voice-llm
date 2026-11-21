@@ -48,9 +48,9 @@ _NOT_FOR_ROBOT = "not_for_robot"
 _YES_NO_INTENT = {"yes": "affirm", "no": "deny"}
 _INVERTED_NOTE = ". 필요 없다는 뜻이면 yes, 필요하다는 뜻이면 no"   # 지금 지시문의 affirm·deny 기준과 같은 방향
 # 재단이 켜졌을 때 질문 줄 끝에 붙는 말(원칙 7). 질문 줄은 answer 값을 하나 고르라고만 해서, 사람끼리 한 말에도 값을 고르려다
-# unknown·unclear 가 됐다(2026-11-21 3단계 측정: 사람끼리 21행에서 대꾸 안 함 16 → 12). [판단 순서] 1번이 먼저임을 이 줄에도 적는다.
-_NOT_FOR_ROBOT_NOTE = (" 이 줄이 [판단 순서]의 '로봇이 방금 한 말'이다. 판단 순서 1번이 먼저다 — 로봇에게 한 말이 아니면 "
-                       "intent 는 not_for_robot, answer 는 빈 문자열이다.")
+# unknown·unclear 가 됐다(2026-11-21 3단계 측정: 사람끼리 21행에서 대꾸 안 함 16 → 12). not_for_robot 이면 answer 를 비워도
+# 된다는 것만 적는다 — "판단 순서 1번이 먼저다"까지 적었더니 진짜 요청 3행을 not_for_robot 으로 버렸다(같은 날 본 말 2차).
+_NOT_FOR_ROBOT_NOTE = " 이 줄이 [판단 순서]의 '로봇이 방금 한 말'이다. not_for_robot 으로 판단한 말이면 answer 는 빈 문자열로 둔다."
 _HEADER = "\n[지금 상황]\n"
 
 _narrowed_cache: dict = {}

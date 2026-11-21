@@ -330,12 +330,13 @@ def test_log_line(on):
 
 
 def test_p7_question_line_says_not_for_robot_comes_first_when_recut_is_on(on, monkeypatch):
-    """재단이 켜지면 질문 줄에 '로봇에게 한 말이 아니면 not_for_robot, answer 는 빈 문자열'을 덧붙인다(3단계 측정: 줄에 그 말이
-    없어 사람끼리 한 말에 대답 값을 고르려다 unknown·unclear 가 됐다 — 대꾸 안 함 16 → 12). 재단이 꺼지면 지금 글자 그대로."""
+    """재단이 켜지면 질문 줄에 'not_for_robot 으로 판단한 말이면 answer 는 빈 문자열'을 덧붙인다(3단계 측정: 줄에 그 말이
+    없어 사람끼리 한 말에 대답 값을 고르려다 unknown·unclear 가 됐다 — 대꾸 안 함 16 → 12). 판단을 재촉하는 말("1번이 먼저다")은
+    넣지 않는다 — 진짜 요청을 버렸다. 재단이 꺼지면 지금 글자 그대로."""
     plain = af.question_line(q())
     assert "not_for_robot" not in plain
     monkeypatch.setenv("VICA_RECUT", "on")
     line = af.question_line(q())
     assert line.startswith(plain) and line != plain
-    assert "not_for_robot" in line and "answer 는 빈 문자열" in line
+    assert "not_for_robot" in line and "answer 는 빈 문자열" in line and "먼저" not in line
     assert af.question_line(None) == ""
