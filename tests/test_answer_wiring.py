@@ -11,6 +11,7 @@ from src.one_voice import hand_over_question, mission_asks_resume, voice_may_spe
 from src.question_record import OpenQuestion
 from src.replies import COMMAND_DECLINED, RESUME_CONFIRM
 from src.schema import DestinationData, VicaIntent, should_forward_intent
+from tests.test_fixed_answers import node_mod  # noqa: F401 — 의도 노드 가짜 고정 장치(_publish_intent 만 부른다)
 from tests.test_one_voice_wiring import _branch_tests, _calls, _method
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -136,3 +137,19 @@ def test_p3_resume_proposal_is_not_written_to_history_when_on():
     assert ifs and ast.unparse(ifs[0].body[0]) == "history_line = ''"
     (extend,) = [c for c in _calls(fn, "self._history.extend") if "AIMessage(history_line)" in ast.unparse(c)]
     assert ifs[0].lineno < extend.lineno
+
+
+def test_p3_resume_proposal_leaves_no_empty_robot_line_in_text_mode(node_mod, monkeypatch):
+    """최종 검토 Minor: 켜짐의 재개 제안은 미션에 보내고 미션이 "다시 출발할까요?"를 묻는다 — 글자 모드 기록에 빈 AIMessage("")를
+    남기지 않고 사람 줄만 넣는다(repeat 와 같은 처리, 4.2 검토 C1: 빈 로봇 줄이 마지막이면 다음 "음"이 확인 대기 없는 승낙이 된다)."""
+    from tests.test_fixed_answers import _node, _publish, talk_on
+    talk_on(monkeypatch)
+    me = _node(None, [(1.0, "네, 잠시 멈출게요.")], history=(HumanMessage("잠깐 멈춰"), AIMessage("네, 잠시 멈출게요.")))
+    proposal = VicaIntent(intent="resume", need_confirm=True, reply=RESUME_CONFIRM)
+    sent, said = _publish(node_mod, me, proposal, text="다시 가자")
+    assert [(m["intent"], m["reply"], m["ask_text"]) for m in sent] == [("resume", "", "")]   # 미션이 묻는다
+    assert said == []
+    msgs = me._history.messages
+    assert type(msgs[-1]) is HumanMessage and msgs[-1].content == "다시 가자"
+    robot_lines = [m.content for m in msgs if isinstance(m, AIMessage)]
+    assert robot_lines == ["네, 잠시 멈출게요."] and robot_lines[-1] != ""

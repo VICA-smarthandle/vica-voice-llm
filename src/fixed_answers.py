@@ -34,6 +34,28 @@ def on() -> bool:
             and intent_recut.on() and answer_field.on())
 
 
+# 최종 검토 I4 — 음성 두 스위치와 미션 파라미터 셋은 한 묶음으로 켜고 끈다. 경고 글 끝에 붙인다.
+_BUNDLE_NOTE = "다섯 개(VICA_RECUT·VICA_ANSWER + 미션 answer_field·reask_ladder·wake_revive)는 한 묶음으로 켠다"
+
+
+def switch_warning() -> str:
+    """음성 스위치 조합이 어긋났으면 경고 한 줄, 맞으면 빈 글자(최종 검토 I4). 동작은 막지 않는다 — 의도 노드가 기동할 때 로그로만 낸다.
+
+    어긋남: VICA_ANSWER=on 인데 VICA_RECUT 꺼짐(재단 없는 대답 칸) / VICA_TALK=on 인데 VICA_RECUT·VICA_ANSWER 중 하나라도
+    꺼짐(그러면 on() 이 거짓이라 VICA_TALK 은 아무것도 하지 않는다). 미션 쪽 셋은 이 노드가 모른다 — 미션 노드가 따로 본다."""
+    recut, answer = intent_recut.on(), answer_field.on()
+    talk = os.environ.get("VICA_TALK", "").strip().lower() == "on"
+    wrong = []
+    if answer and not recut:
+        wrong.append("VICA_ANSWER=on 인데 VICA_RECUT 꺼짐")
+    if talk and not (recut and answer):
+        off = "·".join(key for key, value in (("VICA_RECUT", recut), ("VICA_ANSWER", answer)) if not value)
+        wrong.append(f"VICA_TALK=on 인데 {off} 꺼짐(VICA_TALK 은 움직이지 않는다)")
+    if not wrong:
+        return ""
+    return f"[스위치 조합] {' · '.join(wrong)} — {_BUNDLE_NOTE}"
+
+
 def places_names(destinations: Sequence[DestinationData]) -> list[str]:
     """갈 수 있는 곳(is_approachable)의 이름, 목록 순서(원칙 18 — 갈 수 없는 곳은 말하지 않는다)."""
     return [d.name for d in destinations if d.name and d.is_approachable]

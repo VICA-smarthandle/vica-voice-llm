@@ -170,6 +170,47 @@ def test_p28_switch_needs_recut_and_answer(monkeypatch):
     assert fa().on() is False
 
 
+BUNDLE_NOTE = "다섯 개(VICA_RECUT·VICA_ANSWER + 미션 answer_field·reask_ladder·wake_revive)는 한 묶음으로 켠다"
+
+
+@pytest.mark.parametrize("recut,answer,talk,off_keys", [
+    ("off", "off", "off", None), ("on", "off", "off", None), ("on", "on", "off", None), ("on", "on", "on", None),
+    ("off", "on", "off", ("VICA_ANSWER=on", "VICA_RECUT")),                  # 대답 칸인데 재단 없음
+    ("on", "off", "on", ("VICA_TALK=on", "VICA_ANSWER")),                    # VICA_TALK 인데 대답 칸 없음
+    ("off", "off", "on", ("VICA_TALK=on", "VICA_RECUT", "VICA_ANSWER")),
+    ("off", "on", "on", ("VICA_ANSWER=on", "VICA_TALK=on", "VICA_RECUT")),
+])
+def test_i4_switch_warning_names_the_mismatch(monkeypatch, recut, answer, talk, off_keys):
+    """최종 검토 I4: 음성 스위치 조합이 어긋나면 기동 때 경고 한 줄(동작은 막지 않는다) — VICA_ANSWER=on 인데 VICA_RECUT 꺼짐 /
+    VICA_TALK=on 인데 VICA_RECUT·VICA_ANSWER 중 하나라도 꺼짐. 맞으면 빈 글자."""
+    monkeypatch.setenv("VICA_RECUT", recut)
+    monkeypatch.setenv("VICA_ANSWER", answer)
+    monkeypatch.setenv("VICA_TALK", talk)
+    line = fa().switch_warning()
+    if off_keys is None:
+        assert line == ""
+        return
+    assert "\n" not in line and BUNDLE_NOTE in line
+    for key in off_keys:
+        assert key in line, key
+
+
+def test_i4_switch_warning_ignores_the_local_answer_switch(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER_LOCAL", "on")                  # VICA_ANSWER 가 꺼졌으면 local_on() 이 거짓 — 묶음 밖
+    assert fa().switch_warning() == ""
+
+
+def test_i4_node_logs_the_switch_warning_once_at_start():
+    """의도 노드는 기동(__init__) 때 그 글을 경고 로그로만 낸다 — 빈 글자면 아무것도 내지 않는다."""
+    import ast
+    from tests.test_one_voice_wiring import _branch_tests, _calls, _method
+    init = _method("__init__")
+    (made,) = _calls(init, "fixed_answers.switch_warning")
+    warned = [c for c in _calls(init, "self.get_logger().warning") if "switch_warn" in ast.unparse(c)]
+    assert len(warned) == 1 and made.lineno < warned[0].lineno
+    assert any(in_body and "switch_warn" in test for test, in_body in _branch_tests(init, warned[0]))
+
+
 @pytest.mark.parametrize("env", [
     {},                                                          # ① 전부 꺼짐
     {"VICA_RECUT": "on"},                                        # ② 재단만

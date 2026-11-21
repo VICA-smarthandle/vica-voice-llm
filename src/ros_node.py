@@ -175,6 +175,10 @@ class LlmIntentNode(Node):
         self.get_logger().info(
             f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
             f" | 비교 기록(GPT): {'켬' if self._ab_shadow else '꺼짐'}")
+        # 스위치 조합(최종 검토 I4) — VICA_RECUT·VICA_ANSWER·VICA_TALK 이 어긋나면 경고 한 줄만 낸다(동작은 막지 않는다).
+        switch_warn = fixed_answers.switch_warning()
+        if switch_warn:
+            self.get_logger().warning(switch_warn)
 
         # 화자 판정(2026-11-11 설계 speaker-follow) — 같은 글자의 의도에 싣는다. 글자보다 먼저 구독한다.
         self._spk_link = SpeakerLink()
@@ -618,10 +622,12 @@ class LlmIntentNode(Node):
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
         human = [] if scripted and not text else [HumanMessage(text)]   # 대답 없음으로 다시 묻는 예약 질문 — 사용자 줄 없음
-        if self._spoken_history or silenced or intent.intent == fixed_answers.REPEAT:
+        if (self._spoken_history or silenced or intent.intent == fixed_answers.REPEAT
+                or mission_asks_resume(intent)):
             # 2-3 에서 지운 대답은 기록에 빈 줄로 남기지 않는다 — 물어 둔 질문이 마지막 로봇
             # 말로 남아야 다음 "네"가 그 질문의 답이 된다. 미션에 보낸 "다시 말해줘"도 같다 — 빈 로봇 줄이 남으면 다시 물은
             # 확인 질문의 "음"이 확인 대기 없는 승낙(affirm)이 돼 출발한다(4.2 검토 C1, 09-28 '음'으로는 출발 안 함).
+            # 미션에 보낸 재개 제안(Task 3.4 — "다시 출발할까요?"는 미션이 묻는다)도 같다 — 사람 줄만(최종 검토 Minor).
             self._history.extend(human)
         else:
             self._history.extend([*human, AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말
