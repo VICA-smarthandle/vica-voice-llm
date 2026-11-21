@@ -104,6 +104,44 @@ def reaction_of(intent, question: Optional[OpenQuestion], destinations: Sequence
     return Reaction("etc")
 
 
+# 미션이 대답 칸으로 바꿔 읽는 질문 종류 — mission_logic.ANSWER_READ_KINDS 와 같은 값이다("네?" 같은 open 은 아니다).
+ANSWER_READ_KINDS = ("confirm", "choice", "yesno", "yesno_inverted", "minutes")
+
+
+def mission_reaction(intent, question: Optional[OpenQuestion], destinations: Sequence,  # noqa: ANN001
+                     answer_field: bool = False) -> Reaction:
+    """미션 파라미터 answer_field 가 켜졌을 때 로봇이 하는 일(계획 Task 3.3 — mission_logic._intent_from_answer 를 옮긴 것).
+
+    열린 질문이 뜻을 아는 종류(ANSWER_READ_KINDS)이고 대답 칸이 차 있으면 미션은 의도보다 그 대답을 먼저 읽는다:
+    yes·no = 승낙·거절, 목적지·고르기 = 그 목적지 제안(확인 질문 중 같은 곳이어도 출발하지 않고 같은 질문을 다시 한다),
+    분 = 그만큼 대기, 못 알아들음 = unknown(같은 질문을 다시). 꺼졌거나 그 밖(대답 칸이 빔 · other · "네?" 뒤)이면 의도대로다.
+    도움 요청 뒤 확인 질문의 yes(확정 출발)는 여기서 가르지 못한다 — 행에 그 상황이 없다.
+    """
+    answer = getattr(intent, "answer", "") or ""
+    if not answer_field or question is None or question.kind not in ANSWER_READ_KINDS or not answer:
+        return reaction_of(intent, question, destinations)
+    value = (getattr(intent, "answer_value", "") or "").strip()
+    if answer in ("yes", "no"):
+        return Reaction(answer)
+    if answer in ("destination", "choice"):
+        if not value:
+            return Reaction("reask", say=question.text)
+        dest = next((d for d in destinations if d.id == value), None)
+        if dest is not None and not dest.is_approachable:
+            return Reaction("notavail", value)
+        if question.kind == "choice" and value in question.option_ids:
+            return Reaction("pick", value)
+        if question.kind == "confirm" and (value in question.option_ids
+                                           or value == question_destination_id(question.text, destinations)):
+            return Reaction("reask", say=question.text)     # 같은 곳 — 미션이 같은 확인 질문을 다시 한다
+        return Reaction("confirm", value)
+    if answer == "minutes":
+        return Reaction("wait", minutes=value) if value.isdigit() and int(value) > 0 else Reaction("reask", say=question.text)
+    if answer == "unclear":
+        return Reaction("reask", say=question.text)
+    return reaction_of(intent, question, destinations)
+
+
 def _same(key: dict, reaction: Reaction) -> bool:
     want = key.get("action", "")
     # 보기에서 고른 것(pick)과 확인 질문(confirm)은 같은 곳이면 로봇이 하는 일이 같다 — 고른 곳으로 확인 질문을 한다.

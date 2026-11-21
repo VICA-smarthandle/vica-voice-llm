@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from src.question_record import OpenQuestion
 from src.schema import DestinationData, VicaIntent
-from tools.key_grade import Reaction, grade_key, load_key, reaction_of
+from tools.key_grade import Reaction, grade_key, load_key, mission_reaction, reaction_of
 
 TOILET = DestinationData(id="t", name="화장실")
 WELFARE = DestinationData(id="s", name="사회복지")
@@ -162,3 +162,53 @@ def test_ending_the_talk_is_a_right_answer_where_no_was_expected_after_a_call():
     assert grade_key({"action": "no"}, Reaction("bye"), kind="open") == ("ok", 0)
     assert grade_key({"action": "no"}, Reaction("bye"), kind="yesno")[0] == "wrong"     # 미션 질문의 거절을 끝맺는 말로 받으면 안 된다
     assert grade_key({"action": "bye"}, Reaction("no"), kind="open")[0] != "ok"          # 반대는 아니다 — 끝맺는 말이 안 나온다
+
+
+# ── 미션이 대답 칸을 먼저 읽을 때(파라미터 answer_field, 계획 Task 3.3) — 3단계 측정이 쓰는 읽기 ─────────────────────────
+def answered(intent: str, answer: str, value: str = "", **more) -> VicaIntent:
+    return VicaIntent(intent=intent, question_id="q", answer=answer, answer_value=value, **more)
+
+
+def test_p6_answer_field_is_read_before_the_intent_when_the_mission_has_it_on():
+    confirm = asked("confirm", "화장실로 안내해드릴까요?", (TOILET.id,))
+    wrong_intent = answered("navigate", "yes", matched_destination_id=WELFARE.id, need_confirm=True)
+    assert mission_reaction(wrong_intent, confirm, DESTS, answer_field=True) == Reaction("yes")
+    assert mission_reaction(answered("unknown", "no"), confirm, DESTS, answer_field=True) == Reaction("no")
+    # 꺼져 있으면 의도대로(지금 채점 그대로)
+    assert mission_reaction(wrong_intent, confirm, DESTS) == reaction_of(wrong_intent, confirm, DESTS)
+
+
+def test_answer_field_is_not_read_after_a_call_or_without_an_answer():
+    """미션은 "네?"(open) 뒤의 말과 대답 칸이 빈 말·other 는 의도대로 읽는다(mission_logic.ANSWER_READ_KINDS)."""
+    after_call = asked("open", "네?")
+    yes = answered("unknown", "yes")
+    assert mission_reaction(yes, after_call, DESTS, answer_field=True) == reaction_of(yes, after_call, DESTS)
+    confirm = asked("confirm", "화장실로 안내해드릴까요?", (TOILET.id,))
+    for value in ("", "other"):
+        said = answered("cancel", value)
+        assert mission_reaction(said, confirm, DESTS, answer_field=True) == reaction_of(said, confirm, DESTS)
+    assert mission_reaction(yes, None, DESTS, answer_field=True) == reaction_of(yes, None, DESTS)
+
+
+def test_answer_field_place_is_a_proposal_and_the_same_place_is_asked_again():
+    confirm = asked("confirm", "화장실로 안내해드릴까요?", (TOILET.id,))
+    other_place = answered("navigate", "destination", WELFARE.id, matched_destination_id=WELFARE.id)
+    assert mission_reaction(other_place, confirm, DESTS, answer_field=True) == Reaction("confirm", WELFARE.id)
+    same_place = answered("navigate", "destination", TOILET.id, matched_destination_id=TOILET.id)
+    # 미션: 확인 질문 중 같은 곳이어도 출발하지 않고 다시 묻는다 — 꺼졌을 때는 승낙으로 읽던 자리
+    assert mission_reaction(same_place, confirm, DESTS, answer_field=True).action == "reask"
+    assert reaction_of(same_place, confirm, DESTS) == Reaction("yes")
+    choice = asked("choice", "남자 화장실과 여자 화장실 중 어디로 갈까요?", (MEN.id, WOMEN.id))
+    assert mission_reaction(answered("unknown", "choice", MEN.id), choice, DESTS, answer_field=True) == Reaction("pick", MEN.id)
+    assert mission_reaction(answered("navigate", "destination", PRIVATE.id), choice, DESTS,
+                            answer_field=True) == Reaction("notavail", PRIVATE.id)
+    assert mission_reaction(answered("navigate", "destination", ""), confirm, DESTS, answer_field=True).action == "reask"
+
+
+def test_answer_field_minutes_and_unclear():
+    minutes = asked("minutes", "몇 분쯤 걸리실까요?")
+    assert mission_reaction(answered("unknown", "minutes", "10"), minutes, DESTS, answer_field=True) == Reaction("wait", minutes="10")
+    assert mission_reaction(answered("wait", "minutes", "0"), minutes, DESTS, answer_field=True).action == "reask"
+    assert mission_reaction(answered("wait", "minutes", "열"), minutes, DESTS, answer_field=True).action == "reask"
+    # 못 알아들음 = unknown — 미션이 같은 질문을 다시 한다
+    assert mission_reaction(answered("finish", "unclear"), minutes, DESTS, answer_field=True).action == "reask"
