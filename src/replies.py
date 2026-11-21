@@ -203,12 +203,13 @@ _WANTED_MAX_CHARS = 20
 
 
 def not_available(wanted: str) -> str:
-    """없는 곳을 찾을 때 되묻는 말. 찾는 곳 이름이 비었거나 길거나 줄바꿈·물음표·긴급어가 있으면 '말씀하신 곳'으로 말한다."""
+    """없는 곳을 찾을 때 되묻는 말. 찾는 곳 이름이 비었거나 길거나 줄바꿈·물음표·긴급어가 있거나 한글이 없으면 '말씀하신 곳'으로 말한다."""
     from .emergency_filter import detect_emergency   # 지연 import — emergency_filter 가 이 모듈을 import 한다
 
     what = (wanted or "").strip()
     if (not what or len(what) > _WANTED_MAX_CHARS or "\n" in what or "?" in what or "？" in what
-            or detect_emergency(what)):
+            or detect_emergency(what)
+            or not any("가" <= ch <= "힣" for ch in what)):   # 원칙 11·31 — 한글이 없는 말은 소리 내지 않는다
         what = UNNAMED_PLACE
     return NOT_AVAILABLE.format(what=what, josa=josa_eun_neun(what))
 

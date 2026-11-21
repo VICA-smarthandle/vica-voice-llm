@@ -34,7 +34,8 @@ PROMPT_ORDER = """[판단 순서] 들은 말을 이 순서로 판단하고, 앞�
 2. 로봇이 방금 한 질문의 대답인가. 대답이면 그 질문의 뜻으로 읽는다.
 3. 새 요청인가. 무엇을 원하는지 읽는다. 가려는 곳이 목록에 없으면 clarify(not_available)다.
 4. 로봇에게 한 말인데 알아듣지 못했으면 unknown 이다.
-로봇에게 한 말인지 확실하지 않으면 not_for_robot 이 아니라 unknown 을 고른다 — 진짜 요청을 버리는 것이 되묻는 것보다 나쁘다."""
+로봇에게 한 말인지 확실하지 않으면 not_for_robot 이 아니라 unknown 을 고른다 — 진짜 요청을 버리는 것이 되묻는 것보다 나쁘다.
+외국어이거나 잘못 들린 듯해 뜻을 알 수 없는 말도 not_for_robot 이 아니다 — 로봇에게 한 말일 수 있으니 unknown 이다."""
 
 # 두 지시문이 같은 말로 쓰는 조각(켰을 때).
 SEVERAL_RULE = "clarify(clarify_kind=several)로 내고 clarify_options 에 그 곳들의 name 을 모두 적는다. 하나만 적지 않는다(2026-10-11 실기)."

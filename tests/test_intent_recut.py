@@ -63,3 +63,11 @@ def test_p19_with_speaker_appends_one_line_only_when_on_and_known(monkeypatch):
     assert with_speaker("", "pass").startswith("\n[지금 상황]\n- 이 말의 목소리")
     for v in ("short", "no_target", "", None):
         assert with_speaker(base, v) == base
+
+
+def test_p11_not_available_does_not_read_out_words_without_hangul():
+    # 원칙 11·31 — 한글이 한 글자도 없는 말은 소리 내지 않는다(Realtime 이 영어·한자를 넣은 11-21 본 말).
+    for wanted in ("I need some snack", "我证件在哪", "B1", "123"):
+        assert not_available(wanted) == "제가 아는 목적지 중에서 말씀하신 곳은 없는데, 어디로 안내해드릴까요?"
+    assert not_available("407호") == "제가 아는 목적지 중에서 407호는 없는데, 어디로 안내해드릴까요?"
+    assert not_available("AI 체험관") == "제가 아는 목적지 중에서 AI 체험관은 없는데, 어디로 안내해드릴까요?"

@@ -80,3 +80,13 @@ def test_p7_clue_line_reaches_all_three_prompts(monkeypatch):
 
 def test_off_clue_line_absent(monkeypatch):
     assert intent_recut.clue_line(_q()) not in parser._build_system_prompt(DESTS, question=_q())
+
+
+def test_p8_unreadable_speech_is_unknown_not_dropped(monkeypatch):
+    # 원칙 7·8 — 뜻을 알 수 없는 말은 버리지 않고 unknown (11-21 본 말).
+    line = "외국어이거나 잘못 들린 듯해 뜻을 알 수 없는 말도 not_for_robot 이 아니다 — 로봇에게 한 말일 수 있으니 unknown 이다."
+    assert intent_recut.PROMPT_ORDER.endswith(line)
+    monkeypatch.setenv("VICA_RECUT", "on")
+    assert line in parser._build_system_prompt(DESTS) and line in parser.build_audio_prompt(DESTS)
+    monkeypatch.setenv("VICA_RECUT", "off")
+    assert line not in parser._build_system_prompt(DESTS) and line not in parser.build_audio_prompt(DESTS)
