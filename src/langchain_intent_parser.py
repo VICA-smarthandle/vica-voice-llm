@@ -21,7 +21,7 @@ from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
-from . import answer_field, local_rules
+from . import answer_field, intent_recut, local_rules
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
 from .realtime_intent import audio_tools_active, get_realtime_client
@@ -40,7 +40,7 @@ from .replies import (
     choose_between,
 )
 from .question_record import OpenQuestion
-from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
+from .schema import BaseIntentType, DestinationData, RobotState, VicaIntent, VicaIntentType
 from .reservation_flow import ReserveCall
 from .reservation_store import default_facilities
 from .tool_calls import RESERVE, SET_INTENT, reserve_call, reserve_tool, set_intent_tool, text_tools_on
@@ -83,7 +83,7 @@ class _IntentDraft(BaseModel):
     matched_destination_id / need_confirm / safety_flag 는 코드가 채운다.
     """
 
-    intent: VicaIntentType = Field(
+    intent: BaseIntentType = Field(
         description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help 중 하나"
     )
     destination_candidate: Optional[str] = Field(
@@ -140,8 +140,47 @@ class _AnswerDraft(_IntentDraft):
         return value if isinstance(value, str) else ""
 
 
+class _RecutDraft(_IntentDraft):
+    """VICA_RECUT=on 일 때의 출력 — 새 의도 값 둘과 clarify 상황 칸 셋을 더한다(원칙 4·9·10·11).
+
+    새 칸은 _AnswerDraft.answer 처럼 형이 다른 값(null·숫자·문자열↔목록)에도 죽지 않고 빈 값으로 읽는다.
+    clarify_kind 는 허용 밖의 값도 그대로 받는다 — 뒤처리가 no_destination 으로 읽는다.
+    """
+
+    intent: VicaIntentType = Field(
+        description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
+                     " / not_for_robot / dismiss 중 하나"))
+    clarify_kind: str = Field(
+        default="",
+        description="intent 가 clarify 일 때만: several(목적지 후보가 둘 이상) / not_available(목록에 없는 곳) / no_destination(목적지를 못 알아들음). 그 외 빈 문자열.",
+        json_schema_extra={"enum": ["", *intent_recut.CLARIFY_KINDS]})
+    clarify_options: list[str] = Field(default_factory=list, description="clarify_kind 가 several 일 때 목록의 name 을 모두")
+    clarify_wanted: str = Field(default="", description="clarify_kind 가 not_available 일 때 사용자가 찾는 것을 말한 낱말 그대로")
+
+    @field_validator("clarify_kind", "clarify_wanted", mode="before")
+    @classmethod
+    def _recut_text(cls, value):
+        return value if isinstance(value, str) else ""
+
+    @field_validator("clarify_options", mode="before")
+    @classmethod
+    def _recut_options(cls, value):
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+class _RecutAnswerDraft(_RecutDraft, _AnswerDraft):
+    """두 스위치가 모두 켜졌을 때 — 새 칸과 대답 칸."""
+
+
+def _base_draft_cls() -> type[_IntentDraft]:
+    """대답 칸을 뺀 바탕 스키마 — 재단 스위치가 켜졌으면 _RecutDraft(로컬 narrowed 의 바탕)."""
+    return _RecutDraft if intent_recut.on() else _IntentDraft
+
+
 def _draft_cls() -> type[_IntentDraft]:
-    """LLM 출력 스키마 — 대답 칸 스위치가 켜졌으면 _AnswerDraft, 아니면 지금의 _IntentDraft."""
+    """LLM 출력 스키마 — (대답 칸, 재단) 스위치 조합마다 늘 같은 클래스. 둘 다 꺼졌으면 지금의 _IntentDraft."""
+    if intent_recut.on():
+        return _RecutAnswerDraft if answer_field.on() else _RecutDraft
     return _AnswerDraft if answer_field.on() else _IntentDraft
 
 
@@ -602,13 +641,13 @@ def _ollama_structured(llm):
     나온다(설계 2026-11-18 4.1). 열린 질문이 없으면 칸 없는 _IntentDraft 그대로라 토큰이 늘지 않는다. 종류마다 한 번 만든다.
     """
     if not answer_field.on():
-        return llm.with_structured_output(_IntentDraft)
+        return llm.with_structured_output(_base_draft_cls())
     by_kind: dict = {}
 
     def invoke(messages):
         kind = _ANSWER_KIND.get()
         if kind not in by_kind:
-            by_kind[kind] = llm.with_structured_output(answer_field.narrowed(_IntentDraft, kind))
+            by_kind[kind] = llm.with_structured_output(answer_field.narrowed(_base_draft_cls(), kind))
         return by_kind[kind].invoke(messages)
 
     return RunnableLambda(invoke)

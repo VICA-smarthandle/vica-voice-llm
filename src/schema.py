@@ -51,7 +51,7 @@ class DestinationData(BaseModel):
 # 검증한 뒤에만 need_confirm=False 로 내려가고, 실제 실행은 Mission Manager 의
 # MissionCommand 서비스(관리자 앱과 같은 경로)가 상태를 보고 최종 판정한다.
 # 즉시 정지(멈춰·정지)는 여기 없다 — 긴급어 필터가 LLM 이전에 처리한다.
-VicaIntentType = Literal[
+BaseIntentType = Literal[
     "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
     # 로봇이 직전에 던진 질문에 대한 짧은 답 (2026-08-25, 사람 접근 인수).
     # 어느 질문의 답인지는 담지 않는다 — Mission 이 상태로 판정한다.
@@ -63,6 +63,13 @@ VicaIntentType = Literal[
     # 관리자 호출(도움 요청, 2026-10-15 설계). 직원·관리자의 도움을 원함 — 판단은 LLM 만 한다
     # (키워드 규칙 없음). 확인 질문·안내는 미션이 하므로 reply="". VicaIntent.msg 는 문자열이라 그대로.
     "help",
+]
+# 의도 재단(2026-11-20, 원칙 9·10) — 나에게 한 말이 아님·대화 끝내기. LLM 에게는 VICA_RECUT=on 일 때만 보인다.
+# VicaIntent.intent 는 스위치와 상관없이 이 넓은 형을 받는다.
+VicaIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
