@@ -81,6 +81,11 @@ def answer_env(on: bool) -> dict:
     return {"VICA_ANSWER": "on" if on else "off"}
 
 
+def recut_env(on: bool) -> dict:
+    """--recut: 재단 스위치(설계 2026-11-20 6.1~6.3). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
+    return {"VICA_RECUT": "on" if on else "off"}
+
+
 def text_for(row: dict) -> str:
     """글자 경로의 입력 = 받아쓴 글자(설계 5절). 없으면 로그의 들은 글자."""
     return (row.get("stt") or "").strip() or (row.get("answer_text") or "").strip()
@@ -368,6 +373,7 @@ def main() -> None:
     ap.add_argument("--local-rules", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--tools", action="store_true", help="도구 출력(set_intent·reserve_facility)을 켠 채로 잰다")
     ap.add_argument("--answer", action="store_true", help="대답 칸(VICA_ANSWER)을 켠 채로 재고 answer 로 채점한다")
+    ap.add_argument("--recut", action="store_true", help="재단 스위치(VICA_RECUT)를 켠 채로 잰다 — 새 값·되묻는 문장 틀")
     ap.add_argument("--model", default="", help="글자 경로(midm·gpt)의 모델 이름을 바꿔 잰다 — 예: 다른 로컬 모델(Ollama 태그)")
     ap.add_argument("--key", default="", help="새 답지(answer_key.csv) — 로봇이 한 일을 답지와 견줘 채점한다")
     ap.add_argument("--set", choices=("seen", "heldout", "all"), default="all", dest="which",
@@ -381,9 +387,10 @@ def main() -> None:
     os.environ.update(env)
     os.environ.update(tools_env(args.tools))
     os.environ.update(answer_env(args.answer))
+    os.environ.update(recut_env(args.recut))
     model = args.model or MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {'켬' if args.answer else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {'켬' if args.answer else '끔'} · 재단 {'켬' if args.recut else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -456,7 +463,7 @@ def main() -> None:
             break
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
     base = labels_path.parent / result_name(args.path, model_tag(args.model) if args.model else "", args.tools,
-                                            args.answer, False, labels_path.stem, key is not None, stamp)
+                                            args.answer, args.recut, labels_path.stem, key is not None, stamp)
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")

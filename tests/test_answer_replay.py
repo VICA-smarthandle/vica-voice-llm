@@ -338,3 +338,10 @@ def test_regrade_rereads_saved_call_answers_with_the_current_rule(dests):
     kept = {"rows": [{**KEY_ROW, "intent": "clarify", "reaction": {"action": "reask", "target": "", "minutes": "",
                                                                     "say": "네, 말씀하세요."}}]}
     assert answer_replay.regrade(kept, {"9.0": _key("wake")})["rows"][0]["reaction"]["action"] == "reask"
+
+
+def test_recut_switch_goes_into_the_environment_before_the_parser_loads():
+    """--recut: 재단 스위치(2026-11-21). 운영 .env 값과 무관하게 이 값으로 돈다 — 해석기는 부를 때마다 환경변수를 읽는다."""
+    assert answer_replay.recut_env(True) == {"VICA_RECUT": "on"}
+    assert answer_replay.recut_env(False) == {"VICA_RECUT": "off"}
+    assert "_recut_" in answer_replay.result_name("gpt", "", False, False, True, "labels", False, "20261121-1300")
