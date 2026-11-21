@@ -345,3 +345,19 @@ def test_p7_question_line_says_not_for_robot_comes_first_when_recut_is_on(on, mo
     assert line.startswith(plain) and line != plain
     assert "not_for_robot" in line and "answer 는 빈 문자열" in line and "먼저" not in line
     assert af.question_line(None) == ""
+
+
+def test_p6_unclear_from_the_llm_yields_to_an_understood_intent(on):
+    """LLM 이 뜻은 읽고(의도) 대답 칸만 unclear 로 냈으면 other 로 바꾼다 — 미션이 대답 칸의 unclear 를 먼저 읽어 "잘 듣지
+    못했습니다."라고 하지 않고 의도대로 받게(2026-11-21 3단계 실기 17:31: 확인 질문 중 "거기 어디야" → question · unclear →
+    "잘 듣지 못했습니다. 다시 말씀해 주세요."). 못 알아들은 의도(unknown)의 unclear 와, 값을 못 써서 생긴 unclear 는 그대로다."""
+    asked = q()                                                                   # 확인 질문
+    side = af.fill(VicaIntent(intent="question", reply="화장실은 4층에 있어요."), asked, None, "unclear")
+    assert (side.intent, side.answer) == ("question", "other")
+    stop = af.fill(VicaIntent(intent="pause"), asked, None, "unclear")            # "잠깐만" — 멈추는 뜻은 읽었다
+    assert (stop.intent, stop.answer) == ("pause", "other")
+    for name in ("unknown", "clarify"):                                           # 뜻을 정하지 못한 의도의 unclear 는 그대로
+        assert af.fill(VicaIntent(intent=name), asked, None, "unclear").answer == "unclear"
+    no_id = af.fill(VicaIntent(intent="navigate"), asked, None, "destination")    # 목적지 id 가 없어 생긴 unclear 는 그대로
+    assert no_id.answer == "unclear"
+    assert af.fill(VicaIntent(intent="question"), asked, None, "other").answer == "other"

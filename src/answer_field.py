@@ -201,6 +201,11 @@ def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[t
     if standing(ruled, intent.intent, llm_answer):
         return _ruled(intent, question, ruled)
     answer, value = (llm_answer or "").strip(), ""
+    if answer == "unclear" and intent.intent not in ("unknown", "clarify", _NOT_FOR_ROBOT):
+        # LLM 이 뜻은 읽고(의도 — 질문·멈춤·취소·다른 곳 …) 대답 칸만 unclear 로 냈다 — 미션이 unclear 를 먼저 읽어 "잘 듣지
+        # 못했습니다."라고 하지 않게 other(질문과 상관없는 말)로 둔다: 미션은 의도대로 받는다(2026-11-21 3단계 실기, 확인 질문 중
+        # "거기 어디야"). 뜻을 정하지 못한 의도(unknown·clarify)의 unclear 는 그대로 — 미션이 열린 질문을 다시 묻는다.
+        answer = "other"
     if answer and answer not in allowed(question.kind):
         answer = "unclear"
     elif answer in ("destination", "choice"):
