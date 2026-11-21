@@ -39,6 +39,12 @@ class Reaction:
     say: str = ""
 
 
+def is_wake_answer(said: str) -> bool:
+    """로봇이 낸 문장이 호출에 답한 말인가("네?" · "네, 말씀하세요." 등)."""
+    said = (said or "").strip()
+    return said == WAKE_GREETING or "".join(ch for ch in said if ch.isalnum()) in WAKE_ANSWERS
+
+
 def _navigate(intent, question: Optional[OpenQuestion], destinations: Sequence) -> Reaction:  # noqa: ANN001
     dest_id = intent.matched_destination_id or ""
     if not dest_id:
@@ -83,7 +89,7 @@ def reaction_of(intent, question: Optional[OpenQuestion], destinations: Sequence
             return Reaction("which", say=said)
         return Reaction("notavail" if said.startswith(NOT_AVAILABLE_HEAD) else "reask", say=said)
     if i == "unknown":
-        if said == WAKE_GREETING or "".join(ch for ch in said if ch.isalnum()) in WAKE_ANSWERS:
+        if is_wake_answer(said):
             return Reaction("wake", say=said)
         if said:
             return Reaction("reask", say=said)

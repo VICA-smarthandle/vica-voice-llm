@@ -327,3 +327,14 @@ def test_regrade_uses_the_saved_reaction_with_a_newer_key(dests):
 def test_regrade_keeps_rows_that_were_never_interpreted(rows_labeled):
     run = replay(rows_labeled[:1], lambda r: (VicaIntent(intent="affirm"), 1.0), lambda _p: None, key={})
     assert answer_replay.regrade(run, {"1.0": _key("yes")})["rows"][0]["status"] == "skip"
+
+
+def test_regrade_rereads_saved_call_answers_with_the_current_rule(dests):
+    """예전 채점기로 저장된 결과 — 호출에 답한 "네, 말씀하세요."가 reask 로 적혀 있어도 다시 채점하면 wake 로 읽는다."""
+    saved = {"rows": [{**KEY_ROW, "intent": "unknown", "reaction": {"action": "reask", "target": "", "minutes": "",
+                                                                     "say": "네, 말씀하세요."}}]}
+    again = answer_replay.regrade(saved, {"9.0": _key("wake")})
+    assert again["rows"][0]["reaction"]["action"] == "wake" and again["rows"][0]["key_status"] == "ok"
+    kept = {"rows": [{**KEY_ROW, "intent": "clarify", "reaction": {"action": "reask", "target": "", "minutes": "",
+                                                                    "say": "네, 말씀하세요."}}]}
+    assert answer_replay.regrade(kept, {"9.0": _key("wake")})["rows"][0]["reaction"]["action"] == "reask"

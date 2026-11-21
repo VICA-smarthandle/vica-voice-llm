@@ -32,7 +32,7 @@ from src.replies import LLM_UNAVAILABLE
 from src.reservation_flow import ReserveCall
 from src.wake_echo import strip_wake_echo
 from tools.answer_grade import answer_of, grade, pred_of, question_destination_id
-from tools.key_grade import Reaction, grade_key, load_key, reaction_of
+from tools.key_grade import Reaction, grade_key, is_wake_answer, load_key, reaction_of
 
 STOP_AFTER_ERRORS = 5
 CLIPS_DIR = Path.home() / "vica_data" / "listen_clips"
@@ -230,8 +230,11 @@ def regrade(run: dict, key: dict) -> dict:
             rows.append({**r, "key_status": "nokey", "principle": 0, "set": "", "key_action": "", "key_target": ""})
             continue
         kind = "open" if r.get("kind") == "other" else r.get("kind", "")       # question_for 와 같은 옮김
-        status, principle = grade_key(key_row, Reaction(**r["reaction"]), kind)
-        rows.append({**r, "key_status": status, "principle": principle, "set": key_row.get("set", ""),
+        reaction = Reaction(**r["reaction"])
+        if r.get("intent") == "unknown" and reaction.action == "reask" and is_wake_answer(reaction.say):
+            reaction = Reaction("wake", say=reaction.say)       # 옛 채점기로 저장된 호출 응답("네, 말씀하세요.")
+        status, principle = grade_key(key_row, reaction, kind)
+        rows.append({**r, "reaction": asdict(reaction), "key_status": status, "principle": principle, "set": key_row.get("set", ""),
                      "key_action": key_row.get("action", ""), "key_target": key_row.get("target", "")})
     return {**run, "rows": rows, **key_summary(rows)}
 
