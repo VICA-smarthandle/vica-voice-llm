@@ -59,6 +59,8 @@ OBSTACLE_STOP = "앞에 장애물이 있어 정지합니다."
 APPROACH_REASK = "안내를 받으시겠어요?"
 # 다시 묻기를 다 쓰고도 예·아니요를 못 들어 물러날 때(2026-10-09 사용자 결정 '나'). 미션 MSG_APPROACH_UNANSWERED.
 APPROACH_UNANSWERED = "필요하시면 '비카야'라고 불러 주세요."
+# 원칙 14 — 안내 중이 아닐 때 "됐어"처럼 대화를 그만두려는 말(dismiss)에 하는 끝맺는 말. 미션 MSG_DISMISS_ACK.
+DISMISS_ACK = "네, 필요하시면 '비카야'라고 불러 주세요."
 
 # ---- 미션 요청 반응표 (2026-10-08) --------------------------------------------------
 # 대기 중 "취소" — 안내를 끝낼지 묻는다(사용자 결정 3, 사용자 문구).
@@ -192,6 +194,7 @@ def standalone_prewarm(destinations: Iterable) -> list[str]:
     phrases.append(DOCK_WAKE)   # 도킹 중 호출(2026-11-18) — 늦으면 0.9초쯤 더 걸려 미리 합성한다
     phrases.append(DOCK_WAIT)   # 나오다 멈춘 상태의 호출(2026-11-19)
     phrases.append(DOCK_GO)     # 도킹 시작 안내(2026-11-19)
+    phrases.append(DISMISS_ACK)   # 대화 끝내기의 끝맺는 말(원칙 14) — 녹음은 아직 안 구워 미리 합성한다
     # 예약 문장(2026-11-18) — 도구 출력 스위치가 하나라도 켜졌을 때만. 꺼져 있으면 목록이 예전과 같다.
     # TTS 노드는 .env 를 읽지 않아 스위치를 파일에서도 본다(any_tools_on).
     from .tool_calls import any_tools_on

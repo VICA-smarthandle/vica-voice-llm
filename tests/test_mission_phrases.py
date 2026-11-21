@@ -85,6 +85,7 @@ class TestSentences:
         assert mp.APPROACH_REASK == ml.MSG_APPROACH_REASK   # 접근 질문 다시 묻기(2026-10-09)
         assert mp.APPROACH_UNANSWERED == ml.MSG_APPROACH_UNANSWERED   # 대답 없이 물러날 때(2026-10-09 '나')
         assert mp.WAIT_FINISH_ASK == ml.MSG_WAIT_FINISH_ASK
+        assert mp.DISMISS_ACK == ml.MSG_DISMISS_ACK         # 대화 끝내기 끝맺는 말(원칙 14)
         assert replies.WAKE_GREETING == ml.MSG_WAKE_GREETING
         # 빈 확인 문구를 미션이 직접 물을 때의 문장 = 음성 기본 확인 문구(미리 합성됨).
         dest = DestinationData(id="x", name="식당")
@@ -108,6 +109,11 @@ class TestSentences:
         mission.add(ml.MSG_WAIT_SPOT_DEFAULT.format(place=ml.WAIT_PLACE_AT_DESTINATION))
         assert set(mp.wait_front_sentences().values()) == mission
         assert len(mission) == 6
+
+    def test_p14_dismiss_ack_is_prewarmed(self):
+        """원칙 14 — 끝맺는 말은 미리 합성한다(녹음은 아직 안 구움 — baked_mission_ments 에는 없다)."""
+        assert mp.DISMISS_ACK in mp.standalone_prewarm([])
+        assert mp.DISMISS_ACK not in mp.baked_mission_ments().values()
 
     def test_switch_question_is_prewarmed(self):
         dests = [DestinationData(id="x", name="식당", confirm_prompt="식당으로 안내해드릴까요?")]
