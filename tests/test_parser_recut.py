@@ -41,7 +41,7 @@ def test_p9_both_switches_give_both_sets_of_fields(monkeypatch):
 def test_p9_draft_cls_is_stable_per_combination(monkeypatch):
     monkeypatch.setenv("VICA_RECUT", "on")
     assert parser._draft_cls() is parser._draft_cls()
-    assert parser._base_draft_cls() is parser._RecutDraft
+    assert parser._base_draft_cls() is parser._IntentDraft  # 원칙 16(2.8): 로컬 바탕은 재단과 무관하게 _IntentDraft
     monkeypatch.setenv("VICA_ANSWER", "on")
     assert parser._draft_cls() is parser._RecutAnswerDraft
 
@@ -73,25 +73,24 @@ def _local_schema(kind=""):
         parser._ANSWER_KIND.reset(token)
 
 
-def test_p9_local_schema_follows_recut_switch(monkeypatch):
+def test_p9_local_schema_ignores_recut_switch(monkeypatch):
     # 꺼짐: 로컬이 받는 클래스에 새 칸이 없다
     llm = _FakeOllama()
     parser._ollama_structured(llm)
     assert llm.schemas == [parser._IntentDraft]
     assert "clarify_kind" not in llm.schemas[0].model_fields
-    # 재단만 켬
+    # 재단만 켬 — 원칙 16(2.8): 로컬 스키마에는 재단 칸이 없다
     monkeypatch.setenv("VICA_RECUT", "on")
     llm = _FakeOllama()
     parser._ollama_structured(llm)
-    assert "clarify_kind" in llm.schemas[0].model_fields
-    # 둘 다 켬: narrowed 바탕이 재단 클래스 — 새 칸과 answer 가 모두 있다
+    assert llm.schemas == [parser._IntentDraft]
+    # 둘 다 켬: narrowed 바탕도 _IntentDraft — answer 만 있고 재단 칸은 없다
     monkeypatch.setenv("VICA_ANSWER", "on")
     picked = _local_schema("minutes")
-    assert {"clarify_kind", "answer"} <= set(picked.model_fields)
-    assert _local_schema("") is parser._RecutDraft
-    from src import answer_field
-    n = answer_field.narrowed(parser._RecutDraft, "x")
-    assert {"clarify_kind", "answer"} <= set(n.model_fields)
+    assert "answer" in picked.model_fields and "clarify_kind" not in picked.model_fields
+    assert _local_schema("") is parser._IntentDraft
+    # 클라우드 쪽 바탕 클래스는 그대로 재단 클래스다
+    assert parser._draft_cls() is parser._RecutAnswerDraft
 
 
 # ---- Task 2.4 뒤처리 -------------------------------------------------------------------------------------------
@@ -242,3 +241,142 @@ def test_p4_choice_sentence_without_options_is_rebuilt_from_listed_names(monkeyp
     for reply in ("남자 화장실과 여자 화장실 중 어디로 갈까요?", "남자 화장실이나 여자 화장실 중에 어디로 갈까요?"):
         out = finalize(draft(intent="clarify", clarify_kind="", clarify_options=[], reply=reply))
         assert out.reply == CHOOSE_TOILETS
+
+
+# ---- Task 2.8 로컬(Ollama)이 답하는 호출에는 재단을 싣지 않는다 (원칙 16, 2단계 측정 P3) ------------------------------
+import pytest
+
+from src.llm_backend import ProbeResult
+from src.schema import DestinationData as _Dest
+
+_TOILETS = [_Dest(id="men", name="남자 화장실", confirm_prompt="남자 화장실로 안내해드릴까요?")]
+_ASKED = "어느 방으로 갈까요?"
+
+
+class _Recorder:
+    """호출마다 (출력 클래스, messages)를 적고 draft 를 돌려주는 가짜 LLM 하나."""
+
+    def __init__(self, calls, who, fail=None):
+        self.calls, self.who, self.fail = calls, who, fail
+
+    def with_structured_output(self, schema, **kw):
+        outer = self
+        return type("R", (), {"invoke": lambda s, messages: outer._answer(schema, messages)})()
+
+    invoke = None
+
+    def _answer(self, schema, messages):
+        self.calls.append((self.who, schema, messages))
+        if self.fail:
+            raise self.fail
+        kw = {"intent": "clarify", "reply": _ASKED}
+        if "clarify_kind" in schema.model_fields:
+            kw["clarify_kind"] = "no_destination"
+        return schema(**kw)
+
+
+@pytest.fixture
+def backends(monkeypatch):
+    """진짜 LlmBackendManager + 가짜 cloud(OpenAI 자리)·가짜 Ollama(ChatOllama 자리). calls 에 누가 불렸는지 쌓인다."""
+    parser.reset_backend_manager()
+    calls = []
+    cfg = {"cloud_fail": None}
+
+    class FakeChat:
+        def __init__(self, **kw):
+            pass
+
+        def with_structured_output(self, schema, **kw):
+            return _Recorder(calls, "local").with_structured_output(schema)
+
+    def cloud_llm(model, **kw):
+        rec = _Recorder(calls, "cloud", cfg["cloud_fail"])
+        return type("C", (), {"invoke": lambda s, m: rec._answer(parser._draft_cls(), m)})()
+
+    monkeypatch.setattr(parser, "ChatOllama", FakeChat)
+    monkeypatch.setattr(parser, "FALLBACK_MODEL", "midm2-mini")
+    monkeypatch.setattr(parser, "_get_cloud_llm", cloud_llm)
+    monkeypatch.setattr(parser, "_cloud_probe", lambda: ProbeResult.DEAD)
+    monkeypatch.delenv("VICA_ANSWER", raising=False)
+    yield calls, cfg
+    parser.reset_backend_manager()
+
+
+def _ask(text="그냥"):
+    return parser.parse_intent(text, _TOILETS)
+
+
+def _system(messages):
+    return messages[0].content
+
+
+def test_p16_ollama_provider_answers_as_if_recut_were_off(monkeypatch, backends):
+    calls, _ = backends
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setattr(parser, "PROVIDER", "ollama")
+    # 공급자가 ollama 면 "클라우드 자리"도 _ollama_structured 가 만든 호출체다
+    monkeypatch.setattr(parser, "_get_cloud_llm", lambda model, **kw: parser._ollama_structured(
+        type("O", (), {"with_structured_output": lambda s, schema, **k: _Recorder(calls, "ollama-cloud").with_structured_output(schema)})()))
+    parser.reset_backend_manager()
+    out = _ask()
+    who, schema, messages = calls[-1]
+    assert who == "ollama-cloud" and schema is parser._IntentDraft
+    assert "not_for_robot" not in _system(messages) and "[판단 순서]" not in _system(messages)
+    assert out.reply == _ASKED
+
+
+def test_p16_fallback_to_local_answers_as_if_recut_were_off(monkeypatch, backends):
+    calls, cfg = backends
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setattr(parser, "PROVIDER", "openai")
+    cfg["cloud_fail"] = RuntimeError("cloud down")
+    out = _ask()
+    assert [c[0] for c in calls] == ["cloud", "local"]
+    assert "[판단 순서]" in _system(calls[0][2])
+    who, schema, messages = calls[1]
+    assert schema is parser._IntentDraft and "clarify_kind" not in schema.model_fields
+    assert "not_for_robot" not in _system(messages) and "[판단 순서]" not in _system(messages)
+    assert out.reply == _ASKED
+
+
+def test_p16_already_local_answers_as_if_recut_were_off(monkeypatch, backends):
+    calls, _ = backends
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setattr(parser, "PROVIDER", "openai")
+    parser.get_backend_manager().go_local("Realtime 연결 오류")
+    out = _ask()
+    assert [c[0] for c in calls] == ["local"]
+    assert "[판단 순서]" not in _system(calls[0][2]) and out.reply == _ASKED
+
+
+def test_p16_cloud_answer_still_uses_recut(monkeypatch, backends):
+    calls, _ = backends
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setattr(parser, "PROVIDER", "openai")
+    out = _ask()
+    assert [c[0] for c in calls] == ["cloud"]
+    assert "[판단 순서]" in _system(calls[0][2])
+    assert out.reply == ASK_DESTINATION
+
+
+@pytest.mark.parametrize("cloud_fail", [None, RuntimeError("cloud down")])
+def test_p16_off_is_unchanged_for_both_backends(monkeypatch, backends, cloud_fail):
+    calls, cfg = backends
+    monkeypatch.delenv("VICA_RECUT", raising=False)
+    monkeypatch.setattr(parser, "PROVIDER", "openai")
+    cfg["cloud_fail"] = cloud_fail
+    out = _ask()
+    assert out.reply == _ASKED
+    for _, schema, messages in calls:
+        assert "clarify_kind" not in schema.model_fields and "[판단 순서]" not in _system(messages)
+    # 꺼졌을 때 로컬에 가는 지시문은 cloud 에 간 것과 같다(local_messages 를 따로 만들지 않는다)
+    if cloud_fail:
+        assert _system(calls[1][2]) == _system(calls[0][2])
+
+
+def test_p16_prompt_off_text_is_identical_with_explicit_recut_false(monkeypatch):
+    monkeypatch.delenv("VICA_RECUT", raising=False)
+    plain = parser._build_system_prompt(_TOILETS, local=True)
+    monkeypatch.setenv("VICA_RECUT", "on")
+    assert parser._build_system_prompt(_TOILETS, local=True, recut=False) == plain
+    assert parser._build_system_prompt(_TOILETS, local=True) != plain

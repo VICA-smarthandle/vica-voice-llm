@@ -173,8 +173,8 @@ class _RecutAnswerDraft(_RecutDraft, _AnswerDraft):
 
 
 def _base_draft_cls() -> type[_IntentDraft]:
-    """대답 칸을 뺀 바탕 스키마 — 재단 스위치가 켜졌으면 _RecutDraft(로컬 narrowed 의 바탕)."""
-    return _RecutDraft if intent_recut.on() else _IntentDraft
+    """로컬(Ollama) 구조화 출력의 바탕 스키마 — 재단 스위치와 상관없이 늘 _IntentDraft(원칙 16, 2단계 측정 P3)."""
+    return _IntentDraft
 
 
 def _draft_cls() -> type[_IntentDraft]:
@@ -187,6 +187,24 @@ def _draft_cls() -> type[_IntentDraft]:
 # 이번 해석 호출의 열린 질문 종류(로컬 스키마 고르기). 호출마다 parse_intent 가 넣고 지운다 — 그림자 비교 스레드·
 # 워밍업이 동시에 불러도 섞이지 않게 ContextVar 다.
 _ANSWER_KIND: ContextVar[str] = ContextVar("vica_answer_kind", default="")
+
+# 이번 해석 호출을 Ollama 가 답했는가(원칙 16). 로컬 호출체가 불릴 때 켜고 parse_intent 가 호출 앞에 끄고 끝에 되돌린다.
+# 모듈 전역이 아니라 ContextVar 인 까닭은 _ANSWER_KIND 와 같다 — 그림자 비교 스레드·워밍업이 동시에 불러도 안 섞인다.
+_LOCAL_ANSWERED: ContextVar[bool] = ContextVar("vica_local_answered", default=False)
+
+
+class _LocalCall:
+    """_ollama_structured 가 만든 호출체를 감싼다 — 불리면 이 호출은 Ollama 가 답한 것으로 적는다.
+
+    RunnableLambda 로 감싸지 않는다: langchain 이 컨텍스트를 복사해 돌려 ContextVar 쓰기가 호출부로 안 돌아온다.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def invoke(self, messages, *args, **kwargs):
+        _LOCAL_ANSWERED.set(True)
+        return self._inner.invoke(messages, *args, **kwargs)
 
 
 # 손잡이 사용법 사실 (2026-09-30). 사용자가 "손잡이 어디 있어요?", "손 놓으면
@@ -223,8 +241,12 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 def _build_system_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
     local: bool = False, situation: str = "", question: Optional[OpenQuestion] = None,
+    recut: Optional[bool] = None,
 ) -> str:
-    """글자 경로 지시문. situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
+    """글자 경로 지시문.
+
+    recut: 재단(원칙 16) 지시문을 쓸지. None 이면 스위치(intent_recut.on())를 따르고, 호출부가 False 로 못 박으면
+    스위치가 켜져 있어도 꺼진 글자로 만든다(로컬 Ollama 가 답하는 호출). situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
 
     question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 맨 끝 [지금 상황]에 한 줄로 붙는다(answer_field.with_question).
 
@@ -242,7 +264,7 @@ def _build_system_prompt(
     ledger = situation if FLOOR_LABEL in situation else ""
     state_block = "" if ledger else _format_robot_state(robot_state)
     # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
-    recut = intent_recut.on()
+    recut = intent_recut.on() if recut is None else recut
     order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
     clarify_unknown = intent_recut.PROMPT_INTENTS if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
 - unknown: 안내와 무관하거나 이해 불가."""
@@ -318,7 +340,7 @@ def _build_system_prompt(
   로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
 - 부정만 하고 목적지를 안 말하면 clarify{no_dest}.""" + (local_rules.prompt_rules(recut) if local else "") + (
-        answer_field.with_question(intent_recut.with_clue(ledger, question), question))
+        answer_field.with_question(intent_recut.with_clue(ledger, question) if recut else ledger, question))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -650,7 +672,7 @@ def _ollama_structured(llm):
     나온다(설계 2026-11-18 4.1). 열린 질문이 없으면 칸 없는 _IntentDraft 그대로라 토큰이 늘지 않는다. 종류마다 한 번 만든다.
     """
     if not answer_field.on():
-        return llm.with_structured_output(_base_draft_cls())
+        return _LocalCall(llm.with_structured_output(_base_draft_cls()))
     by_kind: dict = {}
 
     def invoke(messages):
@@ -659,7 +681,7 @@ def _ollama_structured(llm):
             by_kind[kind] = llm.with_structured_output(answer_field.narrowed(_base_draft_cls(), kind))
         return by_kind[kind].invoke(messages)
 
-    return RunnableLambda(invoke)
+    return _LocalCall(RunnableLambda(invoke))
 
 
 def _set_intent_tool() -> dict:
@@ -1083,19 +1105,30 @@ def parse_intent(
     pending_command = _pending_command(history)
     pending = _pending_for(history, destinations, local, dialog_state)
 
-    messages: list[BaseMessage] = [SystemMessage(
-        _build_system_prompt(destinations, robot_state, local=local, situation=situation, question=question))]
-    if history:
-        messages.extend(history)
-    messages.append(HumanMessage(user_text))
+    def build_messages(recut: Optional[bool]) -> list[BaseMessage]:
+        msgs: list[BaseMessage] = [SystemMessage(_build_system_prompt(
+            destinations, robot_state, local=local, situation=situation, question=question, recut=recut))]
+        if history:
+            msgs.extend(history)
+        msgs.append(HumanMessage(user_text))
+        return msgs
+
+    # 원칙 16: 재단이 켜져도 Ollama 가 답하는 호출은 꺼진 지시문·스키마·뒤처리를 쓴다. 공급자가 ollama 면 처음부터 꺼진
+    # 쪽 messages 를 넘기고, openai 면 재단 켠 messages 를 cloud 에·꺼진 것을 local_messages(쓸 때만 만듦)로 넘긴다.
+    recut_on = intent_recut.on()
+    messages = build_messages(False if recut_on and PROVIDER != "openai" else None)
+    local_messages = (lambda: build_messages(False)) if recut_on and PROVIDER == "openai" else None
 
     kind_token = _ANSWER_KIND.set(question.kind if question is not None and answer_field.on() else "")
+    answered_token = _LOCAL_ANSWERED.set(False)
     try:
         if model is not None:
             # 벤치·수동 지정 경로(scripts/bench_models.py): 그 모델 하나로 직접 부른다.
             draft: _IntentDraft | ReserveCall = _get_cloud_llm(model).invoke(messages)
         else:
-            draft = get_backend_manager().invoke(messages)
+            manager = get_backend_manager()
+            draft = (manager.invoke(messages) if local_messages is None
+                     else manager.invoke(messages, local_messages=local_messages))
     except Exception as exc:
         # 클라우드→로컬까지 실패했거나 폴백이 꺼진 상태의 실패.
         # 크래시 대신 안전한 fallback 응답을 돌려준다.
@@ -1114,12 +1147,17 @@ def parse_intent(
         ), question, ruled)
     finally:
         _ANSWER_KIND.reset(kind_token)
+    # 이번 호출을 Ollama 가 답했는지(원칙 16) — 뒤처리가 끝나면 되돌린다.
+    local_answered = _LOCAL_ANSWERED.get()
+    _LOCAL_ANSWERED.reset(answered_token)
     if isinstance(draft, ReserveCall):
         # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(_finalize 는 의도 전용).
         return draft
-    result = _finalize(draft, destinations, pending=pending,
-                       pending_command=pending_command, user_text=user_text, local=local,
-                       robot_state=robot_state)
+    # Ollama 가 답했으면 재단 뒤처리(early·settle)를 건너뛴다 — 스위치를 끈 것과 같은 길이다.
+    finalize = _finalize_core if local_answered else _finalize
+    result = finalize(draft, destinations, pending=pending,
+                      pending_command=pending_command, user_text=user_text, local=local,
+                      robot_state=robot_state)
     return answer_field.fill(result, question, ruled, getattr(draft, "answer", "") or "")
 
 

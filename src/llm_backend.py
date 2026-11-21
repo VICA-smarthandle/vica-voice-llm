@@ -134,8 +134,12 @@ class LlmBackendManager:
             self._log = safe
 
     # ----- 호출 ---------------------------------------------------------
-    def invoke(self, messages: Sequence[Any]) -> Any:
+    def invoke(self, messages: Sequence[Any],
+               local_messages: Optional[Callable[[], Sequence[Any]]] = None) -> Any:
         """현재 상태의 백엔드로 호출한다. 클라우드 실패는 로컬 재호출로 받는다.
+
+        local_messages(원칙 16): 로컬이 답할 때 넘길 messages 를 만드는 함수. 있으면 로컬로 넘어갈 때(이미 로컬인 상태
+        포함) 그것을 쓰고, 없으면 지금처럼 같은 messages 를 넘긴다. 로컬이 답하지 않으면 부르지 않는다.
 
         로컬까지 실패하면 예외를 그대로 올린다 — 파서가 LLM_UNAVAILABLE 로 받는다.
         로컬이 없으면(폴백 꺼짐) 클라우드 예외를 그대로 올린다 = 예전 동작.
@@ -151,7 +155,7 @@ class LlmBackendManager:
                 self._switch_to_local(exc)
         if self._local is None:
             raise RuntimeError("LOCAL 상태인데 로컬 백엔드가 없다")
-        return self._local(messages)
+        return self._local(local_messages() if local_messages is not None else messages)
 
     def go_local(self, reason: str) -> bool:
         """클라우드를 부르지 않고 바로 LOCAL 로 — 다른 길(Realtime)에서 연결 오류를 이미 봤을 때(2026-10-24 사용자).
