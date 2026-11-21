@@ -110,6 +110,16 @@ class TestSentences:
         assert set(mp.wait_front_sentences().values()) == mission
         assert len(mission) == 6
 
+    def test_p8_reask_sentences_match_mission(self, ml):
+        """세 단계 되묻기(원칙 8, 미션 reask_ladder) — ① 은 음성 RETRY_PROMPT 와 같은 글자(사본을 따로 두지 않는다), ② 는 사본."""
+        assert replies.RETRY_PROMPT == ml.MSG_REASK_RETRY
+        assert mp.REASK_LOUDER == ml.MSG_REASK_LOUDER
+
+    def test_p8_reask_louder_is_prewarmed(self):
+        """② "더 크게, 또박또박"은 녹음이 없어 미리 합성한다(DISMISS_ACK 와 같은 목록)."""
+        assert mp.REASK_LOUDER in mp.standalone_prewarm([])
+        assert mp.REASK_LOUDER not in mp.baked_mission_ments().values()
+
     def test_p14_dismiss_ack_is_prewarmed(self):
         """원칙 14 — 끝맺는 말은 미리 합성한다(녹음은 아직 안 구움 — baked_mission_ments 에는 없다)."""
         assert mp.DISMISS_ACK in mp.standalone_prewarm([])

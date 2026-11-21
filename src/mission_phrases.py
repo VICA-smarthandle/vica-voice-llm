@@ -61,6 +61,9 @@ APPROACH_REASK = "안내를 받으시겠어요?"
 APPROACH_UNANSWERED = "필요하시면 '비카야'라고 불러 주세요."
 # 원칙 14 — 안내 중이 아닐 때 "됐어"처럼 대화를 그만두려는 말(dismiss)에 하는 끝맺는 말. 미션 MSG_DISMISS_ACK.
 DISMISS_ACK = "네, 필요하시면 '비카야'라고 불러 주세요."
+# 원칙 8 — 세 단계 되묻기(미션 파라미터 reask_ladder)의 두 번째. 미션 MSG_REASK_LOUDER. 첫 번째(MSG_REASK_RETRY)는
+# replies.RETRY_PROMPT 와 같은 글자라 사본을 두지 않는다. 세 번째는 HELP_CONFIRM.
+REASK_LOUDER = "죄송합니다. 더 크게, 또박또박 말씀해 주세요."
 
 # ---- 미션 요청 반응표 (2026-10-08) --------------------------------------------------
 # 대기 중 "취소" — 안내를 끝낼지 묻는다(사용자 결정 3, 사용자 문구).
@@ -195,6 +198,7 @@ def standalone_prewarm(destinations: Iterable) -> list[str]:
     phrases.append(DOCK_WAIT)   # 나오다 멈춘 상태의 호출(2026-11-19)
     phrases.append(DOCK_GO)     # 도킹 시작 안내(2026-11-19)
     phrases.append(DISMISS_ACK)   # 대화 끝내기의 끝맺는 말(원칙 14) — 녹음은 아직 안 구워 미리 합성한다
+    phrases.append(REASK_LOUDER)  # 세 단계 되묻기 두 번째(원칙 8) — 녹음이 없어 미리 합성한다
     # 예약 문장(2026-11-18) — 도구 출력 스위치가 하나라도 켜졌을 때만. 꺼져 있으면 목록이 예전과 같다.
     # TTS 노드는 .env 를 읽지 않아 스위치를 파일에서도 본다(any_tools_on).
     from .tool_calls import any_tools_on
