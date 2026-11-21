@@ -90,6 +90,16 @@ def speaker_line(verdict: str) -> str:
     return ""
 
 
+def with_speaker(block: str, verdict: Optional[str]) -> str:
+    """[지금 상황] 글 끝에 화자 단서 줄을 붙인다(원칙 19). 꺼졌거나 pass·fail 이 아니면 그대로."""
+    line = speaker_line(verdict or "") if on() else ""
+    if not line:
+        return block
+    if not block:
+        return _HEADER + line + "\n"
+    return block.rstrip("\n") + "\n" + line + "\n"
+
+
 def early(draft) -> Optional[VicaIntent]:
     """뒤처리 맨 앞(원칙 7·31): not_for_robot·dismiss 면 문장·목적지 없는 의도로 바로 돌려보낸다. 꺼졌거나 다른 값이면 None.
 

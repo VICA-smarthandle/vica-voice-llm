@@ -38,7 +38,7 @@ try:        # 질문 기록(2026-11-17). 옛 vica_interfaces 설치본이면 구
 except ImportError:
     VicaQuestionMsg = None
 
-from . import answer_field, local_rules, question_record
+from . import answer_field, intent_recut, local_rules, question_record
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
@@ -481,6 +481,12 @@ class LlmIntentNode(Node):
                 "speaker_verdict": str(spk.get("verdict", "")),
                 "speaker_score": float(spk.get("score", -1.0)),
                 "speaker_joined": float(spk.get("joined", -1.0))})
+        # 2-0a) 나에게 한 말이 아님(원칙 7) — 로그 한 줄만 남기고 끝낸다. 미션 발행·TTS·대화 기록·듣기 요청·
+        #       헛들음 관문·질문 기록 모두 건드리지 않는다(아무 말도 못 들은 것과 같다). 꺼져 있으면 이 값이 만들어지지 않는다.
+        if intent.intent == intent_recut.NOT_FOR_ROBOT:
+            self.get_logger().info(
+                f"[끼어들지 않음] 나에게 한 말이 아님: '{text}' 화자={intent.speaker_verdict or '-'}")
+            return
         # 2-0b) 대기 중 본인 확인 질문이 열려 있나. 본인 질문의 네/아니요는 글자로 정한다(11-11 실기).
         gate_t, gate_text = self._last_robot_line
         spk_gate = spk_gate_question(gate_text, time.time() - gate_t,
@@ -712,12 +718,14 @@ class LlmIntentNode(Node):
         # 이 말이 들어올 때 열려 있던 질문 — 뒤따라 오는 받아쓴 글자(그림자 갈래)도 같은 질문으로 규칙을 본다(3-나-2).
         question = self._question
         self._audio_turn.update(history=history_snapshot, robot_state=robot_state, question=question)
+        # 화자 확인 단서(원칙 19) — 값은 읽기만 한다. _publish_intent 가 같은 값으로 의도에 판정을 붙인다.
+        situation = intent_recut.with_speaker(self._situation_block(), (self._audio_spk or {}).get("verdict"))
         self._thinking_pub.publish(Bool(data=True))
         call_started = time.monotonic()
         try:
             intent, heard, dt, info = parse_intent_audio(
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
-                situation=self._situation_block(),
+                situation=situation,
                 directory_block=format_directory_block(
                     self._directory, self._robot_state.current_building, self._robot_state.current_floor),
                 question=question,

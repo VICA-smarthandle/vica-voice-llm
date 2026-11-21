@@ -1,5 +1,5 @@
 """재단(의도 분류 다시 자르기) 문장 틀·스위치 시험 — 계획 2026-11-20 Task 2.1."""
-from src.intent_recut import clarify_reply, clue_line, speaker_line, with_clue
+from src.intent_recut import clarify_reply, clue_line, speaker_line, with_clue, with_speaker
 from src.question_record import OpenQuestion
 from src.replies import ASK_DESTINATION, not_available
 
@@ -52,3 +52,14 @@ def test_switch_reads_env_each_call(monkeypatch):
     assert intent_recut.on() is False
     monkeypatch.setenv("VICA_RECUT", "on")
     assert intent_recut.on() is True
+
+
+def test_p19_with_speaker_appends_one_line_only_when_on_and_known(monkeypatch):
+    base = "\n[지금 상황]\n- 층: 4층\n"
+    assert with_speaker(base, "pass") == base                        # 꺼짐 = 그대로
+    monkeypatch.setenv("VICA_RECUT", "on")
+    assert with_speaker(base, "pass") == base + speaker_line("pass") + "\n"
+    assert with_speaker(base.rstrip("\n"), "fail") == base + speaker_line("fail") + "\n"
+    assert with_speaker("", "pass").startswith("\n[지금 상황]\n- 이 말의 목소리")
+    for v in ("short", "no_target", "", None):
+        assert with_speaker(base, v) == base
