@@ -53,3 +53,42 @@ def test_p9_intent_accepts_new_values_regardless_of_switch():
     import pytest
     with pytest.raises(Exception):
         parser._IntentDraft(intent="dismiss")
+
+
+class _FakeOllama:
+    def __init__(self):
+        self.schemas = []
+
+    def with_structured_output(self, schema):
+        self.schemas.append(schema)
+        return type("R", (), {"invoke": staticmethod(lambda messages: schema)})()
+
+
+def _local_schema(kind=""):
+    runnable = parser._ollama_structured(_FakeOllama())
+    token = parser._ANSWER_KIND.set(kind)
+    try:
+        return runnable.invoke([])
+    finally:
+        parser._ANSWER_KIND.reset(token)
+
+
+def test_p9_local_schema_follows_recut_switch(monkeypatch):
+    # 꺼짐: 로컬이 받는 클래스에 새 칸이 없다
+    llm = _FakeOllama()
+    parser._ollama_structured(llm)
+    assert llm.schemas == [parser._IntentDraft]
+    assert "clarify_kind" not in llm.schemas[0].model_fields
+    # 재단만 켬
+    monkeypatch.setenv("VICA_RECUT", "on")
+    llm = _FakeOllama()
+    parser._ollama_structured(llm)
+    assert "clarify_kind" in llm.schemas[0].model_fields
+    # 둘 다 켬: narrowed 바탕이 재단 클래스 — 새 칸과 answer 가 모두 있다
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    picked = _local_schema("minutes")
+    assert {"clarify_kind", "answer"} <= set(picked.model_fields)
+    assert _local_schema("") is parser._RecutDraft
+    from src import answer_field
+    n = answer_field.narrowed(parser._RecutDraft, "x")
+    assert {"clarify_kind", "answer"} <= set(n.model_fields)
