@@ -41,6 +41,8 @@ _DEFAULTS = {
     "VICA_TOOLS_AUDIO": "off",
     # 대답 칸(2026-11-19, 3-나-2 1단계) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
     "VICA_ANSWER": "off",
+    # 로컬(Ollama)에도 질문 줄·대답 칸을 줄지(2026-11-21) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_ANSWER_LOCAL": "off",
     # 의도 재단(2026-11-20) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
     "VICA_RECUT": "off",
 }

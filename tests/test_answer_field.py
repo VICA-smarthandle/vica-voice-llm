@@ -26,6 +26,18 @@ def test_switch_defaults_to_off(monkeypatch):
     assert af.on() is False
 
 
+def test_local_schema_has_no_answer_field_unless_asked(monkeypatch):
+    assert af.local_on() is False                      # 대답 칸이 꺼져 있으면 VICA_ANSWER_LOCAL 만으로는 안 켜진다
+    monkeypatch.setenv("VICA_ANSWER_LOCAL", "on")
+    assert af.local_on() is False
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    assert af.local_on() is True
+    monkeypatch.setenv("VICA_ANSWER_LOCAL", "1")       # on 이라는 글자만 켠다
+    assert af.local_on() is False
+    monkeypatch.delenv("VICA_ANSWER_LOCAL")
+    assert af.local_on() is False
+
+
 def test_allowed_by_kind():
     for kind in ("open", "confirm", "yesno", "yesno_inverted"):
         assert set(af.allowed(kind)) == {"yes", *BASE}

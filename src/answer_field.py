@@ -49,6 +49,15 @@ def on() -> bool:
     return os.environ.get("VICA_ANSWER", "").strip().lower() == "on"
 
 
+def local_on() -> bool:
+    """로컬(Ollama)에도 질문 줄·대답 칸을 줄지. 대답 칸이 켜져 있고 `.env` VICA_ANSWER_LOCAL=on 일 때만 참이다.
+
+    꺼져 있으면(기본) 로컬 호출은 지시문에 질문 줄이 없고 스키마에 answer 칸이 없다 — 규칙이 정한 대답(short_answer)만 채운다
+    (설계 2026-11-18 5.1: midm2-mini 는 대답 칸을 주면 의도까지 흔들렸다). 매번 읽는다 — on() 과 같다.
+    """
+    return on() and os.environ.get("VICA_ANSWER_LOCAL", "").strip().lower() == "on"
+
+
 def allowed(kind: str) -> tuple[str, ...]:
     """이 종류의 질문이 받는 answer 값. 모르는 종류(옛 미션·빈 값)는 전부."""
     own = _OWN.get(kind)

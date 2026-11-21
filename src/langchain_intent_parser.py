@@ -241,9 +241,12 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 def _build_system_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
     local: bool = False, situation: str = "", question: Optional[OpenQuestion] = None,
-    recut: Optional[bool] = None,
+    recut: Optional[bool] = None, ask_question: bool = True,
 ) -> str:
     """글자 경로 지시문.
+
+    ask_question: False 면 대답 칸이 켜져 있어도 [지금 상황] 끝에 '로봇이 물은 질문' 줄을 붙이지 않는다(로컬 Ollama 가
+    답하는 호출, VICA_ANSWER_LOCAL 이 꺼졌을 때 — 3.5). 기본 True 는 지금 동작 그대로다.
 
     recut: 재단(원칙 16) 지시문을 쓸지. None 이면 스위치(intent_recut.on())를 따르고, 호출부가 False 로 못 박으면
     스위치가 켜져 있어도 꺼진 글자로 만든다(로컬 Ollama 가 답하는 호출). situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
@@ -340,7 +343,8 @@ def _build_system_prompt(
   로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
 - 부정만 하고 목적지를 안 말하면 clarify{no_dest}.""" + (local_rules.prompt_rules(recut) if local else "") + (
-        answer_field.with_question(intent_recut.with_clue(ledger, question) if recut else ledger, question))
+        answer_field.with_question(intent_recut.with_clue(ledger, question) if recut else ledger,
+                                   question if ask_question else None))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -666,12 +670,12 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
 
 
 def _ollama_structured(llm):
-    """로컬(Ollama) 구조화 출력. 대답 칸이 꺼졌으면 지금 그대로 _IntentDraft 하나다.
+    """로컬(Ollama) 구조화 출력. 대답 칸이 꺼졌거나 로컬 대답 칸(VICA_ANSWER_LOCAL)이 꺼졌으면 지금 그대로 _IntentDraft 하나다.
 
-    켜졌으면 호출 때의 열린 질문 종류(_ANSWER_KIND)로 answer 값을 좁힌 스키마를 고른다 — 구조화 출력이라 그 값만
+    둘 다 켜졌으면 호출 때의 열린 질문 종류(_ANSWER_KIND)로 answer 값을 좁힌 스키마를 고른다 — 구조화 출력이라 그 값만
     나온다(설계 2026-11-18 4.1). 열린 질문이 없으면 칸 없는 _IntentDraft 그대로라 토큰이 늘지 않는다. 종류마다 한 번 만든다.
     """
-    if not answer_field.on():
+    if not answer_field.local_on():   # 3.5 — 대답 칸이 켜져도 VICA_ANSWER_LOCAL 이 꺼졌으면 칸 없는 스키마(규칙 대답만 채운다)
         return _LocalCall(llm.with_structured_output(_base_draft_cls()))
     by_kind: dict = {}
 
@@ -1107,9 +1111,10 @@ def parse_intent(
     pending_command = _pending_command(history)
     pending = _pending_for(history, destinations, local, dialog_state)
 
-    def build_messages(recut: Optional[bool]) -> list[BaseMessage]:
+    def build_messages(recut: Optional[bool], ask: bool = True) -> list[BaseMessage]:
         msgs: list[BaseMessage] = [SystemMessage(_build_system_prompt(
-            destinations, robot_state, local=local, situation=situation, question=question, recut=recut))]
+            destinations, robot_state, local=local, situation=situation, question=question, recut=recut,
+            ask_question=ask))]
         if history:
             msgs.extend(history)
         msgs.append(HumanMessage(user_text))
@@ -1117,9 +1122,12 @@ def parse_intent(
 
     # 원칙 16: 재단이 켜져도 Ollama 가 답하는 호출은 꺼진 지시문·스키마·뒤처리를 쓴다. 공급자가 ollama 면 처음부터 꺼진
     # 쪽 messages 를 넘기고, openai 면 재단 켠 messages 를 cloud 에·꺼진 것을 local_messages(쓸 때만 만듦)로 넘긴다.
+    # 3.5: 대답 칸이 켜져도 VICA_ANSWER_LOCAL 이 꺼졌으면 Ollama 호출은 질문 줄도 대답 칸도 없는 꺼진 글자를 쓴다 — 같은 구조.
     recut_on = intent_recut.on()
-    messages = build_messages(False if recut_on and PROVIDER != "openai" else None)
-    local_messages = (lambda: build_messages(False)) if recut_on and PROVIDER == "openai" else None
+    ask_local = answer_field.local_on() or not answer_field.on()   # 로컬 호출에 질문 줄을 줄지(꺼진 상태에선 어차피 줄이 없다)
+    plain_local = recut_on or not ask_local
+    messages = build_messages(False, ask_local) if plain_local and PROVIDER != "openai" else build_messages(None)
+    local_messages = (lambda: build_messages(False, ask_local)) if plain_local and PROVIDER == "openai" else None
 
     kind_token = _ANSWER_KIND.set(question.kind if question is not None and answer_field.on() else "")
     answered_token = _LOCAL_ANSWERED.set(False)

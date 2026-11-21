@@ -130,6 +130,9 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
     if answer_field.on():
         tool["parameters"]["properties"]["answer"] = {
             "type": "string", "enum": ["", *answer_field.ANSWERS], "description": answer_field.ANSWER_DESCRIPTION}
+        # 3.5 — 도구 목록은 세션 단위라 질문이 열렸는지 모른다. 늘 채우게 하고, 질문이 없으면 모델이 내는 빈 문자열을
+        # answer_field.fill 이 쓰지 않는다.
+        tool["parameters"]["required"].append("answer")
     return tool
 
 

@@ -410,7 +410,24 @@ def test_tool_has_the_answer_field_when_on(monkeypatch):
     tool = build_intent_tool()
     assert tool["parameters"]["properties"]["answer"] == {
         "type": "string", "enum": ["", *af.ANSWERS], "description": af.ANSWER_DESCRIPTION}
-    assert tool["parameters"]["required"] == ["intent", "heard_text"]
+    assert "answer" in tool["parameters"]["required"]      # 3.5 — 질문이 없으면 빈 문자열을 내고 fill 이 안 쓴다
+
+
+def test_realtime_must_fill_answer_when_answers_are_on(monkeypatch):
+    from src.realtime_intent import build_intent_tool
+    assert build_intent_tool()["parameters"]["required"] == ["intent", "heard_text"]
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    assert "answer" in build_intent_tool()["parameters"]["required"]
+
+
+def test_reserve_session_set_intent_requires_answer_too(monkeypatch, tmp_path):
+    from src.realtime_intent import RealtimeIntentClient
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    tools = RealtimeIntentClient(connect=lambda: None)._session_config()["tools"]
+    assert [t["name"] for t in tools] == ["set_intent", "reserve_facility"]
+    assert "answer" in tools[0]["parameters"]["required"]
 
 
 # ----- 예약 도구 호출 기록(11-19 원인 실험) ------------------------------------------

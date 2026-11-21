@@ -86,6 +86,7 @@ def test_p9_local_schema_ignores_recut_switch(monkeypatch):
     assert llm.schemas == [parser._IntentDraft]
     # 둘 다 켬: narrowed 바탕도 _IntentDraft — answer 만 있고 재단 칸은 없다
     monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_ANSWER_LOCAL", "on")    # 3.5 — 로컬 대답 칸이 켜졌을 때의 좁힌 스키마
     picked = _local_schema("minutes")
     assert "answer" in picked.model_fields and "clarify_kind" not in picked.model_fields
     assert _local_schema("") is parser._IntentDraft
