@@ -198,15 +198,28 @@ def test_check_values():
     assert check_values(replace(V, listen_min_rms=0.014)) == []
     problems = check_values(replace(V, listen_min_rms=0.025))
     assert any("짧은 답 최소는 수음 최소 이상" in p and "0.80배" in p for p in problems)
-    out = MicValues(0.008, 0.02, 0.95, 0.30, 0.007, 1.5, 1)
+    out = MicValues(0.008, 0.02, 0.96, 0.91, 0.007, 1.5, 1)
     problems = check_values(out)
     assert any("호출 문턱" in p for p in problems) and any("멈춰" in p for p in problems)
+
+
+def test_ranges_widened_2026_11_21():
+    """11-21 사용자 '너무 보수적' — 점검 18회 실측으로 넓힘. 멈춰 위는 진짜 '멈춰' 최소 0.920 아래 0.90 에서 막는다."""
+    assert check_values(replace(V, listen_min_rms=0.100, short_answer_min_rms=0.100)) == []
+    assert check_values(replace(V, listen_min_rms=0.002, short_answer_min_rms=0.002)) == []
+    assert any("수음 최소" in p for p in check_values(replace(V, listen_min_rms=0.105, short_answer_min_rms=0.105)))
+    assert check_values(replace(V, wake_threshold=0.30, emergency_single=0.30)) == []
+    assert check_values(replace(V, wake_threshold=0.95, emergency_single=0.90)) == []
+    assert any("멈춰" in p for p in check_values(replace(V, emergency_single=0.29)))
+    assert check_values(replace(V, band_min=0.010)) == []          # 11-21 지금 .env 값 — 저장이 막히던 것
+    assert check_values(replace(V, approach_min_rms=0.080, band_min=0.030)) == []
 
 
 def test_noise_floor_and_echo_name():
     assert noise_floor([]) is None
     assert noise_floor([0.001 * i for i in range(1, 11)]) == pytest.approx(0.010)
     assert echo_name(1.5, 1) == "strong" and echo_name(1.0, 0) == "factory" and echo_name(2.0, 1) is None
+    assert echo_name(0.5, 1) == "weak" and echo_name(3.0, 1) == "max"
 
 
 # ---------------------------------------------------------------- 10-21: 최대 증폭·접근 대답 최소·대역 최소, 먼 대답·옆사람
@@ -285,8 +298,9 @@ def test_near_cross_trigger_counts():
 
 def test_check_values_new_ranges():
     assert check_values(replace(V, approach_min_rms=0.006, band_min=0.004, agc_max_gain=2.0)) == []
-    assert any("접근 대답 최소" in p for p in check_values(replace(V, approach_min_rms=0.001)))
-    assert any("말소리 대역 최소" in p for p in check_values(replace(V, band_min=0.02)))
+    assert any("접근 대답 최소" in p for p in check_values(replace(V, approach_min_rms=0.0005)))
+    assert any("접근 대답 최소" in p for p in check_values(replace(V, approach_min_rms=0.085)))
+    assert any("말소리 대역 최소" in p for p in check_values(replace(V, band_min=0.035)))
 
 
 def test_factory_gain_is_the_same_chip_as_no_line():
@@ -309,8 +323,9 @@ def test_ranges_cover_hallway_levels():
     ok = replace(V, listen_min_rms=0.040, short_answer_min_rms=0.050, approach_min_rms=0.030)
     assert check_values(ok) == []
     assert check_values(replace(V, short_answer_min_rms=0.010)) == []
-    for over in (dict(listen_min_rms=0.0405, short_answer_min_rms=0.050), dict(short_answer_min_rms=0.051),
-                 dict(short_answer_min_rms=0.009), dict(approach_min_rms=0.0305)):
+    # 11-21 넓힌 한계 바로 바깥(수음 0.100·짧은 답 0.100·접근 0.080). 짧은 답 0.007 은 수음 최소 0.008 아래라 '짧은 답 ≥ 수음' 규칙에 걸림.
+    for over in (dict(listen_min_rms=0.1005, short_answer_min_rms=0.100), dict(short_answer_min_rms=0.101),
+                 dict(short_answer_min_rms=0.007), dict(approach_min_rms=0.0805)):
         assert check_values(replace(V, **over)), over
 
 

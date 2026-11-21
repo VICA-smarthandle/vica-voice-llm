@@ -157,10 +157,10 @@ def test_double_record_is_ignored(tmp_path):
 def test_set_value_out_of_range_ignored(tmp_path):
     s, hw, msgs = make(tmp_path)
     before = s.values
-    for cmd in ({"cmd": "set", "key": "wake_threshold", "value": 0.95},
+    for cmd in ({"cmd": "set", "key": "wake_threshold", "value": 0.96},     # 11-21 한계 0.95 바로 위
                 {"cmd": "set", "key": "listen_min_rms", "value": "abc"},
                 {"cmd": "set", "key": "모르는값", "value": 1},
-                {"cmd": "set", "key": "agc", "value": 0.02},
+                {"cmd": "set", "key": "agc", "value": 0.025},              # 고르는 값(0.003~0.020)에 없음
                 {"cmd": "set", "key": "echo", "value": "엄청 셈"}):
         s.handle(cmd)
         assert s.values == before
@@ -474,13 +474,16 @@ def test_set_max_gain_writes_chip_and_needs_rerecord(tmp_path):
 def test_status_offers_gain_choices_and_new_names(tmp_path):
     s, hw, msgs = make(tmp_path)
     st = last(msgs, "status")
-    assert st["gain_choices"] == [2.0, 4.0, 8.0, 31.6]
+    assert st["gain_choices"] == [1.0, 2.0, 4.0, 8.0, 16.0, 31.6]
+    assert st["agc_choices"] == [0.003, 0.005, 0.007, 0.01, 0.014, 0.02]
+    assert list(st["echo_choices"])[:5] == ["weak", "mid", "strong", "max", "factory"]
+    assert st["echo_choices"]["weak"] == "약 (0.5·켜짐)" and st["echo_choices"]["max"] == "최대 (3.0·켜짐)"
     assert st["values"]["agc_max_gain"] is None and st["values"]["band_min"] is None
     assert st["env_keys"]["agc_max_gain"] == "VICA_MIC_AGC_MAX_GAIN"
     assert st["env_keys"]["approach_min_rms"] == "VICA_APPROACH_MIN_RMS"
     assert st["env_keys"]["band_min"] == "VICA_LISTEN_BAND_MIN"
-    assert st["ranges"]["band_min"] == [0.001, 0.008, 0.0005]
-    assert st["ranges"]["listen_min_rms"] == [0.005, 0.04, 0.0005]
+    assert st["ranges"]["band_min"] == [0.0005, 0.03, 0.0005]
+    assert st["ranges"]["listen_min_rms"] == [0.002, 0.1, 0.0005]
     assert st["short_over_listen"] == 1.0
 
 
