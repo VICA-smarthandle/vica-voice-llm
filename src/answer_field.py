@@ -151,8 +151,8 @@ def standing(ruled: Optional[tuple[str, str]], intent_name: str, llm_answer: str
     """규칙 대답(ruled)이 서는가(Task 3.5b 규칙 1, 원칙 6 — 바탕 설계 D11). 글자·소리 경로가 같이 쓴다.
 
     규칙은 LLM 의 읽기를 뒤집지 않는다(수정 2차, 검토 Critical — "가자"는 확인 질문에는 승낙이지만 "안내를 취소할까요?"·
-    "기다릴까요?"에는 아니다). 네/아니요는 LLM 의 읽기와 같을 때만 선다 — LLM 대답(llm_answer)이 규칙 대답과 같거나, 빈 값이고
-    의도(intent_name)가 그 대답의 의도(yes ↔ affirm, no ↔ deny)일 때. 분은 LLM 도 wait 로 읽었을 때만(수정 3차 — 값 바로잡기뿐,
+    "기다릴까요?"에는 아니다). 네/아니요는 LLM 의 읽기와 같을 때만 선다 — LLM 대답(llm_answer)이 규칙 대답과 같거나, 빈 값·
+    unclear 이고 의도(intent_name)가 그 대답의 의도(yes ↔ affirm, no ↔ deny)일 때. 분은 LLM 도 wait 로 읽었을 때만(수정 3차 — 값 바로잡기뿐,
     못 알아들은 말을 규칙이 동작으로 바꾸지 않는다) — LLM 대답이 빈 값·minutes·unclear 이고 의도가 wait 일 때.
     parse_wait_minutes 는 문장 속의 분도 읽는다("십 분 말고 그냥 끝내 줘"·"아까 한 시간 기다렸잖아", 검토 I3·재현).
     """
@@ -160,7 +160,8 @@ def standing(ruled: Optional[tuple[str, str]], intent_name: str, llm_answer: str
         return False
     llm = (llm_answer or "").strip()
     if ruled[0] in _YES_NO_INTENT:
-        return llm == ruled[0] or (llm == "" and intent_name == _YES_NO_INTENT[ruled[0]])
+        # unclear 도 빈 값처럼 본다(3단계 측정): 의도와 받아쓴 글자가 같은 뜻인데 대답 칸만 unclear 면 미션이 다시 묻게 된다.
+        return llm == ruled[0] or (llm in ("", "unclear") and intent_name == _YES_NO_INTENT[ruled[0]])
     return llm in _MINUTES_CORRECTS and intent_name in _MINUTES_INTENTS
 
 

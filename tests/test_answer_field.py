@@ -130,12 +130,14 @@ YES_NO_INTENT = {"yes": "affirm", "no": "deny"}
 
 
 def test_p6_standing_yes_no_only_when_the_llm_read_the_same():
-    """수정 2차(검토 Critical): 규칙은 LLM 의 읽기를 뒤집지 않는다 — (가) LLM 대답이 규칙 대답과 같거나 (나) LLM 대답이 빈 값이고
-    의도가 그 대답의 의도(yes ↔ affirm, no ↔ deny)일 때만 선다. "가자"는 확인 질문에는 승낙이지만 "안내를 취소할까요?"에는 아니다."""
+    """수정 2차(검토 Critical): 규칙은 LLM 의 읽기를 뒤집지 않는다 — (가) LLM 대답이 규칙 대답과 같거나 (나) LLM 대답이 빈 값·
+    unclear 이고 의도가 그 대답의 의도(yes ↔ affirm, no ↔ deny)일 때만 선다. "가자"는 확인 질문에는 승낙이지만 "안내를
+    취소할까요?"에는 아니다. unclear 는 3단계 측정에서 더했다 — Realtime 이 "어."를 affirm 으로 읽고 대답 칸만 unclear 로 내
+    미션이 다시 물었다(의도와 받아쓴 글자가 같은 뜻이면 대답 칸의 unclear 를 따르지 않는다)."""
     for answer in ("yes", "no"):
         for name in INTENTS:
             for llm in LLM_ANSWERS:
-                want = llm.strip() == answer or (llm.strip() == "" and name == YES_NO_INTENT[answer])
+                want = llm.strip() == answer or (llm.strip() in ("", "unclear") and name == YES_NO_INTENT[answer])
                 assert af.standing((answer, ""), name, llm) is want, (answer, name, llm)
 
 
@@ -147,6 +149,9 @@ def test_p6_standing_yes_no_only_when_the_llm_read_the_same():
     (("yes", ""), "affirm", "", True), (("yes", ""), "affirm", "yes", True), (("yes", ""), "question", "yes", True),
     (("no", ""), "deny", "", True), (("no", ""), "cancel", "no", True),
     (("no", ""), "affirm", "", False), (("yes", ""), "resume", "", False), (("yes", ""), "not_for_robot", "", False),
+    (("yes", ""), "affirm", "unclear", True),    # "어." — 의도는 승낙인데 대답 칸만 unclear(3단계 측정, Realtime)
+    (("no", ""), "deny", "unclear", True),
+    (("yes", ""), "unknown", "unclear", False), (("yes", ""), "deny", "unclear", False), (("yes", ""), "affirm", "other", False),
 ])
 def test_p6_standing_yes_no_cases(ruled, name, llm, want):
     assert af.standing(ruled, name, llm) is want
