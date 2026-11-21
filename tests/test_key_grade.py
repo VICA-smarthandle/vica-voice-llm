@@ -137,3 +137,11 @@ def test_load_key_reads_rows_by_ts(tmp_path):
                     "100.5,11-04,10:00:00,seen,confirm,t,,화장실로 안내해드릴까요?,rule,,,7\n", encoding="utf-8")
     key = load_key(path)
     assert key["100.5"]["action"] == "confirm" and key["100.5"]["set"] == "seen"
+
+
+def test_short_call_answers_are_wake_whatever_the_wording():
+    """소리 경로의 지금 지시문은 호출에 "네?"나 "네, 말씀하세요."로 답하게 한다 — 로봇이 하는 일(부름에 답하고 듣는다)은 같다."""
+    for said in ("네?", "네, 말씀하세요.", "네? 말씀하세요.", "네? 말씀해 주세요.", "네 말씀하세요"):
+        assert reaction_of(VicaIntent(intent="unknown", reply=said), None, DESTS).action == "wake", said
+    for said in ("네, 화장실로 안내해드릴까요?", "잘 듣지 못했습니다. 다시 말씀해 주세요.", "네, 알겠습니다."):
+        assert reaction_of(VicaIntent(intent="unknown", reply=said), None, DESTS).action == "reask", said

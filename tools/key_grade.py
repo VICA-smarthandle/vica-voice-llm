@@ -18,6 +18,9 @@ from src.replies import WAKE_GREETING
 from tools.answer_grade import question_destination_id
 
 NOT_AVAILABLE_HEAD = "제가 아는 목적지 중에서"
+# 호출에 답하는 말 — 띄어쓰기·문장부호를 뗀 꼴. 소리 경로의 지금 지시문은 "네?"나 "네, 말씀하세요." 같은 짧은 응답을 허용한다.
+# 로봇이 하는 일(부름에 답하고 듣는다)은 같으므로 같은 반응(wake)으로 읽는다. 로봇이 낸 문장만 본다(사람 말의 뜻이 아니다).
+WAKE_ANSWERS = ("네", "네말씀하세요", "네말씀해주세요")
 END_QUESTION = "마칠까요"
 # 묻지 않았는데 하면 잘못된 행동으로 세는 반응(로봇이 움직이거나 무언가를 정한다).
 UNASKED = ("go", "confirm", "pick", "wait", "finish", "bye")
@@ -80,7 +83,7 @@ def reaction_of(intent, question: Optional[OpenQuestion], destinations: Sequence
             return Reaction("which", say=said)
         return Reaction("notavail" if said.startswith(NOT_AVAILABLE_HEAD) else "reask", say=said)
     if i == "unknown":
-        if said == WAKE_GREETING:
+        if said == WAKE_GREETING or "".join(ch for ch in said if ch.isalnum()) in WAKE_ANSWERS:
             return Reaction("wake", say=said)
         if said:
             return Reaction("reask", say=said)
