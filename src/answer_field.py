@@ -208,9 +208,16 @@ def _elsewhere(intent: VicaIntent, question: OpenQuestion) -> bool:
             and bool(intent.matched_destination_id) and intent.matched_destination_id not in question.option_ids)
 
 
-def _settled(intent: VicaIntent) -> bool:
-    """원칙 3·6(최종 검토 I2): 승낙·거절, 또는 확정(need_confirm 거짓) navigate·resume — 미션이 의도대로 받으면 출발·재출발한다."""
-    return intent.intent in _YES_NO_INTENTS or (intent.intent in ("navigate", "resume") and not intent.need_confirm)
+def _settled(intent: VicaIntent, question: OpenQuestion) -> bool:
+    """원칙 3·6(최종 검토 I2): 승낙·거절, 또는 확정(need_confirm 거짓) navigate·resume — 미션이 의도대로 받으면 출발·재출발한다.
+
+    확정 navigate 는 확인 질문 중일 때만이다(그 확정이 곧 출발). 고르기·도착 질문 등에서는 노드가 묻지 않은 확정을 제안으로
+    낮추므로(demote_unasked_confirm) 의도대로 받아도 그 곳으로 확인 질문이 나올 뿐이다(2026-11-22 3단계 다시 측정)."""
+    if intent.intent in _YES_NO_INTENTS:
+        return True
+    if intent.intent == "navigate":
+        return not intent.need_confirm and question.kind == "confirm"
+    return intent.intent == "resume" and not intent.need_confirm
 
 
 def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[tuple[str, str]] = None,
@@ -240,7 +247,7 @@ def fill(intent: VicaIntent, question: Optional[OpenQuestion], ruled: Optional[t
         # 다른 곳(destination, 값은 아래에서 그 id)으로 둔다. 미션이 그곳으로 확인 질문을 한다.
         answer = "destination"
     elif (answer == "unclear" and intent.intent not in ("unknown", "clarify", _NOT_FOR_ROBOT)
-          and not _settled(intent)):
+          and not _settled(intent, question)):
         # LLM 이 뜻은 읽고(의도 — 질문·멈춤·취소·다른 곳 …) 대답 칸만 unclear 로 냈다 — 미션이 unclear 를 먼저 읽어 "잘 듣지
         # 못했습니다."라고 하지 않게 other(질문과 상관없는 말)로 둔다: 미션은 의도대로 받는다(2026-11-21 3단계 실기, 확인 질문 중
         # "거기 어디야"). 뜻을 정하지 못한 의도(unknown·clarify)의 unclear 는 그대로 — 미션이 열린 질문을 다시 묻는다.

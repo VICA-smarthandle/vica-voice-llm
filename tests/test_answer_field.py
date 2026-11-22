@@ -445,3 +445,14 @@ def test_i1_i2_off_returns_the_same_intent(monkeypatch):
             (VicaIntent(intent="navigate", matched_destination_id="r409"), None, "yes"),
             (VicaIntent(intent="affirm"), None, "unclear")):
         assert af.fill(said, CONFIRM_WC, ruled, llm) is said
+
+
+def test_p6_confirmed_navigate_with_unclear_is_settled_only_at_a_confirm_question(on):
+    """확정 navigate + LLM 의 unclear: 확인 질문 중이면 그대로 unclear(그 확정이 곧 출발이라 다시 묻게 한다 — 최종 검토 I2).
+    고르기·도착 질문 등에서는 other 로 두어 미션이 의도대로 받는다 — 노드가 묻지 않은 확정을 제안으로 낮추므로 출발이 아니라
+    그 곳으로 확인 질문이 나온다(2026-11-22 3단계 다시 측정: 고르기 질문의 대답 3행이 다시 묻기가 됐다)."""
+    picked = VicaIntent(intent="navigate", matched_destination_id="m", need_confirm=False)
+    assert af.fill(picked, q("choice", "남자 화장실과 여자 화장실 중 어디로 갈까요?"), None, "unclear").answer == "other"
+    assert af.fill(picked, q("yesno", "여기서 기다릴까요?"), None, "unclear").answer == "other"
+    assert af.fill(picked, q("confirm"), None, "unclear").answer == "unclear"
+    assert af.fill(VicaIntent(intent="affirm"), q("choice", "A와 B 중 어디로 갈까요?"), None, "unclear").answer == "unclear"
