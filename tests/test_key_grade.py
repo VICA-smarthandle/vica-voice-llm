@@ -227,3 +227,12 @@ def test_p3_same_place_proposal_during_confirm_is_asked_again_when_the_mission_r
     assert mission_reaction(proposal, confirm, DESTS) == Reaction("yes")                       # 꺼짐 — 옛 규칙
     other = VicaIntent(intent="navigate", matched_destination_id=WELFARE.id, need_confirm=True)
     assert mission_reaction(other, confirm, DESTS, answer_field=True) == Reaction("confirm", WELFARE.id)
+
+
+def test_p13_a_call_with_an_unclear_answer_is_still_answered_as_a_call():
+    """대답 칸 unclear 가 붙어도 호출어만 들린 말(넘긴 "네?")은 미션이 호출로 받는다 — 되묻기로 세지 않는다."""
+    arrival = asked("yesno", "화장실에 도착했습니다. 다녀오시는 동안 여기서 기다릴까요?")
+    call = VicaIntent(intent="unknown", ask_text="네?", ask_kind="open", question_id="q", answer="unclear")
+    assert mission_reaction(call, arrival, DESTS, answer_field=True).action == "wake"
+    lost = VicaIntent(intent="unknown", question_id="q", answer="unclear")
+    assert mission_reaction(lost, arrival, DESTS, answer_field=True).action == "reask"

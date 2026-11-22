@@ -140,7 +140,10 @@ def mission_reaction(intent, question: Optional[OpenQuestion], destinations: Seq
     if answer == "minutes":
         return Reaction("wait", minutes=value) if value.isdigit() and int(value) > 0 else Reaction("reask", say=question.text)
     if answer == "unclear":
-        return Reaction("reask", say=question.text)
+        # 미션은 의도만 unknown 으로 바꾸고 다른 칸(넘긴 말)은 그대로 둔다 — 호출어만 들린 말("네?"를 넘김)은 그대로 호출로
+        # 받고("네?"), 그 밖은 열린 질문을 다시 묻는다(2026-11-22: 대답 칸 unclear 가 붙은 "비카야" 4행을 되묻기로 잘못 셌다).
+        said = (getattr(intent, "ask_text", "") or getattr(intent, "reply", "") or "").strip()
+        return Reaction("wake", say=said) if is_wake_answer(said) else Reaction("reask", say=question.text)
     return _as_intent(intent, question, destinations)
 
 
