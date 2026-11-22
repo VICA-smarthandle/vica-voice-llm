@@ -109,6 +109,26 @@ def test_p6_other_negatives_stay_no(on, text):
         assert af.short_answer(text, q(kind)) == ("no", "")
 
 
+@pytest.mark.parametrize("text", ["가자", "가줘", "가자.", "가 줘"])
+def test_go_words_are_yes_only_for_destination_confirm(on, text):
+    """사용자 결정(2026-11-22): 통째 "가자"·"가줘"는 목적지 확인 질문(kind confirm)에서만 "네"다. 그 밖의 네/아니요 질문
+    ("안내를 취소할까요?"·"기다릴까요?"·"안내가 필요 없으신가요?")에서는 규칙이 정하지 않는다 — LLM 의 읽기를 따른다."""
+    assert af.short_answer(text, q("confirm")) == ("yes", "")
+    for kind in ("yesno", "yesno_inverted"):
+        assert af.short_answer(text, q(kind, "안내를 취소할까요?")) is None
+
+
+def test_go_word_keeps_the_llm_no_outside_destination_confirm(on):
+    """ "안내를 취소할까요?"에 "가자" — Realtime 이 거절(deny·no)로 읽으면 대답 칸은 no 그대로다(전에는 규칙 yes 와 반대라
+    unclear 가 되어 미션이 같은 질문을 되풀이했다, 최종 검토 I1 ② 의 부작용)."""
+    asked = q("yesno", "안내를 취소할까요?")
+    out = af.fill(VicaIntent(intent="deny", reply=""), asked, af.short_answer("가자", asked), "no")
+    assert (out.intent, out.answer) == ("deny", "no")
+    confirm = q("confirm")
+    go = af.fill(VicaIntent(intent="affirm", reply=""), confirm, af.short_answer("가자", confirm), "")
+    assert (go.intent, go.answer) == ("affirm", "yes")          # 목적지 확인 질문에서는 지금처럼 "네"
+
+
 def test_short_answer_minutes(on):
     m = q("minutes", "몇 분쯤 걸리실까요?")
     assert af.short_answer("삼십분.", m) == ("minutes", "30")
@@ -236,7 +256,7 @@ def test_p6_whole_yes_no_does_not_overturn_the_llm_reading(monkeypatch):
     # 수정 2차: LLM 이 다른 곳 제안으로 읽었으면 규칙이 덮지 않는다 — 의도·대답 칸 모두 LLM 의 것.
     assert (out.intent, out.answer, out.answer_value, out.matched_destination_id, out.reply, out.need_confirm) == (
         "navigate", "destination", "t", "t", "화장실로 안내해드릴까요?", True)
-    refused = af.fill(VicaIntent(intent="deny", reply=""), q("yesno", "안내를 취소할까요?"), ("yes", ""), "no")   # '가자'
+    refused = af.fill(VicaIntent(intent="deny", reply=""), q("yesno", "안내를 취소할까요?"), ("yes", ""), "no")   # 들은 글자 '네'
     # 최종 검토 I1 ②(11-21): 규칙 yes 와 LLM no 가 반대면 어느 쪽도 따르지 않는다 — 의도는 그대로, 대답 칸 unclear(미션이 다시 묻는다).
     assert (refused.intent, refused.answer) == ("deny", "unclear")
 

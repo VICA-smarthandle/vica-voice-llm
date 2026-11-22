@@ -39,6 +39,9 @@ _MEANING = {"yes": "승낙", "no": "거절", "destination": "다른 곳으로 �
             "choice": "보기 중 하나를 고름(destination_candidate 에 그곳)", "minutes": "시간을 말함(wait_minutes 에 분)",
             "other": "질문과 상관없는 명령이나 질문", "unclear": "못 알아들음"}
 _YES_NO_KINDS = ("confirm", "yesno", "yesno_inverted")
+# 사용자 결정(2026-11-22): AFFIRMATIVES 가운데 이 둘은 목적지 확인 질문(kind confirm)에서만 "네"다 — "안내를 취소할까요?"·
+# "기다릴까요?"·"안내가 필요 없으신가요?"에서는 가자는 뜻이 승낙이 아니다. 새 낱말이 아니라 AFFIRMATIVES 의 두 낱말을 좁힌 것이다.
+_GO_WORDS = ("가자", "가줘")
 # 분 규칙이 서는 LLM 의 읽기(원칙 6, standing) — 대답이 이 셋이고 의도가 wait 일 때만(수정 3차: 값 바로잡기뿐).
 _MINUTES_CORRECTS = ("", "minutes", "unclear")
 _MINUTES_INTENTS = ("wait",)
@@ -128,6 +131,7 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
     _CANCEL_WORDS 로 빼기만 한다 — 뜻이 질문에 따라 갈린다). "안내가 필요 없으신가요?"
     (yesno_inverted)도 들은 대로 yes/no 다 — 뜻은 미션이 질문 종류로 읽는다. 혼잣소리('음'·'어어', SOFT_AFFIRMATIVES)는
     여기서 정하지 않는다 — yesno 에는 "다시 출발할까요?"처럼 로봇이 움직이는 질문도 있다(2026-09-28, 검토 I4).
+    통째 "가자"·"가줘"는 목적지 확인 질문(confirm)에서만 yes 다(사용자 결정 2026-11-22).
     """
     if not on() or question is None:
         return None
@@ -142,7 +146,9 @@ def short_answer(text: str, question: Optional[OpenQuestion], local: bool = Fals
         if word in NEGATIVES:
             return ("no", "")
         if word in AFFIRMATIVES:
-            return ("yes", "")
+            # "가자"·"가줘"는 목적지 확인 질문에서만 규칙이 "네"로 정한다(_GO_WORDS) — 그 밖의 질문에서는 LLM 의 읽기를 따른다.
+            # 규칙 yes 가 서면 Realtime 이 맞게 읽은 거절(no)과 반대가 되어 unclear(같은 질문 되풀이)가 됐다(fill 의 _crossed).
+            return None if word in _GO_WORDS and question.kind != "confirm" else ("yes", "")
         return None
     if question.kind == "minutes":
         from .langchain_intent_parser import parse_wait_minutes   # 지연 import — 해석기가 이 모듈을 import 한다

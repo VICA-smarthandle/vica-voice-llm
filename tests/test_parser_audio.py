@@ -385,15 +385,15 @@ def test_p7_sound_path_yes_from_not_for_robot_is_asked_again(monkeypatch):
 
 
 # 검토자 재현(Critical) — "가자"·"가줘"는 AFFIRMATIVES 에 있지만 확인 질문 밖에서는 뜻이 반대다. Realtime 이 맞게 읽은 것을
-# 규칙이 승낙으로 뒤집으면 안 된다 — 의도는 BASE 4cdc717 그대로 나간다(수정 2차 ①). 최종 검토 I1 ②(11-21): 규칙 yes 와 Realtime
-# no 가 반대인 넷은 대답 칸 unclear(어느 쪽도 따르지 않고 미션이 다시 묻는다) · src 에 +대답규칙. other 둘은 그대로.
+# 규칙이 승낙으로 뒤집으면 안 된다 — 의도는 BASE 4cdc717 그대로 나간다(수정 2차 ①). 사용자 결정(11-22): 이 두 낱말은 목적지
+# 확인 질문에서만 규칙의 "네"다 — 그 밖의 질문에서는 규칙 대답이 없어 Realtime 의 의도·대답 칸(no·other)이 그대로 나간다
+# (그 전에는 규칙 yes 와 Realtime no 가 반대라 대답 칸이 unclear 가 되어 미션이 같은 질문을 되풀이했다, 최종 검토 I1 ②).
 REVIEW_SCENES = [
-    ("yesno", "안내를 취소할까요?", "가자", {"intent": "deny", "answer": "no"}, "navigating", "deny", "unclear"),
+    ("yesno", "안내를 취소할까요?", "가자", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
     ("yesno", "안내를 취소할까요?", "가자", {"intent": "resume", "answer": "other"}, "navigating", "resume", "other"),
-    ("yesno", "다녀오시는 동안 여기서 기다릴까요?", "가자", {"intent": "resume", "answer": "no"}, "asking_next", "resume",
-     "unclear"),
-    ("yesno_inverted", "안내가 필요 없으신가요?", "가자", {"intent": "resume", "answer": "no"}, "waiting", "resume", "unclear"),
-    ("yesno", "직원의 도움이 필요하신가요?", "가줘", {"intent": "deny", "answer": "no"}, "navigating", "deny", "unclear"),
+    ("yesno", "다녀오시는 동안 여기서 기다릴까요?", "가자", {"intent": "resume", "answer": "no"}, "asking_next", "resume", "no"),
+    ("yesno_inverted", "안내가 필요 없으신가요?", "가자", {"intent": "resume", "answer": "no"}, "waiting", "resume", "no"),
+    ("yesno", "직원의 도움이 필요하신가요?", "가줘", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
     ("yesno", "여기까지 안내를 마칠까요?", "가자", {"intent": "resume", "answer": "other"}, "asking_next", "resume", "other"),
 ]
 
@@ -408,8 +408,22 @@ def test_p6_sound_path_rule_does_not_overturn_the_review_scenes(monkeypatch, kin
     result = RealtimeResult(draft=draft, heard_text=heard, latency_sec=1.0)
     intent, _h, _dt, info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
                                                             question=question)
-    want_src = "llm+대답규칙" if want_answer == "unclear" else "llm"
-    assert (intent.intent, intent.answer, info["src"]) == (want_intent, want_answer, want_src)
+    assert (intent.intent, intent.answer, info["src"]) == (want_intent, want_answer, "llm")
+
+
+def test_p6_sound_path_whole_yes_against_realtime_no_is_asked_again(monkeypatch):
+    """최종 검토 I1 ②: 들은 글자가 통째 "네"(규칙 yes)인데 Realtime 이 no 로 읽으면 어느 쪽도 따르지 않는다 — 대답 칸 unclear,
+    미션이 같은 질문을 다시 묻는다. 목적지 확인 질문의 "가자"도 같다(그 질문에서는 규칙의 "네"다)."""
+    from src.question_record import OpenQuestion
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    for kind, text, heard, state in (("yesno", "안내를 취소할까요?", "네", "navigating"),
+                                     ("confirm", "화장실로 안내해드릴까요?", "가자", "confirming")):
+        question = OpenQuestion(id="q1", kind=kind, text=text, option_ids=(), opened_at=0.0)
+        result = RealtimeResult(draft={"intent": "deny", "answer": "no"}, heard_text=heard, latency_sec=1.0)
+        intent, _h, _dt, info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
+                                                                question=question)
+        assert (intent.intent, intent.answer, info["src"]) == ("deny", "unclear", "llm+대답규칙"), (kind, heard)
 
 
 @pytest.mark.parametrize("state,heard,draft,want_intent,want_answer", [
