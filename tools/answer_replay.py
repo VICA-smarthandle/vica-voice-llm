@@ -9,7 +9,8 @@ midm·gpt = 받아쓴 글자 → parse_intent(글자 경로). realtime = 저장 
 --answer-local = 로컬 모델에도 질문 줄·대답 칸을 준다(VICA_ANSWER_LOCAL). 없으면 로컬은 짧은 대답 규칙의 대답만 싣는다.
 --key = 새 답지(로봇이 해야 할 일)로도 채점한다(설계 2026-11-20 G2): 해석 결과를 미션이 받는 꼴로 만든 뒤 로봇이 한 일을
 답지와 견준다(tools.key_grade). 안 본 말(set=heldout)은 보고서에 숫자만 싣는다 — 고치는 동안 행 내용을 읽지 않으려고.
-결과: 정답 파일 옆 replay_<path>[_answer][_key-<정답 파일>]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
+--talk = 정해진 대답(VICA_TALK)을 켠 채로 잰다 — --recut --answer 와 함께만(Task N1). 없으면 off 로 못 박는다.
+결과: 정답 파일 옆 replay_<path>[_answer][_recut][_talk][_key-<정답 파일>]_<YYYYMMDD-HHMM>.json·.md. 주행 중에는 돌리지 않는다.
 """
 from __future__ import annotations
 
@@ -87,6 +88,12 @@ def answer_env(on: bool, local: bool = False) -> dict:
 def recut_env(on: bool) -> dict:
     """--recut: 재단 스위치(설계 2026-11-20 6.1~6.3). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다."""
     return {"VICA_RECUT": "on" if on else "off"}
+
+
+def talk_env(on: bool) -> dict:
+    """--talk: 정해진 대답 스위치(VICA_TALK, Task N1). 해석기 import 전에 넣는다 — 운영 .env 값과 무관하게 이 값으로 돈다.
+    fixed_answers.on() 은 재단·대답 칸 위에서만 참이라 --recut --answer 와 함께만 쓴다(main 이 인자 오류로 막는다)."""
+    return {"VICA_TALK": "on" if on else "off"}
 
 
 def text_for(row: dict) -> str:
@@ -168,11 +175,11 @@ def select_rows(rows: list[dict], key: dict, which: str) -> list[dict]:
 
 
 def result_name(path: str, tag: str, tools: bool, answer: bool, recut: bool, labels_stem: str, keyed: bool,
-                stamp: str, answer_local: bool = False) -> str:
+                stamp: str, answer_local: bool = False, talk: bool = False) -> str:
     """결과 파일 이름. 새 답지 채점은 정답 파일 이름을 넣는다 — 같은 분에 다른 묶음을 돌려도 덮어쓰지 않게."""
     answered = ("_answer-local" if answer_local else "_answer") if answer else ""
     return (f"replay_{path}{'-' + tag if tag else ''}{'_tools' if tools else ''}{answered}"
-            f"{'_recut' if recut else ''}{'_key-' + labels_stem if keyed else ''}_{stamp}")
+            f"{'_recut' if recut else ''}{'_talk' if talk else ''}{'_key-' + labels_stem if keyed else ''}_{stamp}")
 
 
 def key_fields(row: dict, key: dict, intent, question: OpenQuestion, dests: Sequence,  # noqa: ANN001
@@ -375,6 +382,8 @@ def main() -> None:
     ap.add_argument("--answer-local", action="store_true",
                     help="--answer 와 함께: 로컬 모델에도 질문 줄·대답 칸을 준다(VICA_ANSWER_LOCAL). 없으면 로컬은 규칙 대답만")
     ap.add_argument("--recut", action="store_true", help="재단 스위치(VICA_RECUT)를 켠 채로 잰다 — 새 값·되묻는 문장 틀")
+    ap.add_argument("--talk", action="store_true",
+                    help="--recut --answer 와 함께: 정해진 대답 스위치(VICA_TALK)를 켠 채로 잰다 — repeat·places·빈 대답 재시도")
     ap.add_argument("--model", default="", help="글자 경로(midm·gpt)의 모델 이름을 바꿔 잰다 — 예: 다른 로컬 모델(Ollama 태그)")
     ap.add_argument("--key", default="", help="새 답지(answer_key.csv) — 로봇이 한 일을 답지와 견줘 채점한다")
     ap.add_argument("--set", choices=("seen", "heldout", "all"), default="all", dest="which",
@@ -382,6 +391,8 @@ def main() -> None:
     ap.add_argument("--pause", type=float, default=0.0,
                     help="API 를 부른 뒤 쉴 초 — Realtime 은 요청이 몰리면 멈춘다(11-19 사용자). 기본 0")
     args = ap.parse_args()
+    if args.talk and not (args.recut and args.answer):
+        ap.error("--talk 은 --recut --answer 와 함께만 쓴다(VICA_TALK 은 재단·대답 칸 위에서만 움직인다)")
 
     # src 의 parser 를 부르기 전에 경로를 고정한다 — import 때 .env 를 읽고 설정을 굳힌다(load_dotenv 는 있는 값을 안 덮음).
     env = path_env(args.path, None if args.local_rules == "auto" else args.local_rules == "on")
@@ -389,9 +400,10 @@ def main() -> None:
     os.environ.update(tools_env(args.tools))
     os.environ.update(answer_env(args.answer, args.answer_local))
     os.environ.update(recut_env(args.recut))
+    os.environ.update(talk_env(args.talk))
     model = args.model or MODELS.get(args.path)
     setup = (f"경로 {args.path} · 모델 {model or os.environ.get('VICA_REALTIME_MODEL', 'Realtime 기본')} · "
-             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {('켬(로컬에도)' if args.answer_local else '켬(미션이 먼저 읽음)') if args.answer else '끔'} · 재단 {'켬' if args.recut else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
+             f"로컬 규칙 {env['VICA_LOCAL_RULES']} · 도구 출력 {'켬' if args.tools else '끔'} · 대답 칸 {('켬(로컬에도)' if args.answer_local else '켬(미션이 먼저 읽음)') if args.answer else '끔'} · 재단 {'켬' if args.recut else '끔'} · 정해진 대답 {'켬' if args.talk else '끔'} · 입력 {'저장 소리' if args.path == 'realtime' else '받아쓴 글자(stt, 없으면 들은 글자) · 호출 응답 메아리 뗌'}")
     from langchain_core.messages import AIMessage
 
     from src.destination_loader import load_voice_destinations
@@ -468,7 +480,7 @@ def main() -> None:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
     base = labels_path.parent / result_name(args.path, model_tag(args.model) if args.model else "", args.tools,
                                             args.answer, args.recut, labels_path.stem, key is not None, stamp,
-                                            answer_local=args.answer and args.answer_local)
+                                            answer_local=args.answer and args.answer_local, talk=args.talk)
     base.with_suffix(".json").write_text(json.dumps(runs, ensure_ascii=False, indent=1, default=dict), encoding="utf-8")
     base.with_suffix(".md").write_text(_report_md(args.path, runs, setup), encoding="utf-8")
     print(f"→ {base}.json · .md")

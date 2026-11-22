@@ -360,3 +360,52 @@ def test_p6_key_grading_reads_the_answer_field_like_the_mission_when_answers_are
     yes = VicaIntent(intent="unknown", question_id="replay", answer="yes")           # 의도는 못 알아들음, 대답 칸은 승낙
     read = replay([asked], lambda row: (yes, 0.5), lambda _p: dests, key={"9.0": _key("yes")}, mission_answers=True)
     assert read["rows"][0]["key_status"] == "ok"
+
+
+# ---- Task N1 — --talk(VICA_TALK) -------------------------------------------------------------------------------------
+def test_n1_talk_switch_env_and_file_name():
+    """--talk: 정해진 대답 스위치. 없으면 off 로 못 박는다 — 운영 .env 값이 재생에 새지 않게(answer_env 와 같다)."""
+    assert answer_replay.talk_env(True) == {"VICA_TALK": "on"}
+    assert answer_replay.talk_env(False) == {"VICA_TALK": "off"}
+    name = answer_replay.result_name("realtime", "", False, True, True, "labels", False, "20261122-2200", talk=True)
+    assert name == "replay_realtime_answer_recut_talk_20261122-2200"
+    assert "_talk" not in answer_replay.result_name("realtime", "", False, True, True, "labels", False, "20261122-2200")
+
+
+@pytest.fixture
+def env_back():
+    """main() 이 os.environ 에 넣은 스위치를 시험 뒤에 통째로 되돌린다."""
+    import os
+    before = dict(os.environ)
+    yield before
+    os.environ.clear()
+    os.environ.update(before)
+
+
+def _main(monkeypatch, *flags):
+    # 정답 파일이 없어 스위치를 환경에 넣은 뒤 파일을 열다 멈춘다 — LLM 을 부르지 않는다.
+    monkeypatch.setattr("sys.argv", ["answer_replay", "--path", "realtime", "--labels", "/없는/labels.csv", *flags])
+    answer_replay.main()
+
+
+def test_n1_main_puts_the_talk_switch_into_the_environment(monkeypatch, env_back):
+    import os
+    with pytest.raises(FileNotFoundError):
+        _main(monkeypatch, "--recut", "--answer", "--talk")
+    assert (os.environ["VICA_RECUT"], os.environ["VICA_ANSWER"], os.environ["VICA_TALK"]) == ("on", "on", "on")
+    os.environ["VICA_TALK"] = "on"                          # 운영 .env 가 켜 둔 것처럼 — --talk 이 없으면 off 로 못 박는다
+    with pytest.raises(FileNotFoundError):
+        _main(monkeypatch, "--recut", "--answer")
+    assert os.environ["VICA_TALK"] == "off"
+
+
+@pytest.mark.parametrize("flags", [["--talk"], ["--talk", "--recut"], ["--talk", "--answer"]])
+def test_n1_talk_without_recut_and_answer_is_an_argument_error(monkeypatch, capsys, env_back, flags):
+    """--talk 은 --recut --answer 와 함께만 — fixed_answers.on() 이 그 둘 위에서만 참이라, 없으면 켠 줄 알고 꺼진 채 잰다."""
+    import os
+    with pytest.raises(SystemExit) as exc:
+        _main(monkeypatch, *flags)
+    assert exc.value.code == 2 and "--talk 은 --recut --answer 와 함께만" in capsys.readouterr().err
+    # 인자 오류는 환경을 건드리기 전에 난다(PYTEST_CURRENT_TEST 는 pytest 가 단계마다 바꾼다)
+    now = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    assert now == {k: v for k, v in env_back.items() if k != "PYTEST_CURRENT_TEST"}
