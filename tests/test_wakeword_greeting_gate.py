@@ -221,17 +221,58 @@ def test_p13_state_turns_moving_mid_window_fires_from_next_frame(single, fire_at
     assert [s for _, s in out].index("postroll") == fire_at   # 바뀐 뒤 조각부터 지금 규칙대로
 
 
-def test_p13_state_back_to_standing_mid_window_skips_again():
-    """조각마다 보는 조건은 그대로다 — 건너뛸 자격이 있던 "네?"의 2.5 s 안에서 목록 밖 값 뒤 다시 목록 값이 오면 그 뒤 조각은 건너뛴다."""
-    m, sc, events = _make()
+# 서 있는 줄이 끊기면 그 "네?"의 건너뛰기는 거기서 끝난다(검토 2차) — 다시 서 있는 값이 와도 새 "네?"가 자격을 갖춰 와야 한다.
+# (끊김 소식들, "네?" 앞 소식들, 끊김 전 조각, 끊김 뒤 조각)
+_BREAKS = {
+    # 자격 있는 "네?" → navigating → idle(CancelNav 직후 같은 장면)
+    "moving_then_idle": ([("navigating", 0.45), ("idle", 0.5)], [("idle", t) for t in (-3.0, -2.0, -1.0, 0.0)],
+                         _times(0.0, 6), _times(0.56, 3)),
+    # 마지막 소식(-2.9)에서 3.1 s 침묵 뒤 idle — "네?" 때는 신선했다
+    "news_gap_then_idle": ([("idle", 0.2)], [("idle", t) for t in (-5.9, -4.9, -3.9, -2.9)],
+                           _times(0.0, 2), _times(0.24, 3)),
+    # 벽시계가 뒤로 — 앞 소식(0.0)보다 이른 시각의 idle
+    "clock_back_idle": ([("idle", -1.0)], [("idle", t) for t in (-3.0, -2.0, -1.0, 0.0)],
+                        _times(0.0, 6), _times(0.48, 3)),
+}
+
+
+@pytest.mark.parametrize("single, nth", ((None, 1), (0.5, 0)))
+@pytest.mark.parametrize("kind", sorted(_BREAKS))
+def test_p13_break_mid_window_ends_skip(kind, single, nth):
+    breaks, settle, pre, post = _BREAKS[kind]
+
+    def run(greet):
+        m, sc, _ = _make(single=single)
+        for s, t in settle:
+            m.set_dialog_state(s, now=t)
+        if greet:
+            m.note_robot_speech(WAKE_GREETING, now=0.0)        # 자격 있음 — 2.5 까지
+        before = _feed(m, sc, HIGH if greet else 0.0, pre)     # 건너뛰는 중(없던 때는 조용히 — 관문이 똑같이 비어 있게)
+        for s, t in breaks:
+            m.set_dialog_state(s, now=t)
+        return before, _feed(m, sc, HIGH, post)
+    before, after = run(True)
+    assert all(r is None and s == "idle" for r, s in before)   # 끊기기 전에는 건너뛰었다
+    assert after == run(False)[1]                              # 끊긴 뒤는 "네?"가 없던 때와 같은 조각에서 발동
+    assert [s for _, s in after].index("postroll") == nth
+
+
+def test_p13_break_mid_window_logs_one_line():
+    """중간에 끝난 "네?"도 기록은 한 줄 — 끊긴 뒤 첫 조각에서 남기고, 끊김이 또 와도 다시 남기지 않는다."""
+    lines = []
+    m, sc, _ = _make(lines=lines)
     _settle(m, "idle", 0.0)
     m.note_robot_speech(WAKE_GREETING, now=0.0)
-    m.set_dialog_state("navigating", now=0.05)
-    assert _feed(m, sc, HIGH, [0.08]) == [(None, "idle")]      # 한 조각 — 2연속 전
-    m.set_dialog_state("idle", now=0.1)
-    out = _feed(m, sc, HIGH, _times(0.16, 28))                 # 0.16~2.32 — 지금이면 0.16 에 발동
-    assert all(r is None and s == "idle" for r, s in out)
-    assert events == []
+    _feed(m, sc, HIGH, _times(0.0, 6))                         # 0.00~0.40 건너뜀(최고 0.95)
+    assert lines == []
+    m.set_dialog_state("navigating", now=0.45)
+    _feed(m, sc, 0.0, [0.48])
+    assert lines == ["긴급 관문 건너뜀('네?' 직후 2.5 s · 상태 idle): 최고 점수 0.95"]
+    m.set_dialog_state("idle", now=0.5)
+    m.set_dialog_state("navigating", now=1.0)                  # 끊김이 또 와도
+    m.set_dialog_state("idle", now=1.5)
+    _feed(m, sc, 0.0, _times(0.56, 30))                        # ~2.88 — 2.5 s 가 지나도
+    assert len(lines) == 1
 
 
 def test_p13_after_window_gate_starts_empty():
@@ -345,18 +386,16 @@ def test_p13_i1_f_news_gap_over_3s_then_greeting_fires_as_before():
 
 
 def test_p13_i1_g_unqualified_greeting_ends_previous_skip():
+    """자격 없는 "네?"는 앞선 "네?"의 건너뛰기도 끝낸다. 서 있는 줄이 끊기면 끊김이 먼저 끝내므로(test_p13_break_…),
+    줄이 끊기지 않은 채 자격이 없는 경우 — "네?" 자신의 시각이 뒤로 간 경우(서 있은 지 2.5 s 로 읽힘) — 로 본다."""
     m, sc, _ = _make()
-    _settle(m, "idle", 0.0)
+    _settle(m, "idle", 0.0)                                    # idle 줄 시작 -3.0
     m.note_robot_speech(WAKE_GREETING, now=0.0)                # 자격 있는 "네?" — 2.5 까지
     assert all(s == "idle" for _, s in _feed(m, sc, HIGH, _times(0.0, 6)))   # 0.00~0.40 건너뜀
-    m.set_dialog_state("navigating", now=0.45)
-    _feed(m, sc, 0.0, _times(0.48, 2))                         # 0.48·0.56 조용
-    m.set_dialog_state("idle", now=0.6)
-    assert _feed(m, sc, HIGH, [0.64]) == [(None, "idle")]      # 조각 조건으로는 다시 건너뛴다
-    m.note_robot_speech(WAKE_GREETING, now=0.7)                # idle 이 이어진 지 0.1 s — 자격 없음
-    times = _times(0.72, 2)
+    m.note_robot_speech(WAKE_GREETING, now=-0.5)               # 자격 없음(−0.5 − (−3.0) = 2.5 < 3)
+    times = _times(0.48, 2)
     out = _feed(m, sc, HIGH, times)
-    assert _postroll_at(out, times) == 0.8                     # 앞 "네?"의 건너뛰기도 끝났다(0.72 부터 셈)
+    assert _postroll_at(out, times) == 0.56                    # 앞 "네?"의 건너뛰기도 끝났다(0.48 부터 셈)
 
 
 # --- 검토 Minor 1 — 시각이 뒤로 가면(음수) 신선하지 않다 ----------------------------------------------------------------

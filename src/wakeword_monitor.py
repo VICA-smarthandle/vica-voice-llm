@@ -1585,12 +1585,14 @@ class WakewordMonitor:
         """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다).
         원칙 13 · 8 — 값과 받은 시각을 기억한다("네?" 직후 긴급 관문 건너뛰기가 본다). 서 있는 값이 끊기지 않고 이어진
         시작 시각도 센다(검토 I1): 목록 밖 값이 오거나 앞 소식과의 간격이 GREETING_GATE_STATE_FRESH_SEC 를 넘으면(뒤로 가면)
-        버리고, 목록 값이 오면 시작 시각이 없을 때만 지금으로 둔다. 목록 안에서 값이 바뀌는 것은 끊김이 아니다."""
+        버리고, 목록 값이 오면 시작 시각이 없을 때만 지금으로 둔다. 목록 안에서 값이 바뀌는 것은 끊김이 아니다.
+        끊기면 지금 "네?"의 건너뛰기도 끝난다 — 다시 서 있는 값이 와도 새 "네?"가 자격을 갖춰 와야 한다(검토 2차)."""
         now = time.time() if now is None else now
         prev = self._dialog_seen
         if (state not in GREETING_GATE_SKIP_STATES
                 or (prev is not None and not 0.0 <= now - prev[1] <= GREETING_GATE_STATE_FRESH_SEC)):
             self._standing_since = None
+            self._greet_skip_until = float("-inf")
         if state in GREETING_GATE_SKIP_STATES and self._standing_since is None:
             self._standing_since = now
         self._dialog_seen = (state, now)
