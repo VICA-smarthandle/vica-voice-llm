@@ -21,9 +21,8 @@ from src.realtime_intent import RealtimeResult, build_intent_tool
 from src.replies import RETRY_PROMPT
 from src.schema import DestinationData, RobotState, VicaIntent
 
-LINE_REPEAT = '- repeat: 로봇이 방금 한 말을 다시 해 달라고 한다("다시 말해줘", "뭐라고?", "못 들었어"). reply 는 빈 문자열.'
-LINE_PLACES = ('- places: 어디로 갈 수 있는지, 무엇을 할 수 있는지 묻는다("어디 갈 수 있어?", "뭐 할 수 있어?"). '
-               'reply 는 빈 문자열 — 문장은 시스템이 만든다.')
+LINE_REPEAT = ('- repeat: 로봇이 방금 한 말을 다시 해 달라고 한다("다시 말해줘", "뭐라고?", "못 들었어", "방금 뭐라고 했어?"). reply 는 빈 문자열 — 다시 할 말은 시스템이 고른다(직접 옮겨 말하지 않는다).')
+LINE_PLACES = ('- places: 어디로 갈 수 있는지 묻는다("어디 갈 수 있어?", "갈 수 있는 곳 알려줘"). reply 는 빈 문자열 — 문장은 시스템이 만든다(목적지 이름을 직접 늘어놓지 않는다). 무엇을 할 수 있는지 물으면 places 가 아니라 question 이다([비카]의 할 수 있는 일).')
 
 TOILET = DestinationData(id="wc", name="화장실", confirm_prompt="화장실로 안내해드릴까요?")
 SOCIAL = DestinationData(id="social", name="사회복지", confirm_prompt="사회복지로 안내해드릴까요?")
