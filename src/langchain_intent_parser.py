@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextvars import ContextVar
 from typing import Optional, Sequence
 
@@ -1440,6 +1441,7 @@ def parse_intent_audio(
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
     도구 출력이 켜져 있고(VICA_TOOLS_AUDIO=on) 모델이 reserve_facility 를 부르면 의도 대신 ReserveCall 을 돌려준다.
     question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 [지금 상황] 끝에 한 줄로 가고, 모델이 낸 answer 가 의도에 실린다.
+    정해진 대답이 켜졌으면(VICA_TALK) 할 말이 빈 question 을 침묵으로 두지 않는다(_settle_empty_question, Task N1).
     """
     instructions = build_audio_prompt(destinations, robot_state,
                                       answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
@@ -1447,7 +1449,10 @@ def parse_intent_audio(
     # 없으면 예전과 같은 호출이다(인자를 넘기지 않는다).
     result = get_realtime_client().ask(pcm16_16k, history, instructions,
                                        **({"tool_trail": tool_trail} if tool_trail else {}))
-    return _deliver_realtime_result(result, destinations, robot_state, question)
+    return _settle_empty_question(_deliver_realtime_result(result, destinations, robot_state, question),
+                                  destinations, dict(history=history, robot_state=robot_state, situation=situation,
+                                                     directory_block=directory_block, question=question,
+                                                     tool_trail=tool_trail))
 
 
 def parse_intent_realtime_text(
@@ -1461,7 +1466,7 @@ def parse_intent_realtime_text(
     tool_trail: Optional[list[dict]] = None,
 ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
-    parse_intent_audio 와 같다. 운영 경로는 부르지 않는다."""
+    parse_intent_audio 와 같다. 운영 경로는 VICA_TALK 이 켜졌을 때 소리 경로의 빈 대답 재시도(Task N1)에서만 부른다."""
     instructions = build_audio_prompt(destinations, robot_state,
                                       answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
     result = get_realtime_client().ask_text(text, history, instructions,
@@ -1508,6 +1513,53 @@ def _deliver_realtime_result(result, destinations: Sequence[DestinationData], ro
                          f"answer={by_llm.answer or '-'}/{by_llm.answer_value or '-'}"
                          f" → intent={filled.intent} answer={filled.answer}/{filled.answer_value or '-'} heard='{heard}'")
     return filled, heard, result.latency_sec, {"src": src, "usage": result.usage}
+
+
+# 빈 대답 재시도(Task N1)에서 쓰는 의도 — 할 말이 든 question 말고는 이 둘뿐이다. 처음 읽기(question = 나에게 한 말이고 움직이라는
+# 말이 아님)를 움직임이나 침묵(not_for_robot·빈 question)으로 뒤집지 않는다(원칙 3·7).
+_RETRY_KEEPS = (intent_recut.DISMISS, fixed_answers.REPEAT)
+
+
+def _retry_answer(again) -> bool:
+    """재시도 결과를 쓰는가: 할 말이 든 question(코드가 만든 갈 수 있는 곳 문장 포함) · dismiss · repeat. 예약 호출·실패(None)는 아니다."""
+    if not isinstance(again, VicaIntent):
+        return False
+    if again.intent == "question":
+        return bool((again.reply or "").strip())
+    return again.intent in _RETRY_KEEPS
+
+
+def _settle_empty_question(delivered: tuple, destinations: Sequence[DestinationData], context: dict) -> tuple:
+    """원칙 8·25·10(Task N1): 소리 경로가 question 인데 할 말(reply)이 비었으면 침묵으로 두지 않는다. 정해진 대답(fixed_answers.on())이
+    켜졌을 때만 — 꺼졌으면 받은 결과 그대로다. 2026-11-22 21:06~21:10 실기: "오늘 날씨 어때?" 등에 Realtime 이 question·reply ''.
+
+    1. 들은 글자(heard)가 있으면 같은 대화 기록·로봇 상태·열린 질문(context = parse_intent_audio 의 인자)으로
+       parse_intent_realtime_text 를 한 번만 부른다. _retry_answer 가 참이면 그 결과를 쓴다(src +빈대답재시도).
+    2. 그 밖(움직이는 의도·not_for_robot·unknown·clarify·또 빈 question·예약 호출·실패·시간 초과)이면 되묻는다 — unknown +
+       RETRY_PROMPT, 목적지·need_confirm 없음, 대답 칸은 LLM 대답 unclear 로 answer_field.fill 을 지난다(src +빈대답되묻기).
+       미션 질문이 열려 있으면 미션이 그 질문을 다시 묻고(원칙 8), 없으면 지금의 unknown 길(노드가 되묻는 말을 낸다)이다.
+    들은 글자가 비면 지금처럼 둔다. 지연초에는 재시도에 걸린 시간을 더한다 — 사용자가 기다린 시간이다.
+    """
+    intent, heard, latency, info = delivered
+    if (not fixed_answers.on() or not isinstance(intent, VicaIntent) or intent.intent != "question"
+            or (intent.reply or "").strip() or not heard):
+        return delivered
+    started = time.monotonic()
+    try:
+        again, _heard, _dt, again_info = parse_intent_realtime_text(heard, destinations, **context)
+    except Exception as exc:              # 실패·시간 초과도 되묻기로 — 올리면 노드가 이 말을 글자 경로에 넘긴다
+        again, got = None, f"실패({type(exc).__name__}: {exc})"
+    else:
+        got = (f"intent={getattr(again, 'intent', type(again).__name__)} "
+               f"reply='{(getattr(again, 'reply', '') or '')[:30]}' src={again_info.get('src', '-')}")
+    latency += time.monotonic() - started
+    if _retry_answer(again):
+        _log("info", f"[빈 대답] question·reply 빈 값 heard='{heard}' → 들은 글자로 한 번 더: {got} → 그 결과를 쓴다")
+        return again, heard, latency, {**info, "src": info["src"] + "+빈대답재시도"}
+    asked = VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False, confidence=intent.confidence)
+    asked = answer_field.fill(asked, context.get("question"), llm_answer="unclear")
+    _log("info", f"[빈 대답] question·reply 빈 값 heard='{heard}' → 들은 글자로 한 번 더: {got} → 되묻는다")
+    return asked, heard, latency, {**info, "src": info["src"] + "+빈대답되묻기"}
 
 
 def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bool:

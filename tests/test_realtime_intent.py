@@ -464,3 +464,40 @@ def test_ask_sends_the_trail_only_when_the_session_has_the_reserve_tool(monkeypa
     monkeypatch.delenv("VICA_TOOLS_AUDIO")
     client.ask(PCM, [AIMessage("성함을 말씀해 주세요.")], "x", tool_trail=TRAIL)
     assert not any(i["type"] == "function_call" for i in conns[0].responses[1]["input"])
+
+
+# ----- Task N1 — VICA_TALK 켜짐에서 reply 는 꼭 채우는 칸(원칙 25 · 10) ------------------------------------------------
+REPLY_TALK = ("사용자에게 할 짧은 말. question 은 반드시 한 문장을 적는다. "
+              "할 말이 없는 의도(affirm·deny·repeat·not_for_robot 등)는 빈 문자열")
+REPLY_BASE = {"type": "string", "description": "사용자에게 할 짧은 말. 없으면 빈 문자열"}
+# BASE 0a59e80 의 build_intent_tool() — json.dumps(…, ensure_ascii=False, sort_keys=True) 의 sha256 앞 16자. 꺼진 조합은 글자까지 같아야 한다.
+BASE_TOOL_SHA = {"": "e276e77ccfd4c08d", "recut": "60e9cc51a6c85c5b", "recut+answer": "3b3e8aa6fd2b3b5c",
+                 "answer": "21a57297adef8c2e"}
+
+
+def _switches(monkeypatch, recut="off", answer="off", talk="off"):
+    monkeypatch.setenv("VICA_RECUT", recut)
+    monkeypatch.setenv("VICA_ANSWER", answer)
+    monkeypatch.setenv("VICA_TALK", talk)
+
+
+def test_p25_p10_reply_is_required_when_talk_is_on(monkeypatch):
+    """2026-11-22 21:06~21:10 실기: Realtime 이 question 에 reply 를 비워 로봇이 침묵했다 — 켜짐에서는 꼭 채우는 칸이다."""
+    _switches(monkeypatch, "on", "on", "on")
+    params = build_intent_tool()["parameters"]
+    assert "reply" in params["required"] and params["required"][:2] == ["intent", "heard_text"]
+    assert params["properties"]["reply"] == {"type": "string", "description": REPLY_TALK}
+
+
+@pytest.mark.parametrize("recut,answer,talk,base", [
+    ("off", "off", "off", ""), ("on", "off", "off", "recut"), ("on", "on", "off", "recut+answer"),
+    ("off", "off", "on", ""), ("off", "on", "on", "answer"), ("on", "off", "on", "recut"),
+])
+def test_p25_reply_stays_optional_when_talk_is_off(monkeypatch, recut, answer, talk, base):
+    """fixed_answers.on() 이 거짓(TALK 만 끔, RECUT·ANSWER 켬 포함)이면 도구 정의는 BASE 와 같은 dict 다."""
+    import hashlib
+    _switches(monkeypatch, recut, answer, talk)
+    tool = build_intent_tool()
+    assert tool["parameters"]["properties"]["reply"] == REPLY_BASE and "reply" not in tool["parameters"]["required"]
+    dumped = json.dumps(tool, ensure_ascii=False, sort_keys=True)
+    assert hashlib.sha256(dumped.encode()).hexdigest()[:16] == BASE_TOOL_SHA[base]

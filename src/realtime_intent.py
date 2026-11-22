@@ -64,6 +64,9 @@ def resample_pcm16(pcm16: bytes, src_rate: int = SAMPLE_RATE_IN, dst_rate: int =
 
 # 도구가 둘일 때(VICA_TOOLS_AUDIO=on)의 set_intent 설명 — "반드시 이 함수로만 답한다"는 맞지 않는다.
 _INTENT_DESCRIPTION_WITH_RESERVE = "사용자 발화(소리)의 의도를 정한다. 시설 예약이 아닌 모든 말에 호출한다."
+# 정해진 대답(VICA_TALK)이 켜졌을 때 reply 칸 설명(원칙 25·10, Task N1) — 2026-11-22 실기: question 에 reply 를 비워 로봇이 침묵했다.
+_REPLY_DESCRIPTION_TALK = ("사용자에게 할 짧은 말. question 은 반드시 한 문장을 적는다. "
+                           "할 말이 없는 의도(affirm·deny·repeat·not_for_robot 등)는 빈 문자열")
 
 
 def _facility_names() -> list[str]:
@@ -98,6 +101,7 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
 
     대답 칸이 켜졌으면(VICA_ANSWER=on) answer 인자를 더한다(설계 2026-11-18 4.1) — 허용 밖의 값은 파서 쪽
     answer_field.fill 이 unclear 로 바꾼다. 꺼져 있으면 지금 인자 그대로다.
+    정해진 대답이 켜졌으면(fixed_answers.on()) reply 를 꼭 채우는 칸으로 하고 설명을 바꾼다(Task N1). 꺼져 있으면 그대로다.
     """
     tool = {
         "type": "function",
@@ -135,6 +139,9 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
         # 3.5 — 도구 목록은 세션 단위라 질문이 열렸는지 모른다. 늘 채우게 하고, 질문이 없으면 모델이 내는 빈 문자열을
         # answer_field.fill 이 쓰지 않는다.
         tool["parameters"]["required"].append("answer")
+    if fixed_answers.on():   # 원칙 25·10(Task N1) — question 의 할 말을 비워 보내지 못하게 꼭 채우는 칸으로
+        tool["parameters"]["properties"]["reply"] = {"type": "string", "description": _REPLY_DESCRIPTION_TALK}
+        tool["parameters"]["required"].append("reply")
     return tool
 
 
@@ -312,8 +319,8 @@ class RealtimeIntentClient:
 
     def ask_text(self, text: str, history: Optional[Sequence[Any]], instructions: str,
                  tool_trail: Optional[Sequence[dict]] = None) -> RealtimeResult:
-        """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 넣는다. 운영 경로는 부르지 않는다.
-        들린 말(heard_text)이 비어 오면 넣은 글자를 쓴다."""
+        """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 넣는다. 운영 경로는 VICA_TALK 이 켜졌을 때 소리 경로의 빈 대답
+        재시도(Task N1)에서만 부른다. 들린 말(heard_text)이 비어 오면 넣은 글자를 쓴다."""
         result = self._ask(b"", history, instructions, text=text, tool_trail=tool_trail)
         if not result.heard_text:
             result.heard_text = text
