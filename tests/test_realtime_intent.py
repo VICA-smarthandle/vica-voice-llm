@@ -467,7 +467,8 @@ def test_ask_sends_the_trail_only_when_the_session_has_the_reserve_tool(monkeypa
 
 
 # ----- Task N1 — VICA_TALK 켜짐에서 reply 는 꼭 채우는 칸(원칙 25 · 10) ------------------------------------------------
-REPLY_TALK = ("사용자에게 할 짧은 말. question 은 반드시 한 문장을 적는다. "
+# 설명 글자는 Task N3 이 about 칸에 맞춰 바꿨다 — 비카에 대한 물음은 about 에 주제만 적고 reply 는 비운다.
+REPLY_TALK = ("사용자에게 할 짧은 말. question 은 about 을 적지 않았으면 반드시 한 문장을 적는다. "
               "할 말이 없는 의도(affirm·deny·repeat·not_for_robot 등)는 빈 문자열")
 REPLY_BASE = {"type": "string", "description": "사용자에게 할 짧은 말. 없으면 빈 문자열"}
 # BASE 0a59e80 의 build_intent_tool() — json.dumps(…, ensure_ascii=False, sort_keys=True) 의 sha256 앞 16자. 꺼진 조합은 글자까지 같아야 한다.

@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from . import answer_field, fixed_answers, intent_recut
+from . import answer_field, fixed_answers, intent_recut, vica_facts
 from .tool_calls import RESERVE, audio_tools_on, reserve_tool
 
 SAMPLE_RATE_IN = 16000   # 웨이크워드 노드 클립
@@ -65,7 +65,8 @@ def resample_pcm16(pcm16: bytes, src_rate: int = SAMPLE_RATE_IN, dst_rate: int =
 # 도구가 둘일 때(VICA_TOOLS_AUDIO=on)의 set_intent 설명 — "반드시 이 함수로만 답한다"는 맞지 않는다.
 _INTENT_DESCRIPTION_WITH_RESERVE = "사용자 발화(소리)의 의도를 정한다. 시설 예약이 아닌 모든 말에 호출한다."
 # 정해진 대답(VICA_TALK)이 켜졌을 때 reply 칸 설명(원칙 25·10, Task N1) — 2026-11-22 실기: question 에 reply 를 비워 로봇이 침묵했다.
-_REPLY_DESCRIPTION_TALK = ("사용자에게 할 짧은 말. question 은 반드시 한 문장을 적는다. "
+# Task N3: 비카에 대한 물음은 about 에 주제만 적고 reply 를 비운다(문장은 코드가 낸다) — 그 경우를 뺀다.
+_REPLY_DESCRIPTION_TALK = ("사용자에게 할 짧은 말. question 은 about 을 적지 않았으면 반드시 한 문장을 적는다. "
                            "할 말이 없는 의도(affirm·deny·repeat·not_for_robot 등)는 빈 문자열")
 
 
@@ -101,7 +102,8 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
 
     대답 칸이 켜졌으면(VICA_ANSWER=on) answer 인자를 더한다(설계 2026-11-18 4.1) — 허용 밖의 값은 파서 쪽
     answer_field.fill 이 unclear 로 바꾼다. 꺼져 있으면 지금 인자 그대로다.
-    정해진 대답이 켜졌으면(fixed_answers.on()) reply 를 꼭 채우는 칸으로 하고 설명을 바꾼다(Task N1). 꺼져 있으면 그대로다.
+    정해진 대답이 켜졌으면(fixed_answers.on()) reply 를 꼭 채우는 칸으로 하고 설명을 바꾸며(Task N1), 비카에 대한 물음의 주제
+    칸 about 을 꼭 채우는 칸으로 더한다(Task N3). 꺼져 있으면 그대로다.
     """
     tool = {
         "type": "function",
@@ -142,6 +144,10 @@ def build_intent_tool(description: str = "사용자 발화(소리)의 의도를 
     if fixed_answers.on():   # 원칙 25·10(Task N1) — question 의 할 말을 비워 보내지 못하게 꼭 채우는 칸으로
         tool["parameters"]["properties"]["reply"] = {"type": "string", "description": _REPLY_DESCRIPTION_TALK}
         tool["parameters"]["required"].append("reply")
+        # 원칙 25·22(Task N3) — 비카에 대한 물음은 주제만 고른다. 선택 칸은 모델이 빼먹으므로 꼭 채우는 칸으로(answer 와 같다).
+        tool["parameters"]["properties"]["about"] = {
+            "type": "string", "enum": ["", *vica_facts.ABOUT_SENTENCES], "description": vica_facts.ABOUT_DESCRIPTION}
+        tool["parameters"]["required"].append("about")
     return tool
 
 

@@ -12,6 +12,7 @@ Mission Manager 의 안내 멘트(MSG_*)는 vica_ros2_ws 쪽에 있다. 그쪽�
 """
 from __future__ import annotations
 
+from . import vica_facts
 from .destination_loader import _josa_euro
 from .mission_phrases import josa_eun_neun
 
@@ -178,12 +179,26 @@ def expects_answer(reply: str) -> bool:
     의도 종류(need_confirm·clarify)만 보던 옛 열쇠는 LLM 이 자유 생성한
     질문("무엇을 도와드릴까요?", intent=unknown)을 놓쳤다 — 질문해 놓고
     안 듣는 사건의 원인(2026-08-28). 문장 꼴로 판정한다: "?"로 끝나거나 INVITE_ENDINGS 로 끝난다.
+    비카에 대한 정해진 대답은 "?"가 있어도 알리는 말이다(_about_sentence, Task N3).
     """
     reply = reply.strip()
+    if _about_sentence(reply):
+        return False
     if reply.endswith("?"):
         return True
     tail = "".join(ch for ch in reply if not ch.isspace()).rstrip(".!~…")
     return tail.endswith(INVITE_ENDINGS)
+
+
+def _about_sentence(reply: str) -> bool:
+    """비카에 대한 정해진 대답(vica_facts.ABOUT_SENTENCES)과 글자까지 같은가 — 정해진 대답이 켜졌을 때만(fixed_answers.on()).
+
+    원칙 9(Task N3): 여덟 문장은 알리는 말이다. 이행시는 "?"로 끝나지만 말한 뒤 듣기 창을 열거나 질문으로 미션에 넘기면
+    15초 뒤 "잘 듣지 못했습니다…"가 나온다. 꺼졌으면 늘 거짓 — 문장 꼴 판정은 지금 그대로다."""
+    if reply not in vica_facts.ABOUT_SENTENCES.values():
+        return False
+    from . import fixed_answers   # 지연 import — fixed_answers 가 이 모듈을 import 한다
+    return fixed_answers.on()
 
 
 def choose_between(names) -> str:

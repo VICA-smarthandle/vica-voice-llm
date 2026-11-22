@@ -1,6 +1,8 @@
-"""정해진 대답 둘(2026-11-21 voice-principles-intent-recut 4단계, 설계 6.4) — 순수 함수만 둔다.
+"""정해진 대답(2026-11-21 voice-principles-intent-recut 4단계, 설계 6.4) — 순수 함수만 둔다.
 
 "다시 말해줘"(repeat, 원칙 28)·"어디 갈 수 있어?"(places, 원칙 29)는 LLM 이 값을 고르기만 하고 문장은 코드가 만든다.
+비카 자신에 대한 물음·모르는 것·할 수 없는 일(question + about, 원칙 25·22, 2026-11-22 Task N3)도 같다 — 문장은
+vica_facts.ABOUT_SENTENCES 의 정해진 글이다.
 `.env` VICA_TALK=on 이고 재단(VICA_RECUT=on)·대답 칸(VICA_ANSWER=on)이 함께 켜졌을 때만 움직인다(기본 꺼짐 = 지금과 같다).
 로컬(Ollama)이 답하는 호출에는 싣지 않는다(원칙 16) — 지시문 두 줄은 재단을 싣는 지시문에만 붙고, 로컬이 답한 결과는 이 뒤처리를
 지나지 않는다. ROS·LLM 을 모른다 — 장치 없이 시험된다.
@@ -10,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Iterator, Optional, Sequence
 
-from . import answer_field, intent_recut
+from . import answer_field, intent_recut, vica_facts
 from .mission_phrases import WAIT_BEACON
 from .question_record import OpenQuestion
 from .replies import RETRY_PROMPT, WAKE_GREETING, expects_answer, places_sentence
@@ -109,8 +111,10 @@ def settle_repeat(question: Optional[OpenQuestion], robot_recent: Sequence[tuple
 
 
 def early(draft, destinations: Sequence[DestinationData]) -> Optional[VicaIntent]:
-    """뒤처리 맨 앞(원칙 28·29): repeat 는 문장·목적지 없이 그대로(노드가 settle_repeat 로 정한다), places 는 갈 수 있는 곳을
-    알리는 question 으로 돌려보낸다. 꺼졌거나 다른 값이거나 갈 수 있는 곳이 없으면 None(as_known 이 지금 길로 바꾼다)."""
+    """뒤처리 맨 앞(원칙 28·29·25): repeat 는 문장·목적지 없이 그대로(노드가 settle_repeat 로 정한다), places 는 갈 수 있는 곳을
+    알리는 question 으로, about 이 여덟 주제 중 하나인 question 은 그 정해진 문장(vica_facts.ABOUT_SENTENCES)으로 돌려보낸다 —
+    LLM 이 reply 에 무엇을 적었든 버린다(Task N3). about 은 question 일 때만 본다.
+    꺼졌거나 다른 값이거나 갈 수 있는 곳이 없으면 None(as_known 이 지금 길로 바꾼다)."""
     if not on():
         return None
     kind = getattr(draft, "intent", "")
@@ -119,6 +123,12 @@ def early(draft, destinations: Sequence[DestinationData]) -> Optional[VicaIntent
         return VicaIntent(intent=REPEAT, reply="", need_confirm=False, confidence=confidence)
     if kind == PLACES:
         sentence = places_sentence(places_names(destinations))
+        if sentence:
+            return VicaIntent(intent="question", reply=sentence, need_confirm=False, confidence=confidence)
+    if kind == "question":
+        about = getattr(draft, "about", "")
+        # 원칙 25·22: 목록 밖의 값(대소문자·공백이 다른 것 포함)은 무시한다 — 지금의 question 길(LLM 의 reply)로 간다.
+        sentence = vica_facts.ABOUT_SENTENCES.get(about) if isinstance(about, str) else None
         if sentence:
             return VicaIntent(intent="question", reply=sentence, need_confirm=False, confidence=confidence)
     return None

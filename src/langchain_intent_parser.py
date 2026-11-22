@@ -174,11 +174,23 @@ class _RecutAnswerDraft(_RecutDraft, _AnswerDraft):
 
 
 class _TalkDraft(_RecutDraft):
-    """VICA_TALK=on(재단 위에서만, 원칙 28·29) — LLM 이 고르는 값에 repeat·places 를 더한다. 문장은 코드가 만든다(fixed_answers)."""
+    """VICA_TALK=on(재단 위에서만, 원칙 28·29) — LLM 이 고르는 값에 repeat·places 를 더한다. 문장은 코드가 만든다(fixed_answers).
+
+    about(Task N3, 원칙 25·22): 비카 자신에 대한 물음·모르는 것·할 수 없는 일이면 그 주제만 고른다 — 문장은 fixed_answers.early 가
+    vica_facts.ABOUT_SENTENCES 에서 낸다. 형은 str 이다(answer 칸과 같은 까닭) — 목록 밖의 값은 early 가 무시한다.
+    """
 
     intent: TalkIntentType = Field(
         description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
                      " / not_for_robot / dismiss / repeat / places 중 하나"))
+    about: str = Field(default="", description=vica_facts.ABOUT_DESCRIPTION,
+                       json_schema_extra={"enum": ["", *vica_facts.ABOUT_SENTENCES]})
+
+    @field_validator("about", mode="before")
+    @classmethod
+    def _about_text(cls, value):
+        # null·숫자·목록이 와도 발화 하나가 통째로 실패하지 않게 빈 값으로 읽는다(_AnswerDraft.answer 와 같다).
+        return value if isinstance(value, str) else ""
 
 
 class _TalkAnswerDraft(_TalkDraft, _AnswerDraft):
@@ -286,9 +298,10 @@ def _build_system_prompt(
     order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
     # 원칙 28·29: 정해진 대답 두 줄은 재단을 싣는 지시문에만 — 로컬(recut=False)이 받는 글자는 그대로다(원칙 16).
     talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""
-    # 원칙 25·26: 잡담 길 — 같은 조건(재단 지시문 + fixed_answers.on())에서만 비카 사실·잡담 규칙을 싣고 question 범위를 넓힌다.
+    # 원칙 25·26: 잡담 길 — 같은 조건(재단 지시문 + fixed_answers.on())에서만 비카에 대한 물음 규칙(about)·잡담 규칙을 싣고
+    # question 범위를 넓힌다. 비카에 대한 문장은 싣지 않는다 — 코드가 낸다(Task N3, 원칙 25·22).
     talk_on = recut and fixed_answers.on()
-    talk_block = vica_facts.FACTS + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    talk_block = vica_facts.ABOUT_RULE + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
     question_def = ('이동이 아닌 정보 질문이나 로봇에게 건 가벼운 말("지금 몇 층이야?").' if talk_on
                     else '이동이 아니라 정보 질문("지금 몇 층이야?").')
     clarify_unknown = intent_recut.PROMPT_INTENTS + talk_lines if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
@@ -1274,9 +1287,10 @@ def build_audio_prompt(
   "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.""")
     promise_scope = "question 의 reply" if recut else "question·clarify·unknown 공통"
     talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""   # 원칙 28·29 — 글자 경로와 같은 두 줄
-    # 원칙 25·26: 잡담 길 — 글자 경로와 같은 조건. 켜졌을 때만 비카 사실·잡담 규칙을 싣고 농담 금지를 안내에 관한 말로 좁힌다.
+    # 원칙 25·26: 잡담 길 — 글자 경로와 같은 조건. 켜졌을 때만 비카에 대한 물음 규칙(about)·잡담 규칙을 싣고 농담 금지를
+    # 안내에 관한 말로 좁힌다(Task N3 — 비카에 대한 문장은 코드가 낸다).
     talk_on = recut and fixed_answers.on()
-    talk_block = vica_facts.FACTS + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    talk_block = vica_facts.ABOUT_RULE + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
     joke_scope = "안내에 관한 말에는 " if talk_on else ""
     clarify_unknown = (intent_recut.PROMPT_INTENTS + talk_lines + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
   질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
