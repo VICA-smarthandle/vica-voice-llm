@@ -388,3 +388,15 @@ def test_p9_bake_about_batch_skips_what_is_baked_with_the_same_words(monkeypatch
     todo = [name for name, _ in bake._todo(bake._about_ments(), force=False)]
     assert todo == [f"vica_about_{t}" for t in SENTENCES if t != "name"]
     assert len(bake._todo(bake._about_ments(), force=True)) == 8
+
+
+# ---- 7. 구운 뒤 — 여덟 문장이 구운 소리로 나간다(ros_tts_node 는 문장 전체로 MentCache 를 먼저 찾는다) -----------------------
+@pytest.mark.parametrize("about", list(SENTENCES))
+def test_p9_baked_about_sentences_are_found_in_the_ment_cache(about):
+    from src.ment_cache import ASSETS_DIR, MentCache
+    manifest = json.loads((ASSETS_DIR / "baked" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest[f"vica_about_{about}.wav"] == SENTENCES[about]
+    hit = MentCache().lookup(SENTENCES[about])
+    assert hit is not None
+    wav, rate = hit
+    assert rate == 16000 and wav.ndim == 1 and 1.0 <= len(wav) / rate <= 20.0     # 16 kHz mono, 1~20 s
