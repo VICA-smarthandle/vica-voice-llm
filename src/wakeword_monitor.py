@@ -300,10 +300,16 @@ def mic_off_while_saying(text: str) -> bool:
 #   21:09:12.82  발동 1.87 s · 점수 0.85 · "네." · 살아남음
 # 가장 늦은 1.94 s + 여유 = 2.5 s. 로봇이 서 있는 미션 상태에서만, 그 상태를 받은 지 3 s 안일 때만 건너뛴다(11-22 사용자
 # 결정 "1번으로" — 건너뛰는 동안의 "멈춰"는 글자 경로로 비상정지가 되지 않는다. 서 있으면 멈출 움직임이 없다).
+# confirming 은 넣지 않는다(검토 C1): 주행 중 바꾸기 질문(confirming)의 "비카야"는 미션이 "네?"(mission_logic.py:5329)와 함께
+# 원래 목적지로 재출발한다(on_wake 5378–5379 → _wake_fold → _fold_confirming(announce=False) 5416 → NAVIGATING). 미션 노드
+# _on_wake(mission_manager_node.py:1042)는 로봇 상태를 곧바로 내지 않아(1 Hz, 952) 감시기는 최대 1 s 동안 confirming 을 본다.
+# 감시기는 보통 확인 질문과 바꾸기 질문을 가를 수 없다.
 GREETING_GATE_SKIP_SEC = 2.5
-GREETING_GATE_SKIP_STATES = frozenset(
-    {"idle", "confirming", "asking_next", "asking_wait_time", "waiting", "paused"})
+GREETING_GATE_SKIP_STATES = frozenset({"idle", "asking_next", "asking_wait_time", "waiting", "paused"})
 GREETING_GATE_STATE_FRESH_SEC = 3.0   # 로봇 상태는 1 Hz — 소식이 끊기면 모르는 것으로 본다
+# "네?"가 시작될 때 위 상태가 끊기지 않고 이만큼 이어져 왔어야 건너뛴다(검토 I1). 안내 취소·복귀 브레이크(CancelNav) 직후엔
+# 상태는 서 있는 값인데 바퀴는 아직 구르거나 Nav2 가 취소에 늦게 답한다 — 감속 0.56 s + CAN 지연 0.3 s 에 여유.
+GREETING_GATE_SETTLED_SEC = 3.0
 
 
 # 긴급 관문 기록에 붙일 결과 이름(2026-10-12). "reject"·"emergency" 는 원래 로그 문구가 이미 말한다.
@@ -624,6 +630,9 @@ class WakewordMonitor:
         self._greet_skip_peak = 0.0             # 이번 "네?"에 건너뛴 문턱 넘은 최고 점수(0 = 기록할 것 없음)
         self._greet_skip_state = ""
         self._dialog_seen: Optional[tuple[str, float]] = None
+        # 서 있는 상태(GREETING_GATE_SKIP_STATES)가 끊기지 않고 이어진 시작 시각(검토 I1). None = 지금 서 있는 줄이 없다.
+        # set_dialog_state 와 note_robot_speech 만 쓰고 읽는다 — 노드에서는 둘 다 ROS 실행기 한 스레드의 콜백이다.
+        self._standing_since: Optional[float] = None
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
@@ -839,7 +848,12 @@ class WakewordMonitor:
             self._end_self_guard(now)
         if (text or "").strip() == WAKE_GREETING:
             # 원칙 13 · 8 — "네?" 재생 시작부터 다시 잰다. 다른 문장은 이 시각을 건드리지 않는다(_greeting_gate_skip).
-            self._greet_skip_until = now + GREETING_GATE_SKIP_SEC
+            # 이미 충분히 서 있었고(GREETING_GATE_SETTLED_SEC) 마지막 상태 소식이 신선할 때만이다 — 아니면 앞선 "네?"의
+            # 건너뛰기도 여기서 끝난다(검토 I1).
+            since, seen = self._standing_since, self._dialog_seen
+            settled = (since is not None and now - since >= GREETING_GATE_SETTLED_SEC
+                       and seen is not None and 0.0 <= now - seen[1] <= GREETING_GATE_STATE_FRESH_SEC)
+            self._greet_skip_until = now + GREETING_GATE_SKIP_SEC if settled else float("-inf")
 
     def _end_self_guard(self, now: float) -> None:
         if self._self_guard_active:
@@ -1263,7 +1277,7 @@ class WakewordMonitor:
             self._greet_skip_seen = until
         seen = self._dialog_seen
         if (now < until and seen is not None and seen[0] in GREETING_GATE_SKIP_STATES
-                and now - seen[1] <= GREETING_GATE_STATE_FRESH_SEC):
+                and 0.0 <= now - seen[1] <= GREETING_GATE_STATE_FRESH_SEC):   # 시각이 뒤로 가면(음수) 신선하지 않다
             self.gate_b.reset()
             if score >= self.gate_b.threshold and score > self._greet_skip_peak:
                 self._greet_skip_peak, self._greet_skip_state = score, seen[0]
@@ -1569,8 +1583,16 @@ class WakewordMonitor:
 
     def set_dialog_state(self, state: str, now: Optional[float] = None) -> None:
         """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다).
-        원칙 13 · 8 — 값과 받은 시각을 기억한다("네?" 직후 긴급 관문 건너뛰기가 본다)."""
+        원칙 13 · 8 — 값과 받은 시각을 기억한다("네?" 직후 긴급 관문 건너뛰기가 본다). 서 있는 값이 끊기지 않고 이어진
+        시작 시각도 센다(검토 I1): 목록 밖 값이 오거나 앞 소식과의 간격이 GREETING_GATE_STATE_FRESH_SEC 를 넘으면(뒤로 가면)
+        버리고, 목록 값이 오면 시작 시각이 없을 때만 지금으로 둔다. 목록 안에서 값이 바뀌는 것은 끊김이 아니다."""
         now = time.time() if now is None else now
+        prev = self._dialog_seen
+        if (state not in GREETING_GATE_SKIP_STATES
+                or (prev is not None and not 0.0 <= now - prev[1] <= GREETING_GATE_STATE_FRESH_SEC)):
+            self._standing_since = None
+        if state in GREETING_GATE_SKIP_STATES and self._standing_since is None:
+            self._standing_since = now
         self._dialog_seen = (state, now)
         if self._speaker is not None:
             self._speaker.on_dialog_state(state, now)
