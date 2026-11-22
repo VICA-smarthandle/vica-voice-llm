@@ -39,6 +39,7 @@ from .replies import (
     RETRY_PROMPT,
     WAKE_GREETING,
     choose_between,
+    places_sentence,
 )
 from .question_record import OpenQuestion
 from .schema import BaseIntentType, DestinationData, RecutIntentType, RobotState, TalkIntentType, VicaIntent
@@ -406,7 +407,7 @@ SHORTCUT_REPLIES = frozenset({WAKE_GREETING})
 
 
 def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bool:
-    """코드가 정한 문구(호출 응답·목적지 확인 질문)인가 — 재청취 기각 예외 판별.
+    """코드가 정한 문구(호출 응답·목적지 확인 질문, 켜졌으면 정해진 대답)인가 — 재청취 기각 예외 판별.
 
     확인 질문 재질문('음' 단독, 2026-09-28)은 clarify 로 나가는데, 재청취 창의
     무의미 발화 기각이 intent 이름만 보고 삼키면 되묻기가 침묵이 된다.
@@ -419,7 +420,18 @@ def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bo
     return reply in SHORTCUT_REPLIES or _is_choice_question(reply, destinations) or any(
         (d.confirm_prompt and d.confirm_prompt == reply)
         or reply == ALREADY_GOING.format(cur=d.name, cur_josa=_josa_euro(d.name))
-        for d in destinations)
+        for d in destinations) or _is_fixed_answer(reply, destinations)
+
+
+def _is_fixed_answer(reply: str, destinations: Sequence[DestinationData]) -> bool:
+    """정해진 대답(fixed_answers.early 가 만든 문장)인가 — 켜졌을 때만(fixed_answers.on()), 꺼졌으면 늘 거짓.
+
+    원칙 25·29(Task N3 검토 M1): 비카에 대한 여덟 문장(vica_facts.ABOUT_SENTENCES)과 이 목적지 목록으로 만든 갈 수 있는 곳 문장.
+    글자 모드 + 로컬 규칙(VICA_LOCAL_RULES)의 '못 알아들음' 대체가 듣기 창 밖 question 의 이 문장을 되묻는 말로 바꾸지 않게 한다."""
+    if not fixed_answers.on():
+        return False
+    return (reply in vica_facts.ABOUT_SENTENCES.values()
+            or reply == places_sentence(fixed_answers.places_names(destinations)))
 
 
 def _is_choice_question(reply: str, destinations: Sequence[DestinationData]) -> bool:

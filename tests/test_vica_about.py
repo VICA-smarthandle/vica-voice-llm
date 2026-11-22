@@ -18,6 +18,7 @@ import pytest
 from src import langchain_intent_parser as parser
 from src.question_record import OpenQuestion
 from src.realtime_intent import RealtimeResult, build_intent_tool
+from src.replies import RETRY_PROMPT
 from src.schema import DestinationData, VicaIntent
 from tests.test_fixed_answers import _node, _publish, node_mod  # noqa: F401  (의도 노드 _publish_intent 를 가짜 ROS 로)
 
@@ -44,7 +45,9 @@ ABOUT_RULE = (
     '- language: 어떤 말을 할 수 있는지 묻는다("영어 할 줄 알아?")\n'
     "- acrostic: 비카 이행시를 시킨다\n"
     "- cannot: 비카가 모르는 것(사람·날짜·날씨·세상 일)을 묻거나, 안내 밖의 할 수 없는 일(노래·전화·검색 등)을 시킨다\n"
-    "그 밖의 말은 about 을 빈 문자열로 둔다.")
+    "그 밖의 말은 about 을 빈 문자열로 둔다.\n"
+    # 검토 수정(N3): 소리 지시문 본문(꺼진 상태에서도 쓰는 글)의 "한 문장으로 답한다"·"모른다고 한다"·"그건 제가 몰라요"보다 앞선다.
+    '이 규칙이 다른 글보다 먼저다 — 지시문의 다른 곳에 "한 문장으로 답한다", "모른다고 한다", "그건 제가 몰라요"처럼 적혀 있어도 위 주제에 해당하면 reply 를 비우고 about 만 적는다.')
 TALK_RULE = (
     "로봇에게 부탁하거나 묻는 말은 안내와 상관없어도(잡담·추천) not_for_robot 이 아니다. about 에 해당하지 않는 인사나 가벼운 말, "
     "추천이나 의견을 묻는 말에는 question 으로 한 문장으로 짧게 답하고 reply 를 비우지 않는다. 사실이 필요한 것은 목적지 목록·"
@@ -142,6 +145,50 @@ def test_p16_off_prompts_schema_and_tool_are_base(monkeypatch, talk, recut, answ
            _sha(json.dumps(build_intent_tool(), ensure_ascii=False, sort_keys=True)))
     assert got == BASE_SHA[(talk, recut, answer)]
     assert _sha(parser._build_system_prompt(DESTS, recut=False)) == BASE_LOCAL_SHA
+
+
+# 검토 수정(N3 4-나) — 입력을 바꿔도 꺼짐은 BASE 와 같다: 로봇 상태(RobotState) + 열린 질문 open·confirm. 소리 지시문의 [지금 상황]은
+# parse_intent_audio 와 같게 answer_field.with_question(intent_recut.with_clue("", q), q). 값은 BASE afb838f 를 git archive 로 꺼낸
+# 사본에서 잰 것(글자 지시문, 소리 지시문, 로컬 지시문 recut=False).
+def _more_inputs():
+    from src.schema import RobotState
+    return {
+        "moving+open": (RobotState(current_floor=1, current_building="별빛관", is_moving=True, dialog_state="navigating",
+                                   active_destination="407호"),
+                        OpenQuestion("q1", "open", "어디로 안내해드릴까요?", (), 0.0)),
+        "idle+confirm": (RobotState(current_floor=2, current_building="별빛관", dialog_state="confirming"),
+                         OpenQuestion("q2", "confirm", "화장실로 안내해드릴까요?", ("wc",), 0.0)),
+    }
+
+
+BASE_SHA_MORE = {
+    ("on", "on", "off", "moving+open"): ("617543bf042735a6", "61c8329aee50159d", "fdd7aecc7f29b49b"),
+    ("on", "on", "off", "idle+confirm"): ("340b30f67f27db2b", "120ce9475954693d", "b9803f4648f9accf"),
+    ("on", "off", "on", "moving+open"): ("706ff6cf84bfe6e2", "3f8b27a723aef527", "706ff6cf84bfe6e2"),
+    ("on", "off", "on", "idle+confirm"): ("e5885e1466ae5436", "c738a0809d20c5ae", "e5885e1466ae5436"),
+    ("on", "off", "off", "moving+open"): ("fdd7aecc7f29b49b", "8d10ba066b9adcaa", "fdd7aecc7f29b49b"),
+    ("on", "off", "off", "idle+confirm"): ("b9803f4648f9accf", "53c16a3988cc5f8e", "b9803f4648f9accf"),
+    ("off", "on", "on", "moving+open"): ("617543bf042735a6", "61c8329aee50159d", "706ff6cf84bfe6e2"),
+    ("off", "on", "on", "idle+confirm"): ("c88143448fcfc6ab", "e9604e870fd53b4f", "e5885e1466ae5436"),
+    ("off", "on", "off", "moving+open"): ("617543bf042735a6", "61c8329aee50159d", "fdd7aecc7f29b49b"),
+    ("off", "on", "off", "idle+confirm"): ("340b30f67f27db2b", "120ce9475954693d", "b9803f4648f9accf"),
+    ("off", "off", "on", "moving+open"): ("706ff6cf84bfe6e2", "3f8b27a723aef527", "706ff6cf84bfe6e2"),
+    ("off", "off", "on", "idle+confirm"): ("e5885e1466ae5436", "c738a0809d20c5ae", "e5885e1466ae5436"),
+    ("off", "off", "off", "moving+open"): ("fdd7aecc7f29b49b", "8d10ba066b9adcaa", "fdd7aecc7f29b49b"),
+    ("off", "off", "off", "idle+confirm"): ("b9803f4648f9accf", "53c16a3988cc5f8e", "b9803f4648f9accf"),
+}
+
+
+@pytest.mark.parametrize("talk,recut,answer,inputs", [(*c, name) for c in OFF for name in ("moving+open", "idle+confirm")])
+def test_p16_off_prompts_with_robot_state_and_open_questions_are_base(monkeypatch, talk, recut, answer, inputs):
+    from src import answer_field, intent_recut
+    switches(monkeypatch, talk, recut, answer)
+    state, q = _more_inputs()[inputs]
+    situation = answer_field.with_question(intent_recut.with_clue("", q), q)
+    got = (_sha(parser._build_system_prompt(DESTS, robot_state=state, question=q)),
+           _sha(parser.build_audio_prompt(DESTS, state, situation)),
+           _sha(parser._build_system_prompt(DESTS, robot_state=state, question=q, recut=False)))
+    assert got == BASE_SHA_MORE[(talk, recut, answer, inputs)]
 
 
 def test_p16_on_local_prompt_and_schema_carry_no_about(monkeypatch):
@@ -352,6 +399,77 @@ def test_p9_node_says_the_acrostic_itself_and_opens_no_answer_window(node_mod, m
     assert [(m["intent"], m["reply"], m["ask_text"], m["ask_kind"]) for m in sent] == [("question", ACROSTIC, "", "")]
     assert len(said) == 1 and said[0].endswith(":" + ACROSTIC)
     assert me._listen_pub.sent == []
+
+
+def test_p9_call_sentence_carries_the_wake_word_so_the_self_wake_guard_is_on():
+    """검토 수정(N3 4-가) — call 문장에는 호출어 "비카야"가 있다. 로봇이 이 문장을 말할 때 자기 목소리 호출 무시가 걸린다는 것을
+    고정한다(wakeword_monitor.has_wake_word). 다른 일곱 문장에는 없다."""
+    from src.wakeword_monitor import has_wake_word
+    assert has_wake_word(SENTENCES["call"]) is True
+    assert [topic for topic, text in SENTENCES.items() if has_wake_word(text)] == ["call"]
+
+
+# ---- 검토 M1 — 글자 모드 + 로컬 규칙(VICA_INTENT_INPUT=text, VICA_LOCAL_RULES=on)에서 정해진 대답은 코드 문구다 ----------------
+PLACES_SENTENCE = "화장실, 407호로 안내할 수 있습니다."      # replies.places_sentence(DESTS 의 갈 수 있는 곳)
+
+
+@pytest.mark.parametrize("reply", [*SENTENCES.values(), PLACES_SENTENCE])
+def test_p25_p29_m1_fixed_answers_are_scripted_replies_when_on(monkeypatch, reply):
+    switches(monkeypatch)
+    assert parser.is_scripted_reply(reply, DESTS) is True
+
+
+def test_p29_m1_places_sentence_of_another_list_is_not_scripted(monkeypatch):
+    switches(monkeypatch)
+    assert parser.is_scripted_reply("화장실로 안내할 수 있습니다.", DESTS) is False         # 이 목록으로 만든 문장과 글자가 다르다
+    assert parser.is_scripted_reply("화장실, 407호, 식당으로 안내할 수 있습니다.", DESTS) is False
+    assert parser.is_scripted_reply("제 이름은 비카예요.", DESTS) is False                   # LLM 이 지은 말
+
+
+@pytest.mark.parametrize("talk,recut,answer", OFF)
+def test_p16_m1_off_fixed_answers_are_not_scripted(monkeypatch, talk, recut, answer):
+    switches(monkeypatch, talk, recut, answer)
+    assert [r for r in (*SENTENCES.values(), PLACES_SENTENCE) if parser.is_scripted_reply(r, DESTS)] == []
+
+
+def _local_node(node_mod):
+    """글자 모드 + 로컬 규칙의 의도 노드(_local) — 듣기 창 밖(_followup_until=0)."""
+    from src import local_rules
+    me = _node(None, [])
+    me._local, me._misheard = True, local_rules.MisheardGate()
+    me._apply_misheard_rule = lambda intent, text: node_mod.LlmIntentNode._apply_misheard_rule(me, intent, text)
+    return me
+
+
+# 노드 도우미(_node)의 목적지는 tests.test_fixed_answers.DESTS(화장실·사회복지·비공개 408호·407호) — 갈 수 있는 곳은 셋.
+NODE_PLACES_SENTENCE = "화장실, 사회복지, 407호로 안내할 수 있습니다."
+
+
+@pytest.mark.parametrize("reply", [SENTENCES["name"], SENTENCES["cannot"], ACROSTIC, NODE_PLACES_SENTENCE])
+def test_p25_m1_node_local_rule_keeps_the_fixed_answer(node_mod, monkeypatch, reply):  # noqa: F811
+    """듣기 창 밖 question 의 LLM 대꾸는 RETRY_PROMPT 로 바뀌지만, 정해진 대답(코드가 만든 문장)은 그대로 나가고 음성이 말한다."""
+    switches(monkeypatch)
+    me = _local_node(node_mod)
+    sent, said = _publish(node_mod, me, VicaIntent(intent="question", reply=reply, need_confirm=False), text="이름이 뭐야")
+    assert [(m["intent"], m["reply"], m["ask_text"]) for m in sent] == [("question", reply, "")]
+    assert len(said) == 1 and said[0].endswith(":" + reply)
+
+
+def test_p25_m1_node_local_rule_still_replaces_words_the_llm_made(node_mod, monkeypatch):  # noqa: F811
+    switches(monkeypatch)
+    me = _local_node(node_mod)
+    sent, _ = _publish(node_mod, me, VicaIntent(intent="question", reply="제 이름은 비카예요.", need_confirm=False),
+                       text="이름이 뭐야")
+    assert RETRY_PROMPT in (sent[0]["reply"], sent[0]["ask_text"])
+
+
+@pytest.mark.parametrize("talk,recut,answer", [("off", "on", "on"), ("on", "on", "off"), ("off", "off", "off")])
+def test_p16_m1_node_off_local_rule_asks_again_as_before(node_mod, monkeypatch, talk, recut, answer):  # noqa: F811
+    switches(monkeypatch, talk, recut, answer)
+    me = _local_node(node_mod)
+    sent, _ = _publish(node_mod, me, VicaIntent(intent="question", reply=SENTENCES["name"], need_confirm=False),
+                       text="이름이 뭐야")
+    assert RETRY_PROMPT in (sent[0]["reply"], sent[0]["ask_text"])
 
 
 def test_p28_p9_repeat_of_the_acrostic_is_said_again_by_the_voice(monkeypatch):
