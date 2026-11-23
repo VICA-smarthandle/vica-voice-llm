@@ -7,22 +7,25 @@
 from __future__ import annotations
 
 import os
+import time
+from contextvars import ContextVar
 from typing import Optional, Sequence
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .destination_loader import _josa_euro
 from .destination_matcher import match_destination, tied_destinations
 from .mission_phrases import CONFIRM_SWITCH
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
-from . import local_rules
+from . import answer_field, fixed_answers, intent_recut, local_rules, vica_facts
 from .ledger_view import FLOOR_LABEL
 from .llm_backend import LlmBackendManager, ProbeResult, http_probe, ollama_warm
-from .realtime_intent import get_realtime_client
+from .realtime_intent import AUDIO_TURN_MAX_AGE_SEC, audio_tools_active, get_realtime_client
 from .replies import (
     ALREADY_GOING,
     ASK_DESTINATION,
@@ -36,8 +39,13 @@ from .replies import (
     RETRY_PROMPT,
     WAKE_GREETING,
     choose_between,
+    places_sentence,
 )
-from .schema import DestinationData, RobotState, VicaIntent, VicaIntentType
+from .question_record import OpenQuestion
+from .schema import BaseIntentType, DestinationData, RecutIntentType, RobotState, TalkIntentType, VicaIntent
+from .reservation_flow import ReserveCall
+from .reservation_store import default_facilities
+from .tool_calls import RESERVE, SET_INTENT, reserve_call, reserve_tool, set_intent_tool, text_tools_on
 
 load_dotenv()
 
@@ -77,7 +85,7 @@ class _IntentDraft(BaseModel):
     matched_destination_id / need_confirm / safety_flag 는 코드가 채운다.
     """
 
-    intent: VicaIntentType = Field(
+    intent: BaseIntentType = Field(
         description="navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help 중 하나"
     )
     destination_candidate: Optional[str] = Field(
@@ -117,6 +125,116 @@ class _IntentDraft(BaseModel):
     )
 
 
+class _AnswerDraft(_IntentDraft):
+    """VICA_ANSWER=on 일 때의 출력 — _IntentDraft 에 대답 칸 하나를 더한다(설계 2026-11-18 answer-interpretation 4.1).
+
+    형은 str 이다: 외부 API(도구 호출·Realtime)는 형식을 강제하지 않아 허용 밖의 값이 올 수 있다 — 검증에서 죽지 않고
+    answer_field.fill 이 unclear 로 바꾼다. 로컬은 질문 종류마다 값을 좁힌 스키마를 쓴다(_ollama_structured).
+    """
+
+    answer: str = Field(default="", description=answer_field.ANSWER_DESCRIPTION,
+                        json_schema_extra={"enum": ["", *answer_field.ANSWERS]})
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _answer_text(cls, value):
+        # 도구 호출·Realtime 이 null·숫자를 넣어도 발화 하나가 통째로 실패하지 않게 빈 값으로 읽는다(검토 M2).
+        return value if isinstance(value, str) else ""
+
+
+class _RecutDraft(_IntentDraft):
+    """VICA_RECUT=on 일 때의 출력 — 새 의도 값 둘과 clarify 상황 칸 셋을 더한다(원칙 4·9·10·11).
+
+    새 칸은 _AnswerDraft.answer 처럼 형이 다른 값(null·숫자·문자열↔목록)에도 죽지 않고 빈 값으로 읽는다.
+    clarify_kind 는 허용 밖의 값도 그대로 받는다 — 뒤처리가 no_destination 으로 읽는다.
+    """
+
+    intent: RecutIntentType = Field(
+        description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
+                     " / not_for_robot / dismiss 중 하나"))
+    clarify_kind: str = Field(
+        default="",
+        description="intent 가 clarify 일 때만: several(목적지 후보가 둘 이상) / not_available(목록에 없는 곳) / no_destination(목적지를 못 알아들음). 그 외 빈 문자열.",
+        json_schema_extra={"enum": ["", *intent_recut.CLARIFY_KINDS]})
+    clarify_options: list[str] = Field(default_factory=list, description="clarify_kind 가 several 일 때 목록의 name 을 모두")
+    clarify_wanted: str = Field(default="", description="clarify_kind 가 not_available 일 때 사용자가 찾는 것을 말한 낱말 그대로")
+
+    @field_validator("clarify_kind", "clarify_wanted", mode="before")
+    @classmethod
+    def _recut_text(cls, value):
+        return value if isinstance(value, str) else ""
+
+    @field_validator("clarify_options", mode="before")
+    @classmethod
+    def _recut_options(cls, value):
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+class _RecutAnswerDraft(_RecutDraft, _AnswerDraft):
+    """두 스위치가 모두 켜졌을 때 — 새 칸과 대답 칸."""
+
+
+class _TalkDraft(_RecutDraft):
+    """VICA_TALK=on(재단 위에서만, 원칙 28·29) — LLM 이 고르는 값에 repeat·places 를 더한다. 문장은 코드가 만든다(fixed_answers).
+
+    about(Task N3, 원칙 25·22): 비카 자신에 대한 물음·모르는 것·할 수 없는 일이면 그 주제만 고른다 — 문장은 fixed_answers.early 가
+    vica_facts.ABOUT_SENTENCES 에서 낸다. 형은 str 이다(answer 칸과 같은 까닭) — 목록 밖의 값은 early 가 무시한다.
+    """
+
+    intent: TalkIntentType = Field(
+        description=("navigate / question / clarify / unknown / cancel / pause / resume / affirm / deny / wait / finish / help"
+                     " / not_for_robot / dismiss / repeat / places 중 하나"))
+    about: str = Field(default="", description=vica_facts.ABOUT_DESCRIPTION,
+                       json_schema_extra={"enum": ["", *vica_facts.ABOUT_SENTENCES]})
+
+    @field_validator("about", mode="before")
+    @classmethod
+    def _about_text(cls, value):
+        # null·숫자·목록이 와도 발화 하나가 통째로 실패하지 않게 빈 값으로 읽는다(_AnswerDraft.answer 와 같다).
+        return value if isinstance(value, str) else ""
+
+
+class _TalkAnswerDraft(_TalkDraft, _AnswerDraft):
+    """정해진 대답·재단·대답 칸이 모두 켜졌을 때."""
+
+
+def _base_draft_cls() -> type[_IntentDraft]:
+    """로컬(Ollama) 구조화 출력의 바탕 스키마 — 재단 스위치와 상관없이 늘 _IntentDraft(원칙 16, 2단계 측정 P3)."""
+    return _IntentDraft
+
+
+def _draft_cls() -> type[_IntentDraft]:
+    """LLM 출력 스키마 — (대답 칸, 재단, 정해진 대답) 스위치 조합마다 늘 같은 클래스. 다 꺼졌으면 지금의 _IntentDraft."""
+    if fixed_answers.on():           # 원칙 28·29 — 재단이 켜졌을 때만 참이다
+        return _TalkAnswerDraft if answer_field.on() else _TalkDraft
+    if intent_recut.on():
+        return _RecutAnswerDraft if answer_field.on() else _RecutDraft
+    return _AnswerDraft if answer_field.on() else _IntentDraft
+
+
+# 이번 해석 호출의 열린 질문 종류(로컬 스키마 고르기). 호출마다 parse_intent 가 넣고 지운다 — 그림자 비교 스레드·
+# 워밍업이 동시에 불러도 섞이지 않게 ContextVar 다.
+_ANSWER_KIND: ContextVar[str] = ContextVar("vica_answer_kind", default="")
+
+# 이번 해석 호출을 Ollama 가 답했는가(원칙 16). 로컬 호출체가 불릴 때 켜고 parse_intent 가 호출 앞에 끄고 끝에 되돌린다.
+# 모듈 전역이 아니라 ContextVar 인 까닭은 _ANSWER_KIND 와 같다 — 그림자 비교 스레드·워밍업이 동시에 불러도 안 섞인다.
+_LOCAL_ANSWERED: ContextVar[bool] = ContextVar("vica_local_answered", default=False)
+
+
+class _LocalCall:
+    """_ollama_structured 가 만든 호출체를 감싼다 — 불리면 이 호출은 Ollama 가 답한 것으로 적는다.
+
+    RunnableLambda 로 감싸지 않는다: langchain 이 컨텍스트를 복사해 돌려 ContextVar 쓰기가 호출부로 안 돌아온다.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def invoke(self, messages, *args, **kwargs):
+        _LOCAL_ANSWERED.set(True)
+        return self._inner.invoke(messages, *args, **kwargs)
+
+
 # 손잡이 사용법 사실 (2026-09-30). 사용자가 "손잡이 어디 있어요?", "손 놓으면
 # 어떻게 돼요?", "좀 천천히 가 주세요"라고 물을 때 답할 근거다 — 지시문에 손잡이
 # 이야기가 한 줄도 없어 LLM 이 지어내거나 모른다고 했다. 말투는 지시하지 않는다
@@ -150,9 +268,18 @@ def _format_robot_state(robot_state: Optional[RobotState]) -> str:
 
 def _build_system_prompt(
     destinations: Sequence[DestinationData], robot_state: Optional[RobotState] = None,
-    local: bool = False, situation: str = "",
+    local: bool = False, situation: str = "", question: Optional[OpenQuestion] = None,
+    recut: Optional[bool] = None, ask_question: bool = True,
 ) -> str:
-    """글자 경로 지시문. situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
+    """글자 경로 지시문.
+
+    ask_question: False 면 대답 칸이 켜져 있어도 [지금 상황] 끝에 '로봇이 물은 질문' 줄을 붙이지 않는다(로컬 Ollama 가
+    답하는 호출, VICA_ANSWER_LOCAL 이 꺼졌을 때 — 3.5). 기본 True 는 지금 동작 그대로다.
+
+    recut: 재단(원칙 16) 지시문을 쓸지. None 이면 스위치(intent_recut.on())를 따르고, 호출부가 False 로 못 박으면
+    스위치가 켜져 있어도 꺼진 글자로 만든다(로컬 Ollama 가 답하는 호출). situation 은 LLM 노드의 [지금 상황] 블록(대장, ledger_view).
+
+    question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 맨 끝 [지금 상황]에 한 줄로 붙는다(answer_field.with_question).
 
     2026-10-07 부터 글자 경로에도 메모를 붙인다(사용자 결정) — 와이파이가 끊겨 글자 경로
     (받아쓰기 → gpt/로컬)로 넘어가도 "어디서 기다린다고?"·"화장실 어디야?"에 답하게.
@@ -167,14 +294,32 @@ def _build_system_prompt(
     dest_block = "\n".join(lines)
     ledger = situation if FLOOR_LABEL in situation else ""
     state_block = "" if ledger else _format_robot_state(robot_state)
+    # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
+    recut = intent_recut.on() if recut is None else recut
+    order_block = intent_recut.PROMPT_ORDER + "\n\n" if recut else ""
+    # 원칙 28·29: 정해진 대답 두 줄은 재단을 싣는 지시문에만 — 로컬(recut=False)이 받는 글자는 그대로다(원칙 16).
+    talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""
+    # 원칙 25·26: 잡담 길 — 같은 조건(재단 지시문 + fixed_answers.on())에서만 비카에 대한 물음 규칙(about)·잡담 규칙을 싣고
+    # question 범위를 넓힌다. 비카에 대한 문장은 싣지 않는다 — 코드가 낸다(Task N3, 원칙 25·22).
+    talk_on = recut and fixed_answers.on()
+    talk_block = vica_facts.ABOUT_RULE + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    question_def = ('이동이 아닌 정보 질문이나 로봇에게 건 가벼운 말("지금 몇 층이야?").' if talk_on
+                    else '이동이 아니라 정보 질문("지금 몇 층이야?").')
+    clarify_unknown = intent_recut.PROMPT_INTENTS + talk_lines if recut else """- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
+- unknown: 안내와 무관하거나 이해 불가."""
+    not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
+    several_rule = intent_recut.SEVERAL_RULE if recut else """clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
+  여자 화장실 중 어디로 갈까요?"). 하나만 들어 묻지도 않는다(2026-10-11 실기)."""
+    empty_kinds = "·clarify·unknown·not_for_robot·dismiss" if recut else ""
+    other_kinds = "question 의 " if recut else "그 외(question/clarify/unknown)의 "
+    no_dest = intent_recut.NO_DESTINATION_TAG if recut else ""
     return f"""너는 시각장애인 안내 로봇 'VICA'의 음성 의도 분석기다.
 사용자의 한국어 발화를 분석해 아래 규칙으로 분류해라.
 
-[intent 종류]
+{order_block}[intent 종류]
 - navigate: 어딘가로 가고 싶어함. 직접 표현("407호 가자")뿐 아니라 간접 표현("배 아파"->화장실, "배고파"->식당)도 포함.
-- question: 이동이 아니라 정보 질문("지금 몇 층이야?").
-- clarify: 어디로 갈지 모호해 되물어야 함. reply 에 되묻는 질문을 담아라.
-- unknown: 안내와 무관하거나 이해 불가.
+- question: {question_def}
+{clarify_unknown}
 - cancel: 진행 중인 안내를 그만두려 함 ("취소해줘", "안 갈래", "됐어 그만").
 - pause: 잠시 서 달라는 요청 ("잠깐 쉬었다 가자", "잠시만 서 줘").
   "대기해줘"·"여기서 기다려줘"는 pause 가 아니라 wait 다.
@@ -195,17 +340,16 @@ def _build_system_prompt(
 
 {HANDLE_FACTS}
 
-[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify)
+{talk_block}[목적지 목록] (navigate 의 destination_candidate 는 반드시 이 name 중 하나여야 한다. 목록에 없으면 clarify{not_avail})
 {dest_block}
 {state_block}
 [규칙]
 - destination_candidate 는 위 목록의 정확한 name 또는 null. 새로 지어내지 마라.
 - 들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실"이 남자 화장실·여자 화장실 둘 다)
-  navigate 로 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과
-  여자 화장실 중 어디로 갈까요?"). 하나만 들어 묻지도 않는다(2026-10-11 실기).
-- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish 로
+  navigate 로 하나를 짐작해 고르지 말고 {several_rule}
+- navigate(destination_candidate 포함)·cancel·pause·resume·affirm·deny·wait·finish{empty_kinds} 로
   분류하면 reply 는 빈 문자열로 둬라. 확인·수락 발화는 시스템이 만든다.
-- 그 외(question/clarify/unknown)의 reply 는 짧고 친절한 한국어로, 가급적 한 문장으로 써라. 알려 줄 말과
+- {other_kinds}reply 는 짧고 친절한 한국어로, 가급적 한 문장으로 써라. 알려 줄 말과
   물을 말은 마침표로 나누지 말고 "~인데,"로 잇는다 — 로봇은 문장마다 목소리를 새로 만들어서 문장 사이에
   빈틈이 생긴다(2026-10-10 사용자). 정보와 되묻기까지만이다 —
   "알겠습니다"·"할게요" 같은 약속, "안내해드릴까요?"·"계속 안내할까요?"처럼 로봇이 할 일을 권하는
@@ -234,7 +378,9 @@ def _build_system_prompt(
   맞아, 그래, 좋아)하면: intent=navigate, destination_candidate=그 OO 목적지 name, is_confirmation=true
   로 답해라. '지금 XX로 가는 중이에요. OO로 바꿀까요?'의 답이면 OO 다(XX 가 아니다).
 - 사용자가 부정(아니, 그거 말고)하며 다른 목적지를 말하면 그 목적지로 navigate.
-- 부정만 하고 목적지를 안 말하면 clarify.""" + (local_rules.LOCAL_PROMPT_RULES if local else "") + ledger
+- 부정만 하고 목적지를 안 말하면 clarify{no_dest}.""" + (local_rules.prompt_rules(recut) if local else "") + (
+        answer_field.with_question(intent_recut.with_clue(ledger, question) if recut else ledger,
+                                   question if ask_question else None, recut=recut))
 
 
 # 직전 확인 질문에 대한 짧은 긍정/부정. 긴급어 필터와 같은 원칙으로 LLM 을 거치지
@@ -261,7 +407,7 @@ SHORTCUT_REPLIES = frozenset({WAKE_GREETING})
 
 
 def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bool:
-    """코드가 정한 문구(호출 응답·목적지 확인 질문)인가 — 재청취 기각 예외 판별.
+    """코드가 정한 문구(호출 응답·목적지 확인 질문, 켜졌으면 정해진 대답)인가 — 재청취 기각 예외 판별.
 
     확인 질문 재질문('음' 단독, 2026-09-28)은 clarify 로 나가는데, 재청취 창의
     무의미 발화 기각이 intent 이름만 보고 삼키면 되묻기가 침묵이 된다.
@@ -274,7 +420,18 @@ def is_scripted_reply(reply: str, destinations: Sequence[DestinationData]) -> bo
     return reply in SHORTCUT_REPLIES or _is_choice_question(reply, destinations) or any(
         (d.confirm_prompt and d.confirm_prompt == reply)
         or reply == ALREADY_GOING.format(cur=d.name, cur_josa=_josa_euro(d.name))
-        for d in destinations)
+        for d in destinations) or _is_fixed_answer(reply, destinations)
+
+
+def _is_fixed_answer(reply: str, destinations: Sequence[DestinationData]) -> bool:
+    """정해진 대답(fixed_answers.early 가 만든 문장)인가 — 켜졌을 때만(fixed_answers.on()), 꺼졌으면 늘 거짓.
+
+    원칙 25·29(Task N3 검토 M1): 비카에 대한 여덟 문장(vica_facts.ABOUT_SENTENCES)과 이 목적지 목록으로 만든 갈 수 있는 곳 문장.
+    글자 모드 + 로컬 규칙(VICA_LOCAL_RULES)의 '못 알아들음' 대체가 듣기 창 밖 question 의 이 문장을 되묻는 말로 바꾸지 않게 한다."""
+    if not fixed_answers.on():
+        return False
+    return (reply in vica_facts.ABOUT_SENTENCES.values()
+            or reply == places_sentence(fixed_answers.places_names(destinations)))
 
 
 def _is_choice_question(reply: str, destinations: Sequence[DestinationData]) -> bool:
@@ -403,7 +560,18 @@ _COMMAND_CONFIRMS = {
 # 긴급어 필터와 같은 원칙 — 결정적 명령의 감지는 룰이 빠르고 확실하다.
 # 간접 표현("아 됐어, 안 가도 돼")은 LLM 이 분류한다.
 _CANCEL_WORDS = {"취소", "취소해줘", "취소해주세요", "취소할래", "안내취소"}
-_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요"}
+_PAUSE_WORDS = {"잠깐만", "잠깐만요", "잠시만", "잠시만요", "잠깐", "잠시"}
+# "몇 분쯤 걸리실까요?"의 대답일 수 있는 꼴 — 시간 질문 단계에서는 일시정지로 읽지 않고 LLM 에 둔다(3-나-1 최종 검토).
+_BARE_PAUSE_WORDS = {"잠깐", "잠시"}
+# 일시정지 중의 재개 말(3-나-1, 설계 2026-11-18 4.2). 11-18 실기 재생에서 로컬 LLM 은 "다시 가자"류를 0/8 —
+# 목록의 다른 곳(407호 등)으로 가자는 말로 읽었다. 낱말은 그 실기와 미션 안내("다시 출발하려면 말씀해
+# 주세요")에서 뽑았고 통째 일치만 본다. 받아쓰기가 깨진 꼴("다시 가져")은 넣지 않는다 — LLM 몫으로 둔다.
+_RESUME_WORDS = {
+    "다시가자", "다시가", "다시가줘", "다시가요", "다시가줘요", "다시가주세요",
+    "다시출발", "다시출발해", "다시출발해줘", "다시출발하자", "다시출발해요", "다시출발해줘요", "다시출발해주세요",
+    "출발", "출발해", "출발해줘", "출발하자", "출발해요", "출발해줘요", "출발해주세요",
+    "계속가자", "계속가", "계속가줘", "계속가요", "계속가줘요", "계속가주세요",
+}
 # 청취 창 안에서 부른 호출어 — 창이 열린 동안 호출 감지기는 잠들어 있어
 # "비카야"가 발화로 전사돼 들어온다. LLM 을 거치면 1초+ 우회이므로 즉시
 # "네?"로 받아 밖에서 부른 것과 똑같이 느껴지게 한다 (2026-08-29).
@@ -524,7 +692,7 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
             max_retries=max_retries,
         )
         # strict=True: 스키마를 서버가 문법 수준에서 강제한다 (실측 준수 18/18).
-        return llm.with_structured_output(_IntentDraft, method="json_schema", strict=True)
+        return llm.with_structured_output(_draft_cls(), method="json_schema", strict=True)
 
     api_key = os.environ.get("OLLAMA_API_KEY", "")
     kwargs = {
@@ -545,7 +713,100 @@ def _get_structured_llm(model: str, *, timeout: float = 15, max_retries: int = 1
         client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
     kwargs["client_kwargs"] = client_kwargs
     llm = ChatOllama(**kwargs)
-    return llm.with_structured_output(_IntentDraft)
+    return _ollama_structured(llm)
+
+
+def _ollama_structured(llm):
+    """로컬(Ollama) 구조화 출력. 대답 칸이 꺼졌거나 로컬 대답 칸(VICA_ANSWER_LOCAL)이 꺼졌으면 지금 그대로 _IntentDraft 하나다.
+
+    둘 다 켜졌으면 호출 때의 열린 질문 종류(_ANSWER_KIND)로 answer 값을 좁힌 스키마를 고른다 — 구조화 출력이라 그 값만
+    나온다(설계 2026-11-18 4.1). 열린 질문이 없으면 칸 없는 _IntentDraft 그대로라 토큰이 늘지 않는다. 종류마다 한 번 만든다.
+    """
+    if not answer_field.local_on():   # 3.5 — 대답 칸이 켜져도 VICA_ANSWER_LOCAL 이 꺼졌으면 칸 없는 스키마(규칙 대답만 채운다)
+        return _LocalCall(llm.with_structured_output(_base_draft_cls()))
+    by_kind: dict = {}
+
+    def invoke(messages):
+        kind = _ANSWER_KIND.get()
+        if kind not in by_kind:
+            by_kind[kind] = llm.with_structured_output(answer_field.narrowed(_base_draft_cls(), kind))
+        return by_kind[kind].invoke(messages)
+
+    return _LocalCall(RunnableLambda(invoke))
+
+
+def _set_intent_tool() -> dict:
+    """set_intent 도구. 인자는 지금 구조화 출력(_IntentDraft)의 칸과 설명 그대로다."""
+    return set_intent_tool(_draft_cls().model_json_schema())
+
+
+def _draft_from_tool_message(msg) -> "_IntentDraft | ReserveCall":
+    """도구 호출 응답 → 해석 결과. 첫 호출만 본다(설계 2026-11-18 5.1).
+
+    호출이 없거나, 목록에 없는 도구 이름이거나, set_intent 인자가 _IntentDraft 와 안 맞으면 ValueError —
+    지금의 LLM 호출 실패와 같은 길(로컬 대피 또는 LLM_UNAVAILABLE)로 간다.
+    """
+    calls = getattr(msg, "tool_calls", None) or []
+    if not calls:
+        raise ValueError("도구 호출이 없다")
+    name, args = calls[0].get("name"), calls[0].get("args") or {}
+    if name == RESERVE:
+        return reserve_call(args)
+    if name == SET_INTENT:
+        try:
+            return _draft_cls().model_validate(args)
+        except ValidationError as exc:
+            raise ValueError(f"set_intent 인자가 맞지 않다: {exc}") from exc
+    raise ValueError(f"목록에 없는 도구: {name}")
+
+
+def _get_tool_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
+    """도구 출력 LLM(openai 전용). 발화마다 set_intent 나 reserve_facility 하나를 부르게 한다.
+
+    2026-11-18 측정(~/vica_data/tool_call_test_20261118)에 쓴 방식 그대로다: bind_tools + tool_choice="required",
+    32개 중 32개. 로컬 모델에는 도구를 주지 않는다(같은 측정 16/32, 사용자 결정 D11).
+    """
+    from langchain_openai import ChatOpenAI
+
+    names = [f.name for f in default_facilities()]
+    if not names:
+        # 시설 파일이 깨졌거나 비었다 — 빈 enum 은 API 가 요청을 통째로 거절한다.
+        raise ValueError("예약할 시설 목록이 비어 있다(facilities.yaml)")
+    llm = ChatOpenAI(model=model, temperature=0, timeout=timeout, max_retries=max_retries)
+    tools = [_set_intent_tool(), reserve_tool(names)]
+    # 발화마다 도구 하나 — 여러 개를 한꺼번에 부르지 못하게 한다.
+    bound = llm.bind_tools(tools, tool_choice="required", parallel_tool_calls=False)
+
+    def invoke(messages):
+        answer = bound.invoke(messages)          # 연결 실패·시간 초과는 그대로 올린다(전환 담당 모듈이 로컬로 받는다)
+        try:
+            return _draft_from_tool_message(answer)
+        except ValueError as exc:
+            # 형식 오류(도구 없음·모르는 이름·안 맞는 인자)는 연결 실패가 아니다. 구조화 출력(strict)과 달리
+            # 도구 호출은 서버가 형식을 강제하지 않는다 — 한 번의 형식 오류로 로컬 대피(최소 30초)까지 가지 않게
+            # 같은 발화를 한 번만 다시 부른다. 또 틀리면 실패로 올린다.
+            _log("warning", f"[LLM] 도구 응답 형식 오류({exc}) — 한 번 다시 부른다")
+            return _draft_from_tool_message(bound.invoke(messages))
+
+    return RunnableLambda(invoke)
+
+
+def text_tools_active() -> bool:
+    """글자 경로의 클라우드 호출이 도구 출력을 쓰는가 — openai 이고 VICA_TOOLS_TEXT=on 일 때만."""
+    return PROVIDER == "openai" and text_tools_on()
+
+
+def _get_cloud_llm(model: str, *, timeout: float = 15, max_retries: int = 1):
+    """클라우드 쪽 LLM 을 고른다 — 도구 출력(text_tools_active) 또는 지금의 구조화 출력.
+
+    도구 출력을 못 만들면(시설 파일이 깨짐 등) 클라우드를 잃지 않게 구조화 출력으로 돈다 — 예약만 안 된다.
+    """
+    if text_tools_active():
+        try:
+            return _get_tool_llm(model, timeout=timeout, max_retries=max_retries)
+        except Exception as exc:
+            _log("error", f"[LLM] 도구 출력 준비 실패({exc}) — 구조화 출력으로 돈다(예약 안 됨)")
+    return _get_structured_llm(model, timeout=timeout, max_retries=max_retries)
 
 
 def _build_local_structured():
@@ -564,7 +825,7 @@ def _build_local_structured():
         client_kwargs={"timeout": LOCAL_TIMEOUT_SEC},
         **extra,
     )
-    return llm.with_structured_output(_IntentDraft)
+    return _ollama_structured(llm)
 
 
 def _cloud_probe() -> ProbeResult:
@@ -608,7 +869,7 @@ def get_backend_manager() -> LlmBackendManager:
         local = None
     fallback_on = local is not None
     try:
-        cloud_llm = _get_structured_llm(
+        cloud_llm = _get_cloud_llm(
             DEFAULT_MODEL,
             timeout=CLOUD_TIMEOUT_SEC if fallback_on else 15,
             max_retries=0 if fallback_on else 1,
@@ -656,9 +917,11 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
                 need_confirm=False,
             )
         if word in _NEGATIVES:
-            if pending_command == "cancel":
+            if pending_command == "cancel" or (pending_command == "resume" and answer_field.on()):
                 # "안내를 취소할까요?"에 아니요 — 미션이 받고 "안내를 계속하겠습니다."라고
                 # 답한다(2026-10-08 반응표). 여기서 따로 말하면 두 목소리다.
+                # 대답 칸이 켜졌으면 "다시 출발할까요?"도 미션이 물은 질문이다(Task 3.4) — 미션이 받고
+                # "알겠습니다. 다시 출발하려면 말씀해 주세요."라고 답한다(원칙 9).
                 return VicaIntent(intent="deny", confidence=1.0, reply="", need_confirm=False)
             return VicaIntent(
                 intent="unknown",
@@ -755,8 +1018,14 @@ def _shortcut_intent(user_text: str, history: Optional[list[BaseMessage]],
                           need_confirm=False, confidence=1.0)
     if word in _CANCEL_WORDS:
         return VicaIntent(intent="cancel", confidence=1.0, reply=CANCEL_CONFIRM, need_confirm=True)
-    if word in _PAUSE_WORDS:
+    if word in _PAUSE_WORDS and not (dialog_state == "asking_wait_time" and word in _BARE_PAUSE_WORDS):
         return VicaIntent(intent="pause", confidence=1.0, reply=PAUSE_ACK, need_confirm=False)
+    if dialog_state == "paused" and word in _RESUME_WORDS:
+        # 손 놓침 정지(paused_handle)는 여기 오지 않는다 — 그 재개는 손잡이를 다시 잡는 것이다. 출발은 묻고 한다:
+        # "다시 출발할까요?"가 이미 열려 있을 때만 승낙으로 읽는다(_finalize 의 pending_command 와 같은 동작).
+        if pending_command == "resume":
+            return VicaIntent(intent="resume", confidence=1.0, reply="", need_confirm=False)
+        return VicaIntent(intent="resume", confidence=1.0, reply=RESUME_CONFIRM, need_confirm=True)
 
     # 도착 후 대기·종료(wait/finish)는 지름길을 두지 않는다 — 발화 의도가
     # 맥락에 좌우돼("그만 좀 물어봐" ≠ 종료) 단어 매칭이 위험하다. LLM 이
@@ -866,35 +1135,58 @@ def parse_intent(
     robot_state: Optional[RobotState] = None,
     model: Optional[str] = None,
     situation: str = "",
-) -> VicaIntent:
+    question: Optional[OpenQuestion] = None,
+) -> "VicaIntent | ReserveCall":
     """발화를 분석해 VicaIntent 를 돌려준다. (멀티턴: history, 현재 상태: robot_state)
 
     situation 은 LLM 노드의 [지금 상황] 블록(2026-10-07 글자 경로에도 붙임).
+    도구 출력이 켜져 있고(VICA_TOOLS_TEXT=on, openai) LLM 이 reserve_facility 를 부르면 ReserveCall 을 돌려준다.
+    question 은 이 말이 들어올 때 열려 있던 질문(질문 기록). 대답 칸이 켜졌으면(VICA_ANSWER=on) 돌려주는 의도에
+    question_id·answer·answer_value 가 채워진다 — 이미 있는 짧은 대답 규칙이 서면 그것, 그 밖은 LLM 이 낸 값이다(설계
+    2026-11-18 4.3). 의도 칸은 지금 길로 정하고 규칙은 그 읽기를 뒤집지 않는다(분은 wait 일 때 값만 바로잡고, 대답으로 보이는
+    not_for_robot 은 unknown) — 나가는 곳마다 같은 answer_field.fill 을 지난다(Task 3.5b, 원칙 6·7). 예약 호출(ReserveCall)은 그대로 돌려준다.
     """
     local = local_rules.enabled()
     dialog_state = (robot_state.dialog_state if (local and robot_state) else "") or ""
+    ruled = answer_field.short_answer(user_text, question, local)
     shortcut = _shortcut_intent(user_text, history, destinations,
                                 dialog_state=dialog_state, local=local)
     if shortcut is not None:
-        return shortcut
+        return answer_field.fill(shortcut, question, ruled)
     answer = _mission_question_answer(user_text, history, robot_state, local)
     if answer is not None:
-        return answer
+        return answer_field.fill(answer, question, ruled)
     pending_command = _pending_command(history)
     pending = _pending_for(history, destinations, local, dialog_state)
 
-    messages: list[BaseMessage] = [SystemMessage(
-        _build_system_prompt(destinations, robot_state, local=local, situation=situation))]
-    if history:
-        messages.extend(history)
-    messages.append(HumanMessage(user_text))
+    def build_messages(recut: Optional[bool], ask: bool = True) -> list[BaseMessage]:
+        msgs: list[BaseMessage] = [SystemMessage(_build_system_prompt(
+            destinations, robot_state, local=local, situation=situation, question=question, recut=recut,
+            ask_question=ask))]
+        if history:
+            msgs.extend(history)
+        msgs.append(HumanMessage(user_text))
+        return msgs
 
+    # 원칙 16: 재단이 켜져도 Ollama 가 답하는 호출은 꺼진 지시문·스키마·뒤처리를 쓴다. 공급자가 ollama 면 처음부터 꺼진
+    # 쪽 messages 를 넘기고, openai 면 재단 켠 messages 를 cloud 에·꺼진 것을 local_messages(쓸 때만 만듦)로 넘긴다.
+    # 3.5: 대답 칸이 켜져도 VICA_ANSWER_LOCAL 이 꺼졌으면 Ollama 호출은 질문 줄도 대답 칸도 없는 꺼진 글자를 쓴다 — 같은 구조.
+    recut_on = intent_recut.on()
+    ask_local = answer_field.local_on() or not answer_field.on()   # 로컬 호출에 질문 줄을 줄지(꺼진 상태에선 어차피 줄이 없다)
+    plain_local = recut_on or not ask_local
+    messages = build_messages(False, ask_local) if plain_local and PROVIDER != "openai" else build_messages(None)
+    local_messages = (lambda: build_messages(False, ask_local)) if plain_local and PROVIDER == "openai" else None
+
+    kind_token = _ANSWER_KIND.set(question.kind if question is not None and answer_field.on() else "")
+    answered_token = _LOCAL_ANSWERED.set(False)
     try:
         if model is not None:
             # 벤치·수동 지정 경로(scripts/bench_models.py): 그 모델 하나로 직접 부른다.
-            draft: _IntentDraft = _get_structured_llm(model).invoke(messages)
+            draft: _IntentDraft | ReserveCall = _get_cloud_llm(model).invoke(messages)
         else:
-            draft = get_backend_manager().invoke(messages)
+            manager = get_backend_manager()
+            draft = (manager.invoke(messages) if local_messages is None
+                     else manager.invoke(messages, local_messages=local_messages))
     except Exception as exc:
         # 클라우드→로컬까지 실패했거나 폴백이 꺼진 상태의 실패.
         # 크래시 대신 안전한 fallback 응답을 돌려준다.
@@ -905,15 +1197,26 @@ def parse_intent(
             _log("error", f"[LLM] 호출 실패(클라우드만, 폴백 꺼짐): {exc}")
         else:
             _log("error", f"[LLM] 호출 실패(로컬까지): {exc}")
-        return VicaIntent(
+        return answer_field.fill(VicaIntent(
             intent="unknown",
             reply=LLM_UNAVAILABLE,
             confidence=0.0,
             need_confirm=False,
-        )
-    return _finalize(draft, destinations, pending=pending,
-                     pending_command=pending_command, user_text=user_text, local=local,
-                     robot_state=robot_state)
+        ), question, ruled)
+    finally:
+        _ANSWER_KIND.reset(kind_token)
+    # 이번 호출을 Ollama 가 답했는지(원칙 16) — 뒤처리가 끝나면 되돌린다.
+    local_answered = _LOCAL_ANSWERED.get()
+    _LOCAL_ANSWERED.reset(answered_token)
+    if isinstance(draft, ReserveCall):
+        # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(_finalize 는 의도 전용).
+        return draft
+    # Ollama 가 답했으면 재단 뒤처리(early·settle)를 건너뛴다 — 스위치를 끈 것과 같은 길이다.
+    finalize = _finalize_core if local_answered else _finalize
+    result = finalize(draft, destinations, pending=pending,
+                      pending_command=pending_command, user_text=user_text, local=local,
+                      robot_state=robot_state)
+    return answer_field.fill(result, question, ruled, getattr(draft, "answer", "") or "")
 
 
 # ---------------------------------------------------------------------------
@@ -933,6 +1236,23 @@ def parse_intent(
 # 로봇이 실제로 소리 낸 말(미션의 질문 포함)은 LLM 노드가 /vica/tts_done 으로
 # 이력에 넣어 준다 — 모델이 "몇 분쯤 걸리실까요?"의 답을 답으로 볼 수 있게.
 # ---------------------------------------------------------------------------
+
+
+# 소리 지시문의 예약 부분(2026-11-19, 사용자 승인) — VICA_TOOLS_AUDIO=on 이고 세션에 reserve_facility 가 있을 때만
+# 들어간다. 꺼져 있으면 지시문은 글자 하나까지 예전 그대로다. 원인 실험(~/vica_data/tool_call_test_20261118/README.md):
+# 이 규칙이 없으면 "아니 세 시로 해 줘"·"모레로 바꿔 줘"를 목적지 정정으로 읽었다(0/4 → 4/4).
+# 예시 문장은 측정 묶음(tools/reserve_cases.py)과 겹치지 않게 골랐다.
+AUDIO_FIRST_LINE = "다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다."
+AUDIO_FIRST_LINE_WITH_RESERVE = ("다음에 무엇을 할지와 무슨 말을 할지를 함수 하나(set_intent 또는 reserve_facility)를 "
+                                 "한 번 호출해 정한다.")
+AUDIO_RESERVE_RULES = """
+[시설 예약] 시설 예약은 reserve_facility 함수로 한다. [지금 상황]에 '[진행 중인 예약]' 줄이 있으면 지금은 예약
+대화 중이고, 로봇의 마지막 말은 그 예약의 질문이다.
+- 그 질문에 값으로 답하면(이름·날짜·시각·시설) reserve_facility 에 이번에 말한 값만 넣어 호출한다.
+- 값을 바꿔 달라는 말("아니 다섯 시로 해 줘", "다음 주 화요일로 바꿔 줘")도 reserve_facility 에 바뀐 값만 넣어 호출한다.
+- "…예약할까요?"에 긍정만 하면 set_intent 의 affirm, 부정만 하면 deny 다(reply=""). 이때는 reserve_facility 를 부르지 않는다.
+- 예약 대화에 나오는 시설 이름은 가려는 목적지가 아니다 — destination_candidate 에 넣지 않는다.
+"""
 
 
 def build_audio_prompt(
@@ -962,8 +1282,44 @@ def build_audio_prompt(
     # 대장 블록(ledger_view)이 왔으면 층이 거기 있으므로 옛 상태 블록은 뺀다. 옛 상황판은 같은
     # "[지금 상황]" 머리글을 쓰지만 층 줄이 없으니 이 판정에 안 걸린다.
     state_block = "" if FLOOR_LABEL in situation else _format_robot_state(robot_state)
+    reserve_on = audio_tools_active()
+    first_line = AUDIO_FIRST_LINE_WITH_RESERVE if reserve_on else AUDIO_FIRST_LINE
+    reserve_rules = AUDIO_RESERVE_RULES if reserve_on else ""
+    # 원칙 1·4·12·31: 켰을 때만 새 판단 순서·의도 정의·clarify 칸 이름을 싣는다. 꺼졌으면 아래 변수가 옛 글 그대로다.
+    recut = intent_recut.on()
+    heard_intent = "not_for_robot" if recut else "unknown"
+    ambiguous = ("애매하면 confidence 를 낮추고 unknown 으로 둔다." if recut else
+                 "애매하면 confidence 를 낮추고, 답이 꼭 필요한 자리면 clarify 로 되묻는다.")
+    order_block = "\n\n" + intent_recut.PROMPT_ORDER if recut else ""
+    several_rule = intent_recut.SEVERAL_RULE if recut else """clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과 여자 화장실
+  중 어디로 갈까요?"). 하나만 들어 "남자 화장실인가요?"처럼 묻지도 않는다(2026-10-11 실기: 같은 말에
+  "여자 화장실로 안내해드릴까요?"·"남자 화장실인가요?")."""
+    not_avail_deny = ("clarify(clarify_kind=not_available)로 내고 clarify_wanted 에 그 말을 적는다. 비슷한 다른 곳을 권하지 않는다." if recut else
+                      """clarify 로
+  "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.""")
+    promise_scope = "question 의 reply" if recut else "question·clarify·unknown 공통"
+    talk_lines = "\n" + fixed_answers.PROMPT_LINES if recut and fixed_answers.on() else ""   # 원칙 28·29 — 글자 경로와 같은 두 줄
+    # 원칙 25·26: 잡담 길 — 글자 경로와 같은 조건. 켜졌을 때만 비카에 대한 물음 규칙(about)·잡담 규칙을 싣고 농담 금지를
+    # 안내에 관한 말로 좁힌다(Task N3 — 비카에 대한 문장은 코드가 낸다).
+    talk_on = recut and fixed_answers.on()
+    talk_block = vica_facts.ABOUT_RULE + "\n" + vica_facts.TALK_RULE + "\n\n" if talk_on else ""
+    joke_scope = "안내에 관한 말에는 " if talk_on else ""
+    clarify_unknown = (intent_recut.PROMPT_INTENTS + talk_lines + "\n" + intent_recut.WAKE_LINE) if recut else f"""- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
+  질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
+  그 곳들의 name 만 들어 어느 쪽인지 묻는다.
+- unknown + 침묵(reply=""): 로봇에게 한 말이 **아닌 것이 분명할 때**(다른 사람들끼리의 대화,
+  기침·소음, 로봇 자신의 목소리), 그리고 **로봇이 방금 질문하고 답을 기다리는데 못 알아들었을
+  때**다. 질문 중이면 로봇 본체가 같은 질문을 한 번 다시 한다 — 네가 또 물으면 두 목소리가 된다
+  (2026-10-08). 로봇이 묻고 있지 않은데 사용자가 로봇에게 말한 것 같고 못 알아들었으면 침묵하지
+  말고 intent=clarify 로 "잘 못 들었는데, 다시 말씀해 주시겠어요?"(2026-09-20 사용자: 아무 말도
+  안 하면 무슨 상황인지 알 수 없다). 호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply 는
+  "{WAKE_GREETING}" 나 "네, 말씀하세요." 같은 짧은 응답."""
+    not_avail = intent_recut.NOT_AVAILABLE_TAG if recut else ""
+    digit_rule = ("clarify(clarify_kind=several)로 내고 clarify_options 에 그 번호들의 name 을 적는다." if recut else
+                  "clarify 로 몇 번인지 되묻는다.")
+    empty_kinds = "·clarify·unknown·not_for_robot·dismiss" if recut else ""
     return f"""너는 시각장애인 안내 로봇 '비카(VICA)'다. 차분하고 짧게 말하는 안내원처럼 말하고, 사용자의
-목소리를 직접 듣고, 다음에 무엇을 할지와 무슨 말을 할지를 set_intent 함수 한 번으로 정한다.
+목소리를 직접 듣고, {first_line}
 코드는 네 결정을 고치지 않고 그대로 로봇 본체(미션 관리자)에 전달한다. 확인 질문·정정·
 되묻기·침묵·말투까지 네가 책임진다.
 
@@ -974,18 +1330,16 @@ user 줄은 그 전에 들린 사용자의 말이다. 로봇의 마지막 말이
 
 [heard_text] 이번 소리에서 실제로 들린 말만 한국어로 그대로 적는다(결정을 내렸다면 반드시
 채운다 — "그래"를 듣고 출발시키면서 heard_text 를 비우지 마라). 사람 말이 아니면
-(기침·소음·로봇 자신의 목소리·다른 사람들끼리의 잡담) 빈 문자열로 두고 intent=unknown,
+(기침·소음·로봇 자신의 목소리·다른 사람들끼리의 잡담) 빈 문자열로 두고 intent={heard_intent},
 reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 소리에 없는 말은 없는 것이다.
-애매하면 confidence 를 낮추고, 답이 꼭 필요한 자리면 clarify 로 되묻는다.
+{ambiguous}{order_block}
 
 [intent 별 규칙 — need_confirm 과 reply 까지 네가 정한다]
 - navigate(새 목적지): 가고 싶은 곳을 말했다. 직접("407호 가자")도 간접("배 아파"→화장실)도 된다.
   destination_candidate=목록의 name 그대로, need_confirm=true, reply=네 말로 만든 확인 질문
   (목적지 name 을 그대로 넣고 반드시 "?"로 끝낸다. 예: "화장실로 안내해드릴까요?").
   들은 말이 목록의 여러 곳에 똑같이 걸리면(같은 별칭 — 예: "화장실 가고 싶어"가 남자 화장실·여자 화장실
-  둘 다) 하나를 짐작해 고르지 말고 clarify 로 그 곳들의 name 을 모두 들어 묻는다("남자 화장실과 여자 화장실
-  중 어디로 갈까요?"). 하나만 들어 "남자 화장실인가요?"처럼 묻지도 않는다(2026-10-11 실기: 같은 말에
-  "여자 화장실로 안내해드릴까요?"·"남자 화장실인가요?").
+  둘 다) 하나를 짐작해 고르지 말고 {several_rule}
 - navigate(주행 중 바꾸기): [지금 상황]의 대화 단계가 '안내 중(주행)'인데 '안내 중' 줄의 곳(OO)이
   아닌 다른 목적지(XX)로 가고 싶다고 했다("화장실 가고 싶어", "식당으로 가자", "배 아파").
   destination_candidate=XX, need_confirm=true, reply="지금 OO로 가는 중이에요. XX로 바꿀까요?"
@@ -1008,8 +1362,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   reply=XX 로 다시 묻는 확인 질문("XX로 안내해드릴까요?").
 - deny: 확인 질문이나 제안에 부정만 하고 대안이 없다("아니", "아니요", "됐어"). reply="".
   부정 뒤에 **목록에 없는 곳**을 말하면("아니, 학과장님 사무실") 방금 거절당한 목적지를 그대로 다시
-  제안하지 마라 — 로봇 본체는 같은 곳의 재제안을 승낙으로 보고 출발한다(21:21 실기). clarify 로
-  "학과장님 사무실은 목록에 없는데, 학과사무실이 맞을까요?"처럼 되묻는다.
+  제안하지 마라 — 로봇 본체는 같은 곳의 재제안을 승낙으로 보고 출발한다(21:21 실기). {not_avail_deny}
   "기다리지 마"·"대기 안 해도 돼"는 대기를 거절하는 말이다: 로봇의 마지막 말이 대기를 묻는 질문
   ("…여기서 기다릴까요?"·"여기서 대기할까요?"·"몇 분쯤 걸리실까요?")이면 deny, "여기까지 안내를
   마칠까요?"처럼 끝낼지 묻는 질문이면 affirm 이다(2026-10-08 실기 "대기하지 마").
@@ -1049,7 +1402,7 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "아까 어디 갔었지?"는 직전에 간 곳, "어디 가려고 했더라?"는 하려다 만 곳, "몇 시야?"는 시각,
   "배터리 얼마나 남았어?"는 배터리 줄로 답한다. 줄이 "모름"이면 한 문장으로 모른다고 한다. 정말 모르는 것만 한 문장으로 모른다고 한다 —
   다른 사람에게 물어보라는 식의 조언은 하지 않는다.
-- 약속 금지(question·clarify·unknown 공통, 2026-10-08): reply 는 정보와 되묻기까지만이다. "알겠습니다"·
+- 약속 금지({promise_scope}, 2026-10-08): reply 는 정보와 되묻기까지만이다. "알겠습니다"·
   "할게요"·"해 드릴게요" 같은 약속, "계속 안내할까요?"·"방향 맞춰드릴까요?"처럼 로봇이 할 일을 권하는
   말은 쓰지 않는다 — 로봇 본체가 모르는 약속이 된다. 목록에 있는 곳으로 안내를 권하려면 question 이
   아니라 navigate(need_confirm=true)로 낸다(위 위치 질문 규칙처럼).
@@ -1058,18 +1411,9 @@ reply="" 로 답한다. 이력에 있는 말을 베껴 적지 마라 — 이번 
   "안내를 시작할까요?" 같은 말 금지) — 로봇 본체가 이어서 "안내를 받으시겠어요?"를 다시 묻는다(2026-10-09
   실기: 답 끝에 질문을 붙여 질문이 두 번 겹쳤다). 예: "누구세요?" → "저는 시각장애인 안내로봇 비카입니다.",
   "뭐라고요?" → "안내를 받으시겠냐고 여쭤봤어요."
-- clarify: 어디로 갈지 모호하거나 목록에 없는 곳. reply 에 되묻는 질문(반드시 "?"로 끝).
-  질문 하나만 짧게 하고 예시를 늘어놓지 않는다. 들은 말이 목록의 여러 곳에 걸리면(같은 별칭)
-  그 곳들의 name 만 들어 어느 쪽인지 묻는다.
-- unknown + 침묵(reply=""): 로봇에게 한 말이 **아닌 것이 분명할 때**(다른 사람들끼리의 대화,
-  기침·소음, 로봇 자신의 목소리), 그리고 **로봇이 방금 질문하고 답을 기다리는데 못 알아들었을
-  때**다. 질문 중이면 로봇 본체가 같은 질문을 한 번 다시 한다 — 네가 또 물으면 두 목소리가 된다
-  (2026-10-08). 로봇이 묻고 있지 않은데 사용자가 로봇에게 말한 것 같고 못 알아들었으면 침묵하지
-  말고 intent=clarify 로 "잘 못 들었는데, 다시 말씀해 주시겠어요?"(2026-09-20 사용자: 아무 말도
-  안 하면 무슨 상황인지 알 수 없다). 호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply 는
-  "{WAKE_GREETING}" 나 "네, 말씀하세요." 같은 짧은 응답.
+{clarify_unknown}
 
-[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify.
+{talk_block}[목적지 목록] destination_candidate 는 반드시 아래 name 중 하나. 목록에 없는 곳은 clarify{not_avail}.
 (단, 아래 '다른 층 장소' 에 있는 곳은 clarify 가 아니라 [다른 층] 규칙)
 reply 에서 장소를 말할 때도 아래 name·별칭과 '다른 층 장소'만 쓴다. 목록에 없는 장소·부서·사람
 이름은 지어내지 않는다 — 예로도 들지 않는다. 이 지시문의 규칙 속 장소 이름(407호·식당·세미나실
@@ -1088,23 +1432,23 @@ N층이라 제가 못 가는데, 엘리베이터로 안내해드릴까요?"). �
 reply="" 로 둔다 — 로봇 본체가 마지막 질문을 다시 한다(2026-10-08). "그럴래?"·"그럴까?"·"어어"처럼 부드러운 긍정을 부정으로 오해하지 마라.
 
 [숫자] "테스트1·테스트2·테스트3"처럼 숫자로 갈리는 목적지는 숫자가 핵심이다. "쓰리·스리·삼"=3,
-"투·이"=2, "원·일"=1. 숫자가 확실치 않으면 confidence 를 낮추고 clarify 로 몇 번인지 되묻는다.
+"투·이"=2, "원·일"=1. 숫자가 확실치 않으면 confidence 를 낮추고 {digit_rule}
 
 {HANDLE_FACTS}
 
 [말투] 차분하고 짧게, 존댓말로 필요한 말만 한다. **reply 는 30자 안팎, 가급적 한 문장이고 질문은 하나만
 한다** — 소리로만 듣는 사람에게 긴 말은 짐이다(2026-10-09 사용자: 대답이 길고 자유분방하다). 알려 줄 말과
 물을 말이 함께 있으면 마침표로 나누지 말고 "~인데,"·"~이라"로 이어 한 문장으로 만든다 — 로봇은 문장마다
-목소리를 새로 만들어서 문장과 문장 사이에 빈틈이 생긴다(2026-10-10 사용자). 농담·추측·맞장구("~하겠죠", "~하시군요")와 예시 늘어놓기, 변명·긴 설명은
+목소리를 새로 만들어서 문장과 문장 사이에 빈틈이 생긴다(2026-10-10 사용자). {joke_scope}농담·추측·맞장구("~하겠죠", "~하시군요")와 예시 늘어놓기, 변명·긴 설명은
 넣지 않는다. "죄송해요", "제가 헷갈리게 했나요", "이름표나 안내판을 확인해 보세요" 같은 사과·자책·
 조언은 쓰지 않는다. 모르면 "그건 제가 몰라요." 한 문장이면 된다. 같은 자리에서는 같은 말로 묻는다.
 답을 들어야 하는 말(되묻기·확인 질문)만 "?"로 끝낸다(그래야 로봇이 듣는다 — 접근 질문 중 question 답은 예외,
 로봇 본체가 다시 묻는다). 묻는 말에 대한 대답·안내·모른다는 말은 평서문이니 "."로 끝낸다 — 평서문에 "?"를
 붙이면 말끝이 올라가 질문처럼 들리고 로봇이 쓸데없이 귀를 연다(2026-10-11: "성별은 추정할 수 없어요?",
 "목록에 408호는 없어요?" — 질문 대답 30개 중 18개가 "?"로 끝났다).
-reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel)는 로봇 본체가 이어서
+reply="" 로 정한 경우(확정 navigate·affirm·deny·wait·finish·확정 cancel{empty_kinds})는 로봇 본체가 이어서
 말하므로 네가 말을 보태지 않는다.
-{state_block}{situation}"""
+{reserve_rules}{state_block}{situation}"""
 
 
 def parse_intent_audio(
@@ -1114,28 +1458,159 @@ def parse_intent_audio(
     robot_state: Optional[RobotState] = None,
     situation: str = "",
     directory_block: str = "",
-) -> tuple[VicaIntent, str, float, dict]:
+    question: Optional[OpenQuestion] = None,
+    tool_trail: Optional[list[dict]] = None,
+) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
     """발화 소리 -> Realtime(set_intent) -> 모델 결정을 그대로 VicaIntent 로 (모델 전결).
 
     (의도, 들린 말, 지연초, info) 를 돌려준다. info = {"src": "llm", "usage": ...}.
     실패(예외·timeout)는 그대로 올린다 — LLM 노드가 그 발화를 텍스트 경로로 넘긴다.
+    도구 출력이 켜져 있고(VICA_TOOLS_AUDIO=on) 모델이 reserve_facility 를 부르면 의도 대신 ReserveCall 을 돌려준다.
+    question 은 열린 질문(질문 기록) — 대답 칸이 켜졌으면 [지금 상황] 끝에 한 줄로 가고, 모델이 낸 answer 가 의도에 실린다.
+    정해진 대답이 켜졌으면(VICA_TALK) 할 말이 빈 question 을 침묵으로 두지 않는다(_settle_empty_question, Task N1).
     """
-    instructions = build_audio_prompt(destinations, robot_state, situation, directory_block)
-    result = get_realtime_client().ask(pcm16_16k, history, instructions)
+    instructions = build_audio_prompt(destinations, robot_state,
+                                      answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
+    # tool_trail: 진행 중인 예약에서 부른 reserve_facility 기록(ReservationFlow.tool_trail) — 대화 기록에 싣는다.
+    # 없으면 예전과 같은 호출이다(인자를 넘기지 않는다).
+    result = get_realtime_client().ask(pcm16_16k, history, instructions,
+                                       **({"tool_trail": tool_trail} if tool_trail else {}))
+    return _settle_empty_question(_deliver_realtime_result(result, destinations, robot_state, question),
+                                  destinations, dict(history=history, robot_state=robot_state, situation=situation,
+                                                     directory_block=directory_block, question=question,
+                                                     tool_trail=tool_trail))
+
+
+def parse_intent_realtime_text(
+    text: str,
+    destinations: Sequence[DestinationData],
+    history: Optional[list[BaseMessage]] = None,
+    robot_state: Optional[RobotState] = None,
+    situation: str = "",
+    directory_block: str = "",
+    question: Optional[OpenQuestion] = None,
+    tool_trail: Optional[list[dict]] = None,
+) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
+    """재생 측정용(tools/reserve_replay) — 소리 대신 글자를 Realtime 에 넣는다. 지시문과 그 뒤 처리는
+    parse_intent_audio 와 같다. 운영 경로는 VICA_TALK 이 켜졌을 때 소리 경로의 빈 대답 재시도(Task N1)에서만 부른다."""
+    instructions = build_audio_prompt(destinations, robot_state,
+                                      answer_field.with_question(intent_recut.with_clue(situation, question), question), directory_block)
+    result = get_realtime_client().ask_text(text, history, instructions,
+                                            **({"tool_trail": tool_trail} if tool_trail else {}))
+    return _deliver_realtime_result(result, destinations, robot_state, question)
+
+
+def _deliver_realtime_result(result, destinations: Sequence[DestinationData], robot_state: Optional[RobotState],
+                             question: Optional[OpenQuestion] = None,
+                             ) -> "tuple[VicaIntent | ReserveCall, str, float, dict]":
+    """Realtime 응답(도구 인자) → (의도 또는 ReserveCall, 들린 말, 지연초, info).
+
+    대답 칸이 켜졌으면 Realtime 이 들은 글자(heard)에 짧은 대답 규칙을 대고 글자 경로와 같은 answer_field.fill 을 지난다
+    (Task 3.5b, 원칙 6·7) — 규칙은 모델의 읽기를 뒤집지 않는다(같은 읽기일 때 대답 칸 채우기·wait 분 값 바로잡기·not_for_robot 되묻기만).
+    규칙이 의도나 대답 칸을 실제로 바꿨으면 info["src"] 에 "+대답규칙" 을 붙이고 바뀌기 전 값을 로그 한 줄로 남긴다."""
     heard = result.heard_text.strip()
+    if result.tool == RESERVE:
+        # 예약 요청·대답 — 값 검사와 묻는 문장은 reservation_flow 가 한다(의도 배달 규칙은 의도 전용).
+        return reserve_call(result.draft), heard, result.latency_sec, {"src": "llm", "usage": result.usage}
     try:
-        draft = _IntentDraft(**result.draft)
+        draft = _draft_cls()(**result.draft)
     except ValidationError as exc:
         raise ValueError(f"set_intent 인자가 _IntentDraft 와 맞지 않는다: {exc}") from exc
     dialog_state = robot_state.dialog_state if robot_state else ""
     shared = _audio_shared_guess(draft, heard, destinations, dialog_state)
     intent = deliver_audio_draft(draft, destinations, dialog_state,
-                                 robot_state.active_destination if robot_state else "", shared=shared)
+                                 robot_state.active_destination if robot_state else "", shared=shared,
+                                 heard=heard)
     # 규칙이 모델 결정을 바꿨으면 [RT] 로그 줄의 src 로 보이게 한다.
     src = "llm+고르기규칙" if shared else "llm"
     if _audio_short_answer(intent, heard, dialog_state):
         src += "+짧은답규칙"
-    return intent, heard, result.latency_sec, {"src": src, "usage": result.usage}
+    # 원칙 6·7: 규칙에 대는 글자는 Realtime 이 들은 글자다 — 로컬 받아쓰기(/user_text)는 기다리지 않는다(다른 토픽으로
+    # 다른 때에 와서 기다리면 지연·순서에 따라 결과가 갈린다). 노드의 '[대답] 받아쓴 글자 규칙=…' 줄은 견주는 기록으로 남는다.
+    llm_answer = getattr(draft, "answer", "") or ""
+    ruled = answer_field.short_answer(heard, question)
+    filled = answer_field.fill(intent, question, ruled, llm_answer)
+    if ruled is not None:
+        by_llm = answer_field.fill(intent, question, None, llm_answer)
+        if (filled.intent, filled.answer, filled.answer_value) != (by_llm.intent, by_llm.answer, by_llm.answer_value):
+            src += "+대답규칙"
+            # '규칙 전' 은 _audio_short_answer 가 지나간 뒤의 값이다(검토 M4) — Realtime 이 처음 낸 의도는 src 의 +짧은답규칙 으로 본다.
+            _log("info", f"[대답규칙] 규칙 전(짧은답규칙 뒤) intent={by_llm.intent} "
+                         f"answer={by_llm.answer or '-'}/{by_llm.answer_value or '-'}"
+                         f" → intent={filled.intent} answer={filled.answer}/{filled.answer_value or '-'} heard='{heard}'")
+    return filled, heard, result.latency_sec, {"src": src, "usage": result.usage}
+
+
+# 빈 대답 재시도(Task N1)의 시간 여유 — (첫 호출 + Realtime 시간 초과 + 이 값)이 AUDIO_TURN_MAX_AGE_SEC 이상이면 재시도하지 않는다.
+# 의도 노드는 실행기 하나라 재시도 동안 콜백이 멈추고, 그 시간을 넘기면 뒤따른 받아쓴 글자가 "옛 소리 결과 버림" 뒤 다시 해석돼
+# 의도가 두 번 나간다(ros_node _on_user_text, 검토 수정).
+_RETRY_MARGIN_SEC = 1.0
+
+
+def _retry_answer(again, question: Optional[OpenQuestion]) -> Optional[VicaIntent]:
+    """재시도 결과 가운데 쓰는 것 → 내보낼 의도, 쓰지 않으면 None. 재시도는 처음 읽기(question = 나에게 한 말이고 움직이라는 말이
+    아님)를 움직임·상태 변화·침묵으로 뒤집지 않는다(원칙 3·7, 검토 수정).
+
+    - 할 말이 든 question(코드가 만든 갈 수 있는 곳 문장 포함): 대답 칸은 재시도가 무엇을 냈든 other — 미션은 대답 칸을 의도보다
+      먼저 읽어 yes 를 승낙(출발·재출발·취소)으로 받는다. 재시도가 채운 대답 칸은 버리고 fill 에 other 만 준다(규칙 대답 없음).
+    - repeat: 그대로(노드 settle_repeat 가 대답 칸을 버리고 미션도 repeat 를 먼저 본다).
+    - dismiss: 열린 질문이 없거나 "네?"(kind open)일 때만 — 미션 질문 중이면 미션이 거절로 읽어 질문을 접는다(상태 변화).
+    예약 호출·실패(None)·그 밖의 의도는 None.
+    """
+    if not isinstance(again, VicaIntent):
+        return None
+    if again.intent == "question" and (again.reply or "").strip():
+        bare = again.model_copy(update={"question_id": "", "answer": "", "answer_value": ""})
+        return answer_field.fill(bare, question, llm_answer="other")
+    if again.intent == fixed_answers.REPEAT:
+        return again
+    if again.intent == intent_recut.DISMISS and (question is None or question.kind == "open"):
+        return again
+    return None
+
+
+def _settle_empty_question(delivered: tuple, destinations: Sequence[DestinationData], context: dict) -> tuple:
+    """원칙 8·25·10(Task N1): 소리 경로가 question 인데 할 말(reply)이 비었으면 침묵으로 두지 않는다. 정해진 대답(fixed_answers.on())이
+    켜졌을 때만 — 꺼졌으면 받은 결과 그대로다. 2026-11-22 21:06~21:10 실기: "오늘 날씨 어때?" 등에 Realtime 이 question·reply ''.
+
+    1. 들은 글자(heard)가 있으면 같은 대화 기록·로봇 상태·열린 질문(context = parse_intent_audio 의 인자)으로
+       parse_intent_realtime_text 를 한 번만 부른다. _retry_answer 가 고른 결과를 쓴다(src +빈대답재시도). 단 (첫 호출 시간 +
+       Realtime 시간 초과 + _RETRY_MARGIN_SEC)이 AUDIO_TURN_MAX_AGE_SEC 이상이면 부르지 않는다.
+    2. 그 밖(움직이는 의도·not_for_robot·unknown·clarify·또 빈 question·미션 질문 중 dismiss·예약 호출·실패·시간 초과·재시도 생략)이면
+       되묻는다 — unknown + RETRY_PROMPT, 목적지·need_confirm 없음, 대답 칸은 LLM 대답 unclear 로 answer_field.fill 을 지난다
+       (src +빈대답되묻기). 미션 질문이 열려 있으면 미션이 그 질문을 다시 묻고(원칙 8), 없으면 지금의 unknown 길(노드가 되묻는 말을 낸다)이다.
+    들은 글자가 비면 지금처럼 둔다. 돌려주는 지연초는 첫 호출과 재시도를 더한 값(사용자가 기다린 시간)이고, [빈 대답] 줄에는 따로 적는다.
+    """
+    intent, heard, first, info = delivered
+    if (not fixed_answers.on() or not isinstance(intent, VicaIntent) or intent.intent != "question"
+            or (intent.reply or "").strip() or not heard):
+        return delivered
+    question = context.get("question")
+    timeout = get_realtime_client().timeout_sec      # VICA_REALTIME_TIMEOUT — 클라이언트가 읽어 둔 값
+    spent = 0.0
+    if first + timeout + _RETRY_MARGIN_SEC >= AUDIO_TURN_MAX_AGE_SEC:
+        again, got = None, (f"재시도 생략(첫 호출 {first:.1f}s + 시간 초과 {timeout:.1f}s + {_RETRY_MARGIN_SEC:.0f}s"
+                            f" ≥ {AUDIO_TURN_MAX_AGE_SEC:.0f}s)")
+    else:
+        started = time.monotonic()
+        try:
+            again, _heard, _dt, again_info = parse_intent_realtime_text(heard, destinations, **context)
+        except Exception as exc:          # 실패·시간 초과도 되묻기로 — 올리면 노드가 이 말을 글자 경로에 넘긴다
+            again, said = None, f"실패({type(exc).__name__}: {exc})"
+        else:
+            said = (f"intent={getattr(again, 'intent', type(again).__name__)} "
+                    f"reply='{(getattr(again, 'reply', '') or '')[:30]}' src={again_info.get('src', '-')}")
+        spent = time.monotonic() - started
+        got = f"재시도={spent:.1f}s 들은 글자로 한 번 더: {said}"
+    head = f"[빈 대답] question·reply 빈 값 heard='{heard}' dt={first:.1f}s"
+    kept = _retry_answer(again, question)
+    if kept is not None:
+        _log("info", f"{head} {got} → 그 결과를 쓴다(answer={kept.answer or '-'})")
+        return kept, heard, first + spent, {**info, "src": info["src"] + "+빈대답재시도"}
+    asked = VicaIntent(intent="unknown", reply=RETRY_PROMPT, need_confirm=False, confidence=intent.confidence)
+    asked = answer_field.fill(asked, question, llm_answer="unclear")
+    _log("info", f"{head} {got} → 되묻는다")
+    return asked, heard, first + spent, {**info, "src": info["src"] + "+빈대답되묻기"}
 
 
 def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bool:
@@ -1164,7 +1639,23 @@ def _audio_short_answer(intent: VicaIntent, heard: str, dialog_state: str) -> bo
 
 def deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
                         dialog_state: str = "", active: str = "",
-                        shared: Sequence[DestinationData] = ()) -> VicaIntent:
+                        shared: Sequence[DestinationData] = (), heard: str = "") -> VicaIntent:
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11).
+    정해진 대답(VICA_TALK, 원칙 28·29)은 그보다 앞에서 돌려보낸다 — 글자 경로(_finalize)와 같다."""
+    fixed = fixed_answers.early(draft, destinations)
+    if fixed is not None:
+        return fixed
+    draft = fixed_answers.as_known(draft)
+    early = intent_recut.early(draft)
+    if early is not None:
+        return early
+    return intent_recut.settle(_deliver_audio_draft(draft, destinations, dialog_state, active, shared),
+                               draft, destinations, heard)
+
+
+def _deliver_audio_draft(draft: _IntentDraft, destinations: Sequence[DestinationData],
+                         dialog_state: str = "", active: str = "",
+                         shared: Sequence[DestinationData] = ()) -> VicaIntent:
     """모델 결정 → VicaIntent. 판단은 하지 않는다: id 매핑·접근 불가·계약상 빈 reply 만.
 
     shared 는 _audio_shared_guess 가 찾은 '여러 곳에 걸린 말에 모델이 한쪽을 짐작한' 후보들이다 — 둘 이상이면
@@ -1347,6 +1838,29 @@ def _ask_which(result: VicaIntent, tied: Sequence[DestinationData], dialog_state
 
 
 def _finalize(
+    draft: _IntentDraft,
+    destinations: Sequence[DestinationData],
+    pending: Optional[DestinationData] = None,
+    pending_command: Optional[str] = None,
+    user_text: str = "",
+    local: bool = False,
+    robot_state: Optional[RobotState] = None,
+) -> VicaIntent:
+    """재단 스위치(VICA_RECUT)가 켜졌으면 새 값을 맨 앞에서 돌려보내고 clarify·unknown 문장을 코드 틀에서 만든다(원칙 4·7·8·11).
+    정해진 대답(VICA_TALK, 원칙 28·29)은 그보다 앞에서 돌려보낸다. Ollama 가 답한 호출은 이 함수를 지나지 않는다(원칙 16)."""
+    fixed = fixed_answers.early(draft, destinations)
+    if fixed is not None:
+        return fixed
+    draft = fixed_answers.as_known(draft)
+    early = intent_recut.early(draft)
+    if early is not None:
+        return early
+    return intent_recut.settle(
+        _finalize_core(draft, destinations, pending, pending_command, user_text, local, robot_state),
+        draft, destinations, user_text)
+
+
+def _finalize_core(
     draft: _IntentDraft,
     destinations: Sequence[DestinationData],
     pending: Optional[DestinationData] = None,

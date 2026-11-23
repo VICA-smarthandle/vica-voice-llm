@@ -41,6 +41,7 @@ from .frame_watch import FrameWatch
 from .handle_mode import (
     AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply)
 from .mission_phrases import OBSTACLE_STOP
+from .replies import WAKE_GREETING
 from .schema import EmergencyEvent
 from .stt_guard import accept_segments, is_hallucination
 from .stt_qwen import ear_stt_engines, qwen_from_env
@@ -292,6 +293,25 @@ def mic_off_while_saying(text: str) -> bool:
     return (text or "").strip() in MIC_OFF_PHRASES
 
 
+# 원칙 13 · 8 — "네?"(호출 응답) 직후 긴급 관문 건너뛰기(2026-11-22 사용자 결정, 상시 적용·스위치 없음). 로봇의 "네?" 소리가
+# 마이크로 들어가 긴급 모델(gate_b)이 넘고, 확인 받아쓰기(0.6~1.4 s, 막힘) 동안 사용자의 이어진 말이 잘렸다. 11-22 실기:
+#   21:06:08.93  "네?" 재생 시작 → 발동 1.94 s · 점수 0.61 · 받아쓴 글자 "네. 너 이름이." · 말을 통째로 잃음
+#   21:08:24.75  발동 1.49 s · 점수 0.95 · "네." · 말을 통째로 잃음(empty:ghost)
+#   21:09:12.82  발동 1.87 s · 점수 0.85 · "네." · 살아남음
+# 가장 늦은 1.94 s + 여유 = 2.5 s. 로봇이 서 있는 미션 상태에서만, 그 상태를 받은 지 3 s 안일 때만 건너뛴다(11-22 사용자
+# 결정 "1번으로" — 건너뛰는 동안의 "멈춰"는 글자 경로로 비상정지가 되지 않는다. 서 있으면 멈출 움직임이 없다).
+# confirming 은 넣지 않는다(검토 C1): 주행 중 바꾸기 질문(confirming)의 "비카야"는 미션이 "네?"(mission_logic.py:5329)와 함께
+# 원래 목적지로 재출발한다(on_wake 5378–5379 → _wake_fold → _fold_confirming(announce=False) 5416 → NAVIGATING). 미션 노드
+# _on_wake(mission_manager_node.py:1042)는 로봇 상태를 곧바로 내지 않아(1 Hz, 952) 감시기는 최대 1 s 동안 confirming 을 본다.
+# 감시기는 보통 확인 질문과 바꾸기 질문을 가를 수 없다.
+GREETING_GATE_SKIP_SEC = 2.5
+GREETING_GATE_SKIP_STATES = frozenset({"idle", "asking_next", "asking_wait_time", "waiting", "paused"})
+GREETING_GATE_STATE_FRESH_SEC = 3.0   # 로봇 상태는 1 Hz — 소식이 끊기면 모르는 것으로 본다
+# "네?"가 시작될 때 위 상태가 끊기지 않고 이만큼 이어져 왔어야 건너뛴다(검토 I1). 안내 취소·복귀 브레이크(CancelNav) 직후엔
+# 상태는 서 있는 값인데 바퀴는 아직 구르거나 Nav2 가 취소에 늦게 답한다 — 감속 0.56 s + CAN 지연 0.3 s 에 여유.
+GREETING_GATE_SETTLED_SEC = 3.0
+
+
 # 긴급 관문 기록에 붙일 결과 이름(2026-10-12). "reject"·"emergency" 는 원래 로그 문구가 이미 말한다.
 _CHECK_RESULT_KO = {
     "listen_resumed": "청취 창 안 — 긴급 아님, 듣기 이어감",
@@ -423,6 +443,13 @@ def _angle_diff(a: float, b: float) -> float:
 GATE_B_SPEAKING = 0.35
 
 
+def _queue_item(block: np.ndarray, with_ref: bool) -> np.ndarray:
+    """콜백이 큐에 넣을 조각 — 에코 제거가 꺼져 있으면 ch0 만(지금과 같음), 켜져 있으면 (ch0, ch5) 두 열."""
+    if with_ref:
+        return block[:, (0, 5)].copy()
+    return block[:, 0].copy()
+
+
 def capture_stats(audio: np.ndarray) -> dict:
     """청취 창 수음 품질 요약 — "수음이 나쁘다"를 감이 아니라 숫자로 만든다.
 
@@ -477,6 +504,7 @@ class WakewordMonitor:
         transcribe_confirm: Optional[Callable[[np.ndarray], str]] = None,
         on_frame: Optional[Callable[[dict], None]] = None,
         on_listen_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
+        on_wake_clip: Optional[Callable[[np.ndarray, dict], None]] = None,
         listen_band_min: Optional[float] = None,
         log: Optional[Callable[[str], None]] = None,
         speaker=None,
@@ -507,6 +535,9 @@ class WakewordMonitor:
         # 호출 점수 기록 (2026-10-08) — ("fire"|"near"|"self", 최고 점수). 문턱을
         # 숫자로 고르기 위한 재료다. 판정에는 쓰지 않는다.
         self._on_wake_score = on_wake_score or (lambda kind, peak: None)
+        # 호출 소리 저장(2026-11-17 사용자) — 호출 점수가 문턱을 넘을 때 직전 ~2.5 s 소리. 헛호출이 무슨 소리였는지
+        # 다시 듣는 자료다. 판정에는 쓰지 않는다.
+        self._on_wake_clip = on_wake_clip
         # 긴급 모델 '아깝게 놓침' 알림(2026-10-12) — {"peak","frames_over","cooldown","after_fire","audio"}.
         self._on_emergency_score = on_emergency_score or (lambda info: None)
         self._em_episode = False
@@ -592,6 +623,16 @@ class WakewordMonitor:
         self._wake_suppressed = False
         # 로봇 말이 마지막으로 끝난 시각 — 자유 창의 말 시작 기다림은 이때부터도 센다.
         self._speech_ended_at = 0.0
+        # 원칙 13 · 8 — "네?" 직후 긴급 관문 건너뛰기(GREETING_GATE_*). 끝 시각은 ROS 스레드(note_robot_speech)가 쓰고
+        # 감시 스레드가 읽는다. 미션 상태는 (값, 받은 시각) 한 덩어리로 바꾼다 — 값과 시각을 짝지어 읽게. None = 받은 적 없음.
+        self._greet_skip_until = float("-inf")
+        self._greet_skip_seen = float("-inf")   # 감시 스레드가 마지막으로 본 끝 시각 — 바뀌면 새 "네?"다
+        self._greet_skip_peak = 0.0             # 이번 "네?"에 건너뛴 문턱 넘은 최고 점수(0 = 기록할 것 없음)
+        self._greet_skip_state = ""
+        self._dialog_seen: Optional[tuple[str, float]] = None
+        # 서 있는 상태(GREETING_GATE_SKIP_STATES)가 끊기지 않고 이어진 시작 시각(검토 I1). None = 지금 서 있는 줄이 없다.
+        # set_dialog_state 와 note_robot_speech 만 쓰고 읽는다 — 노드에서는 둘 다 ROS 실행기 한 스레드의 콜백이다.
+        self._standing_since: Optional[float] = None
 
         self._ring: deque[np.ndarray] = deque(maxlen=RING_FRAMES)
         self._state = "idle"
@@ -644,6 +685,8 @@ class WakewordMonitor:
         self._wake_seq = 0                           # 호출 번호 — 판정과 짝을 맞춘다
         # 경비(순찰) 큰 소리 판정 연결(2026-11-14, patrol_sound.PatrolSoundTap). 노드가 붙인다 — None 이면 지금 그대로.
         self.patrol_tap = None
+        # 소프트웨어 에코 제거(2026-11-18, echo_cancel.EchoStage). 노드가 붙인다 — None 이면 지금 그대로.
+        self.echo_stage = None
 
     @property
     def state(self) -> str:
@@ -803,6 +846,14 @@ class WakewordMonitor:
             self._self_guard_active = True
         else:
             self._end_self_guard(now)
+        if (text or "").strip() == WAKE_GREETING:
+            # 원칙 13 · 8 — "네?" 재생 시작부터 다시 잰다. 다른 문장은 이 시각을 건드리지 않는다(_greeting_gate_skip).
+            # 이미 충분히 서 있었고(GREETING_GATE_SETTLED_SEC) 마지막 상태 소식이 신선할 때만이다 — 아니면 앞선 "네?"의
+            # 건너뛰기도 여기서 끝난다(검토 I1).
+            since, seen = self._standing_since, self._dialog_seen
+            settled = (since is not None and now - since >= GREETING_GATE_SETTLED_SEC
+                       and seen is not None and 0.0 <= now - seen[1] <= GREETING_GATE_STATE_FRESH_SEC)
+            self._greet_skip_until = now + GREETING_GATE_SKIP_SEC if settled else float("-inf")
 
     def _end_self_guard(self, now: float) -> None:
         if self._self_guard_active:
@@ -857,6 +908,16 @@ class WakewordMonitor:
         # 기록일 뿐이다 — 기록이 실패해도 호출 판정과 마이크 스레드는 계속 간다.
         try:
             self._on_wake_score(kind, peak)
+        except Exception:
+            pass
+        # 문턱을 넘은 소리만 남긴다: 확정(wake) · 넘었지만 확정 안 됨(near) · 로봇 자기 말(self).
+        if self._on_wake_clip is None or not self._ring or peak < self.gate_a.threshold:
+            return
+        try:
+            self._on_wake_clip(np.concatenate([*self._ring]), {
+                "result": {"fire": "wake"}.get(kind, kind), "peak": round(float(peak), 3),
+                "threshold": self.gate_a.threshold, "listening": self._state == "listen",
+                "robot_speaking": bool(self._speaking)})
         except Exception:
             pass
 
@@ -1175,7 +1236,11 @@ class WakewordMonitor:
 
         EMERGENCY_NEAR_MISS_FLOOR 를 넘은 소리 덩어리를 하나로 묶어, 발동 없이 끝나면 최고 점수·문턱 넘은 조각 수·
         쿨다운으로 막혔는지를 알린다(기록일 뿐, 실패해도 감시는 계속 간다).
+
+        원칙 13 · 8 — "네?" 직후 서 있으면(_greeting_gate_skip) 점수를 넣지 않는다. 놓침 기록도 세지 않는다.
         """
+        if self._greeting_gate_skip(score, now):
+            return False
         fired = self.gate_b.feed(score, now)
         if score >= EMERGENCY_NEAR_MISS_FLOOR or fired:
             if not self._em_episode:
@@ -1200,6 +1265,38 @@ class WakewordMonitor:
                 except Exception:
                     pass
         return fired
+
+    def _greeting_gate_skip(self, score: float, now: float) -> bool:
+        """원칙 13 · 8 — 이 조각의 긴급 점수를 건너뛰는가. 셋 다 참일 때만이고 조각마다 다시 본다:
+        "네?" 재생 시작 뒤 GREETING_GATE_SKIP_SEC 안 · 기억한 미션 상태가 GREETING_GATE_SKIP_STATES ·
+        그 상태를 받은 지 GREETING_GATE_STATE_FRESH_SEC 안. 건너뛰면 관문을 비운다 — 시간이 지난 뒤 옛 점수가
+        이어져 곧바로 발동하지 않게. 문턱을 넘은 점수가 있었으면 "네?" 한 번에 한 줄을 남긴다(_log_greet_skip)."""
+        until = self._greet_skip_until            # ROS 스레드가 쓴다 — 한 번만 읽는다
+        if until != self._greet_skip_seen:        # 새 "네?" — 앞 "네?"의 줄을 먼저 남긴다
+            self._log_greet_skip()
+            self._greet_skip_seen = until
+        seen = self._dialog_seen
+        if (now < until and seen is not None and seen[0] in GREETING_GATE_SKIP_STATES
+                and 0.0 <= now - seen[1] <= GREETING_GATE_STATE_FRESH_SEC):   # 시각이 뒤로 가면(음수) 신선하지 않다
+            self.gate_b.reset()
+            if score >= self.gate_b.threshold and score > self._greet_skip_peak:
+                self._greet_skip_peak, self._greet_skip_state = score, seen[0]
+            return True
+        if now >= until:
+            self._log_greet_skip()
+        return False
+
+    def _log_greet_skip(self) -> None:
+        """건너뛴 "네?" 한 번의 기록 한 줄 — 문턱을 넘은 점수가 있었을 때만. 기록이 실패해도 감시는 계속 간다."""
+        peak, state = self._greet_skip_peak, self._greet_skip_state
+        if peak <= 0.0:
+            return
+        self._greet_skip_peak, self._greet_skip_state = 0.0, ""
+        try:
+            self._log(f"긴급 관문 건너뜀('{WAKE_GREETING}' 직후 {GREETING_GATE_SKIP_SEC:g} s · 상태 {state}): "
+                      f"최고 점수 {peak:.2f}")
+        except Exception:
+            pass
 
     def _note_gate(self, now: float, score: float) -> None:
         """긴급 관문이 발동한 프레임 시각·점수를 적어 둔다(기록용, 판정과 무관)."""
@@ -1485,9 +1582,22 @@ class WakewordMonitor:
         return verdict
 
     def set_dialog_state(self, state: str, now: Optional[float] = None) -> None:
-        """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다)."""
+        """미션 dialog_state — 세션 주인 등록·끝을 판정기에 알린다(없으면 아무 일도 없다).
+        원칙 13 · 8 — 값과 받은 시각을 기억한다("네?" 직후 긴급 관문 건너뛰기가 본다). 서 있는 값이 끊기지 않고 이어진
+        시작 시각도 센다(검토 I1): 목록 밖 값이 오거나 앞 소식과의 간격이 GREETING_GATE_STATE_FRESH_SEC 를 넘으면(뒤로 가면)
+        버리고, 목록 값이 오면 시작 시각이 없을 때만 지금으로 둔다. 목록 안에서 값이 바뀌는 것은 끊김이 아니다.
+        끊기면 지금 "네?"의 건너뛰기도 끝난다 — 다시 서 있는 값이 와도 새 "네?"가 자격을 갖춰 와야 한다(검토 2차)."""
+        now = time.time() if now is None else now
+        prev = self._dialog_seen
+        if (state not in GREETING_GATE_SKIP_STATES
+                or (prev is not None and not 0.0 <= now - prev[1] <= GREETING_GATE_STATE_FRESH_SEC)):
+            self._standing_since = None
+            self._greet_skip_until = float("-inf")
+        if state in GREETING_GATE_SKIP_STATES and self._standing_since is None:
+            self._standing_since = now
+        self._dialog_seen = (state, now)
         if self._speaker is not None:
-            self._speaker.on_dialog_state(state, time.time() if now is None else now)
+            self._speaker.on_dialog_state(state, now)
 
     def _report_clip(self, audio: np.ndarray, result: str, text: str = "", **extra) -> None:
         """청취 창 소리와 판정을 넘긴다. 기록일 뿐이라 실패해도 귀는 계속 간다."""
@@ -1597,6 +1707,15 @@ class WakewordMonitor:
             self._transcribe_listen = _transcribe_listen
             self._transcribe_confirm = _transcribe_confirm
 
+    def _frame_from_queue(self, item: np.ndarray) -> np.ndarray:
+        """큐 조각 → process_frame 에 줄 1차원 프레임. 2열이면 에코 제거를 거친다(감시 루프 스레드에서만 부른다)."""
+        if item.ndim == 1:
+            return item
+        ch0 = np.ascontiguousarray(item[:, 0])
+        if self.echo_stage is None:
+            return ch0
+        return self.echo_stage.feed(ch0, item[:, 1])
+
     def run(self) -> None:
         """reSpeaker ch0 상시 감시 루프 (blocking). Ctrl+C 로 종료."""
         import queue
@@ -1628,6 +1747,7 @@ class WakewordMonitor:
         # 끊김 기록(2026-11-11 사용자) — 콜백은 상태 문자열만 넣고, 로그는 감시 스레드가 쓴다.
         status_q: queue.SimpleQueue[str] = queue.SimpleQueue()
         watch = FrameWatch()
+        with_ref = self.echo_stage is not None   # 스트림을 열기 전에 한 번만 정한다
         tap = self.patrol_tap   # 판정 상태(tap.armed — patrolling·patrol_dwell)일 때만 아래 두 곳에서 불린다
 
         def cb(indata, frames, t, status):  # noqa: ANN001
@@ -1636,7 +1756,7 @@ class WakewordMonitor:
             block = np.frombuffer(indata, dtype=np.int16).reshape(-1, channels)
             if tap is not None and tap.armed:
                 tap.push(block)   # 원음 ch1~4 제곱 평균 한 번 — 판정·발행은 감시 루프(poll)에서
-            q.put(block[:, 0].copy())
+            q.put(_queue_item(block, with_ref))
 
         def note(line: Optional[str]) -> None:
             if line:
@@ -1652,7 +1772,7 @@ class WakewordMonitor:
                 while not status_q.empty():
                     note(watch.on_status(status_q.get(), time.monotonic()))
                 try:
-                    frame = q.get(timeout=0.5)
+                    frame = self._frame_from_queue(q.get(timeout=0.5))
                 except queue.Empty:
                     note(watch.on_idle(time.monotonic()))
                     continue

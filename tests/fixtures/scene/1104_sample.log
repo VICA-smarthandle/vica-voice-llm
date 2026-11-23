@@ -1,0 +1,162 @@
+[INFO] [1793753928.965180743] [vica_wakeword_node]: VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | TTS 중 감시 유지(AEC) | 음성 barge-in 꺼짐 | DOA 관문 켜짐 center=180.0±60.0 | 호출 방향 회전 꺼짐 | 호출 응답 미션 판정)
+[FATAL] [1793753943.966797223] [vica_wakeword_node]: 귀 감시가 멈췄습니다 — 노드를 끝냅니다: SystemExit('reSpeaker 6채널 입력을 찾을 수 없다 — 다른 마이크로 폴백하지 않는다 (정책: docs/respeaker-v3-capabilities.md)')
+[INFO] [1793754605.173562367] [vica_tts_node]: VICA TTS node 시작 (구독: /vica/tts_request | 발행: /vica/tts_state)
+[INFO] [1793754626.738910425] [vica_wakeword_node]: 🎧 발화 소리 -> /vica/user_audio (3.60s)
+[WARN] [1793755016.392114393] [vica_wakeword_node]: 청취 기각: empty:wake-ignored
+[WARN] [1793755081.539770356] [vica_wakeword_node]: 청취 기각: empty:ghost speech=-0.00s rms=0.0068
+[INFO] [1793755267.583046274] [vica_llm_intent_node]: 재청취 기각(무의미): '예정일이 관람객 여러분의 많은 관심 바랍니다. 금방 시간 나.' intent=unknown
+[INFO] [1793755268.700538414] [vica_mission_manager]: TTS[response]: 안내를 받으시겠어요?
+[INFO] [1793755268.701389380] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793755268.702098033] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793755268.740468691] [vica_tts_node]: 재생[response]: 안내를 받으시겠어요?
+[INFO] [1793755271.774991396] [vica_wakeword_node]: [보정] Qwen 언어 'en' → 한국어로 다시: 'We.' → '비.'
+[WARN] [1793755271.786048578] [vica_wakeword_node]: 청취 기각: empty:short-reject '비.'
+[INFO] [1793755278.302720306] [vica_mission_manager]: TTS[response]: 안내를 받으시겠어요?
+[INFO] [1793755278.303635629] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793755278.305325465] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793755278.305738611] [vica_tts_node]: 재생[response]: 안내를 받으시겠어요?
+[INFO] [1793755290.399084269] [vica_wakeword_node]: [보정] Qwen 언어 'en' → 한국어로 다시: 'Shortly at event stage at 10:30, we encourage all visitors to attend. Thank you.' → '그래.'
+[INFO] [1793755290.401747129] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '그래.'
+[INFO] [1793755290.403831007] [vica_wakeword_node]: 수음 품질: rms 0.1261 · peak 1.00 · clip 0.8%
+[INFO] [1793755290.405716408] [vica_wakeword_node]: 계측: 대기 -0.02s · 발화 8.01s · 말끝판정 0.88s · STT 1.63s
+[INFO] [1793755290.412121652] [vica_llm_intent_node]: 입력='그래.' -> intent=affirm matched=None safety=normal
+[INFO] [1793755290.432626618] [vica_mission_manager]: TTS[response]: 네, 잠시만 기다려주세요. 로봇이 회전하니 주의하세요.
+[INFO] [1793755290.468134278] [vica_tts_node]: 재생[response]: 네, 잠시만 기다려주세요. 로봇이 회전하니 주의하세요.
+[INFO] [1793755290.506287900] [vica_mission_manager]: 제자리 회전 시작: +3.05 rad (+175°) — 수락 — 핸들을 사람 쪽으로
+[INFO] [1793755290.511438759] [vica_mission_manager]: 음성 요청 intent=affirm dest=- confirm=False: awaiting_user -> turning 말=['네, 잠시만 기다려주세요. 로봇이 회전하니 주의하세요.']
+[INFO] [1793755290.554315532] [vica_wakeword_node]: 🔔 '비카야' 다시 켬
+[INFO] [1793755298.308905402] [vica_mission_manager]: 진동 요청: long
+[INFO] [1793755298.310895035] [vica_mission_manager]: TTS[response]: 손잡이가 진동하고 있습니다. 잡아주세요.
+[INFO] [1793755298.313080680] [vica_mission_manager]: 손잡이: turning → grip_wait (활성=False)
+[INFO] [1793755298.334133560] [vica_tts_node]: 재생[response]: 손잡이가 진동하고 있습니다. 잡아주세요.
+[INFO] [1793755300.504481995] [vica_mission_manager]: 진동 요청: long
+[INFO] [1793755301.900949801] [vica_mission_manager]: TTS[response]: 검지손가락으로 스위치를 위아래로 움직이시면 스마트핸들 높이를 조절하실 수 있습니다.
+[INFO] [1793755301.901682361] [vica_mission_manager]: TTS[response]: 저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?
+[INFO] [1793755301.902368005] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793755301.902906504] [vica_mission_manager]: 손잡이: grip_wait → idle (활성=False)
+[INFO] [1793755301.903015887] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793755301.990099347] [vica_tts_node]: 위치 비프 끊김(grip_wait, 단계 바뀜, 0.51 s)
+[INFO] [1793755301.991953003] [vica_tts_node]: 재생[response]: 검지손가락으로 스위치를 위아래로 움직이시면 스마트핸들 높이를 조절하실 수 있습니다.
+[INFO] [1793755310.116631190] [vica_tts_node]: 재생[response]: 저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?
+[INFO] [1793755318.768425302] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '나 휴먼 오이드 구경하고 싶어.'
+[INFO] [1793755318.773076454] [vica_wakeword_node]: 수음 품질: rms 0.1182 · peak 0.73 · clip 0.0%
+[INFO] [1793755318.776340251] [vica_wakeword_node]: 계측: 대기 0.58s · 발화 1.68s · 말끝판정 0.88s · STT 0.79s
+[INFO] [1793755333.836048621] [vica_llm_intent_node]: 재청취 기각(무의미): '나 휴먼 오이드 구경하고 싶어.' intent=unknown
+[INFO] [1793755334.907015219] [vica_mission_manager]: TTS[response]: 잘 듣지 못했습니다. 어디로 가고 싶으신가요?
+[INFO] [1793755334.907908174] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793755334.909056058] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793755334.927148993] [vica_tts_node]: 재생[response]: 잘 듣지 못했습니다. 어디로 가고 싶으신가요?
+[INFO] [1793755348.260242540] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '나 휴머노이드 볼레.'
+[INFO] [1793755348.262272786] [vica_wakeword_node]: 수음 품질: rms 0.1420 · peak 1.00 · clip 0.0%
+[INFO] [1793755348.263970851] [vica_wakeword_node]: 계측: 대기 4.37s · 발화 1.20s · 말끝판정 0.88s · STT 0.69s
+[INFO] [1793755363.307102801] [vica_llm_intent_node]: 재청취 기각(무의미): '나 휴머노이드 볼레.' intent=unknown
+[INFO] [1793755364.699261864] [vica_mission_manager]: TTS[response]: 응답이 없어 안내를 마치고 제자리로 돌아가겠습니다.
+[INFO] [1793755364.729183414] [vica_tts_node]: 재생[response]: 응답이 없어 안내를 마치고 제자리로 돌아가겠습니다.
+[INFO] [1793755367.720874617] [vica_mission_manager]: 출발 전 local costmap 비움 (__home__)
+[INFO] [1793755367.774058205] [vica_mission_manager]: 출발 전 global costmap 비움 (__home__)
+[INFO] [1793755367.816137819] [vica_mission_manager]: NavigateToPose 전송: __home__ (3.29, -1.10, 90.0deg) 트리=기본
+[INFO] [1793755367.816881772] [vica_mission_manager]: 손잡이: idle → returning (활성=False)
+[INFO] [1793756083.718655726] [vica_mission_manager]: vica_mission_manager 시작 (상태: idle)
+[INFO] [1793756083.737935774] [vica_mission_manager]: 중앙 estop=True -> state=estopped
+[INFO] [1793757104.337047404] [vica_mission_manager]: '비카야'(대답 안 함): estopped -> estopped
+[INFO] [1793757104.337631052] [vica_wakeword_node]: 🙊 미션 판정 #1: 대답 안 함 — 호출 창의 말을 버린다
+[WARN] [1793757104.410073824] [vica_wakeword_node]: 청취 기각: empty:wake-ignored
+[INFO] [1793757279.993383832] [vica_mission_manager]: 음성 요청 intent=help dest=- confirm=False: idle -> idle 말=['지금은 도움 요청을 보낼 수 없습니다']
+[INFO] [1793758111.851028391] [vica_llm_intent_node]: VICA LLM intent node 시작 (구독: /vica/user_text, /vica/robot_state | 발행: /vica/intent)
+[INFO] [1793758161.291630116] [vica_wakeword_node]: 🎯 호출 점수 놓침: 0.83 (문턱 0.70)
+[INFO] [1793758730.965109600] [vica_wakeword_node]: 🎯 호출 점수 확정: 0.99 (문턱 0.70)
+[INFO] [1793758730.966136833] [vica_wakeword_node]: 🙋 비카야 호출 #3 — 청취 창 열림, 미션 판정 대기
+[INFO] [1793758730.971061984] [vica_tts_node]: barge-in — 재생 중단
+[INFO] [1793758730.974380842] [vica_mission_manager]: 발화 큐 청소 (취소·선점)
+[INFO] [1793758730.974668788] [vica_wakeword_node]: 🧭 호출 방향 188° (방향 회전 꺼짐 — 미션에 안 보냄)
+[INFO] [1793758730.975383179] [vica_mission_manager]: TTS[response]: 네?
+[INFO] [1793758730.976369131] [vica_mission_manager]: '비카야'(들음): navigating -> navigating
+[INFO] [1793758730.995833597] [vica_tts_node]: 재생[response]: 네?
+[INFO] [1793758734.033613681] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '안내 취소.'
+[INFO] [1793758734.034923067] [vica_llm_intent_node]: 입력='안내 취소.' -> intent=cancel matched=None safety=normal
+[INFO] [1793758734.037598290] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793758734.038987294] [vica_wakeword_node]: 수음 품질: rms 0.0779 · peak 0.94 · clip 0.0%
+[INFO] [1793758734.041666005] [vica_wakeword_node]: 계측: 대기 0.56s · 발화 1.28s · 말끝판정 0.88s · STT 0.34s
+[INFO] [1793758734.049751707] [vica_mission_manager]: TTS[response]: 안내를 취소할까요?
+[INFO] [1793758734.056174986] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793758734.061694973] [vica_tts_node]: 재생[response]: 안내를 취소할까요?
+[INFO] [1793758734.064941638] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793758734.071195216] [vica_mission_manager]: 음성 요청 intent=cancel dest=- confirm=True: navigating -> navigating 말=['안내를 취소할까요?']
+[INFO] [1793758735.932829906] [vica_mission_manager]: TTS[response]: 현장 안전 지원 휴머노이드에 도착했습니다. 현장 안전 지원 휴머노이드는 오른쪽에 있습니다. 여기서 대기할까요?
+[INFO] [1793758735.935680974] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793758735.940710961] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793758735.943121439] [vica_tts_node]: 재생[response]: 현장 안전 지원 휴머노이드에 도착했습니다. 현장 안전 지원 휴머노이드는 오른쪽에 있습니다. 여기서 대기할까요?
+[INFO] [1793758735.948663186] [vica_mission_manager]: 장애물 안내: 입력 멈춤(안내 주행 아님)
+[INFO] [1793758735.949291271] [vica_mission_manager]: 손잡이: navigating → asking_next (활성=False)
+[INFO] [1793758821.721819465] [vica_mission_manager]: 진동 요청: long
+[INFO] [1793758821.921412762] [vica_mission_manager]: TTS[response]: 검지손가락으로 스위치를 위아래로 움직이시면 스마트핸들 높이를 조절하실 수 있습니다.
+[INFO] [1793758821.922108370] [vica_mission_manager]: TTS[response]: 저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?
+[INFO] [1793758821.922797386] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793758821.923376063] [vica_mission_manager]: 손잡이: grip_wait → idle (활성=False)
+[INFO] [1793758821.923474530] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793758821.980840307] [vica_tts_node]: 위치 비프 끊김(grip_wait, 단계 바뀜, 3.48 s)
+[INFO] [1793758821.981455400] [vica_tts_node]: 재생[response]: 검지손가락으로 스위치를 위아래로 움직이시면 스마트핸들 높이를 조절하실 수 있습니다.
+[INFO] [1793758829.719235041] [vica_tts_node]: 재생[response]: 저에게 말을 거실 때는 '비카야'라고 불러주세요. 어디로 가고 싶으신가요?
+[INFO] [1793758838.441289384] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '듀모노이드 보러 가자.'
+[INFO] [1793758838.442217705] [vica_wakeword_node]: 수음 품질: rms 0.1071 · peak 0.70 · clip 0.0%
+[INFO] [1793758838.442938946] [vica_wakeword_node]: 계측: 대기 1.53s · 발화 1.04s · 말끝판정 0.88s · STT 0.59s
+[INFO] [1793758839.868723384] [vica_llm_intent_node]: 재청취 기각(무의미): '듀모노이드 보러 가자.' intent=clarify
+[INFO] [1793758845.924133280] [vica_wakeword_node]: 🎯 호출 점수 확정: 0.99 (문턱 0.70)
+[INFO] [1793758845.925010975] [vica_wakeword_node]: 🙋 비카야 호출 #4 — 청취 창 열림, 미션 판정 대기
+[INFO] [1793758845.927487767] [vica_tts_node]: barge-in — 재생 중단
+[INFO] [1793758845.927806691] [vica_mission_manager]: 발화 큐 청소 (취소·선점)
+[INFO] [1793758845.928662273] [vica_mission_manager]: TTS[response]: 네?
+[INFO] [1793758845.929467358] [vica_mission_manager]: '비카야'(들음): idle -> idle
+[INFO] [1793758845.934916063] [vica_wakeword_node]: 🧭 호출 방향 175° (방향 회전 꺼짐 — 미션에 안 보냄)
+[INFO] [1793758845.964229264] [vica_tts_node]: 재생[response]: 네?
+[INFO] [1793758849.793566904] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '휴머노이드 보러 가자.'
+[INFO] [1793758849.794163181] [vica_wakeword_node]: 수음 품질: rms 0.0760 · peak 0.50 · clip 0.0%
+[INFO] [1793758849.794668159] [vica_wakeword_node]: 계측: 대기 0.56s · 발화 1.84s · 말끝판정 0.88s · STT 0.58s
+[INFO] [1793760761.000147623] [vica_wakeword_node]: 청취 창 빈손 종료 (발화 없음/빈 전사)
+[INFO] [1793763603.055912860] [vica_wakeword_node]: 🙋 창 안 호출 (소리로 구제): wake-rescue '디카야.'
+[INFO] [1793763624.995958250] [vica_wakeword_node]: 청취 창 빈손 종료 (발화 없음/빈 전사)
+[INFO] [1793772405.265992835] [vica_wakeword_node]: [보정] Qwen 언어 'hi' → 한국어로 다시: '그래' → '그래.'
+[INFO] [1793772405.267069507] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '그래.'
+[INFO] [1793772405.267617844] [vica_wakeword_node]: 수음 품질: rms 0.1521 · peak 0.94 · clip 0.0%
+[INFO] [1793772405.268616882] [vica_llm_intent_node]: 입력='그래.' -> intent=navigate matched=295d27e8-0dca-4ed4-b9e5-e62a3133053e safety=normal
+[INFO] [1793772405.268856921] [vica_wakeword_node]: 계측: 대기 -0.32s · 발화 0.53s · 말끝판정 0.88s · STT 0.40s
+[INFO] [1793772405.276643524] [vica_mission_manager]: TTS[narration]: 현장 안전 지원 휴머노이드로 안내를 시작합니다.
+[INFO] [1793772405.297073804] [vica_mission_manager]: 출발 전 local costmap 비움 (295d27e8-0dca-4ed4-b9e5-e62a3133053e)
+[INFO] [1793772405.304670001] [vica_mission_manager]: 출발 전 global costmap 비움 (295d27e8-0dca-4ed4-b9e5-e62a3133053e)
+[INFO] [1793772405.315791009] [vica_mission_manager]: NavigateToPose 전송: 295d27e8-0dca-4ed4-b9e5-e62a3133053e (-3.87, 0.43, 270.0deg) 트리=vica_navigate_to_pose_guided.xml
+[INFO] [1793772405.316491670] [vica_mission_manager]: 음성 요청 intent=navigate dest=295d27e8-0dca-4ed4-b9e5-e62a3133053e confirm=False: confirming -> navigating 말=['현장 안전 지원 휴머노이드로 안내를 시작합니다.']
+[INFO] [1793772405.324229087] [vica_tts_node]: 재생[narration]: 현장 안전 지원 휴머노이드로 안내를 시작합니다.
+[INFO] [1793772405.479096030] [vica_mission_manager]: 장애물 안내: 입력 받기 시작(안내 주행)
+[INFO] [1793772406.951831491] [vica_mission_manager]: 장애물 안내 뺌: ear_busy
+[INFO] [1793772415.752047509] [vica_mission_manager]: TTS[ambient]: 앞에 장애물이 있어 감속할게요.
+[INFO] [1793772415.775721952] [vica_tts_node]: 재생[ambient]: 앞에 장애물이 있어 감속할게요.
+[INFO] [1793772427.943865756] [vica_mission_manager]: TTS[response]: 현장 안전 지원 휴머노이드에 도착했습니다. 현장 안전 지원 휴머노이드는 왼쪽에 있습니다. 여기서 대기할까요?
+[INFO] [1793772427.944680212] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793772427.945127458] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793772427.986405663] [vica_mission_manager]: 장애물 안내: 입력 멈춤(안내 주행 아님)
+[INFO] [1793772427.989759428] [vica_tts_node]: 재생[response]: 현장 안전 지원 휴머노이드에 도착했습니다. 현장 안전 지원 휴머노이드는 왼쪽에 있습니다. 여기서 대기할까요?
+[INFO] [1793772428.008800099] [vica_mission_manager]: 손잡이: navigating → asking_next (활성=False)
+[INFO] [1793772439.207324328] [vica_wakeword_node]: [보정] Qwen 언어 'ms' → 한국어로 다시: 'Ani.' → '아니.'
+[INFO] [1793772439.208289701] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '아니.'
+[INFO] [1793772439.208792309] [vica_wakeword_node]: 수음 품질: rms 0.0485 · peak 0.33 · clip 0.0%
+[INFO] [1793772439.209253026] [vica_wakeword_node]: 계측: 대기 -0.08s · 발화 0.52s · 말끝판정 0.88s · STT 0.50s
+[INFO] [1793772439.210412453] [vica_llm_intent_node]: 입력='아니.' -> intent=deny matched=None safety=normal
+[INFO] [1793772439.213140856] [vica_mission_manager]: TTS[response]: 여기까지 안내를 마칠까요?
+[INFO] [1793772439.214171639] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793772439.214807626] [vica_mission_manager]: 음성 요청 intent=deny dest=- confirm=False: asking_next -> asking_next 말=['여기까지 안내를 마칠까요?']
+[INFO] [1793772439.217469274] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793772439.229271967] [vica_tts_node]: 재생[response]: 여기까지 안내를 마칠까요?
+[WARN] [1793772440.050075620] [vica_wakeword_node]: 긴급 관문 발동 → STT 기각 (전사: '아니.') · 관문 0.61 · 관문→판정 0.80 s (STT 0.71 s) · 긴급 아님 — 질문 답으로 넘김
+[INFO] [1793772440.052904538] [vica_wakeword_node]: 🗣️ 호출 발화 -> /vica/user_text: '아니.'
+[INFO] [1793772440.053457002] [vica_wakeword_node]: 수음 품질: rms 0.0372 · peak 0.33 · clip 0.0%
+[INFO] [1793772440.054003803] [vica_wakeword_node]: 계측: 대기 -0.08s · 발화 0.52s · 말끝판정 0.88s · STT 0.50s
+[INFO] [1793772440.054901782] [vica_llm_intent_node]: 입력='아니.' -> intent=deny matched=None safety=normal
+[INFO] [1793772440.056848689] [vica_mission_manager]: 음성 요청 intent=deny dest=- confirm=False: asking_next -> asking_next (말 없음) — 질문 전에 시작한 말이라 대답으로 안 씀
+[INFO] [1793772449.721624489] [vica_mission_manager]: TTS[response]: 여기까지 안내를 마칠까요?
+[INFO] [1793772449.722817037] [vica_mission_manager]: 질문 발화 — 재청취 요청 발행
+[INFO] [1793772449.723020051] [vica_wakeword_node]: 질문 예약 — TTS 종료 후 재청취 창을 연다
+[INFO] [1793772449.747691899] [vica_tts_node]: 재생[response]: 여기까지 안내를 마칠까요?
+[INFO] [1793775042.913578641] [vica_wakeword_node]: 🎯 호출 점수 확정: 0.99 (문턱 0.70)
+[WARN] [1793775057.483051134] [vica_wakeword_node]: 청취 기각: empty:ghost speech=0.00s rms=0.0061
+[WARN] [1793775549.720274551] [vica_wakeword_node]: 청취 기각: empty:ghost speech=0.03s rms=0.0081
+[WARN] [1793777188.271276401] [vica_wakeword_node]: 청취 기각: empty:ghost speech=0.00s rms=0.0090

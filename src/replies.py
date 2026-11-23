@@ -12,6 +12,8 @@ Mission Manager 의 안내 멘트(MSG_*)는 vica_ros2_ws 쪽에 있다. 그쪽�
 """
 from __future__ import annotations
 
+from . import vica_facts
+from .destination_loader import _josa_euro
 from .mission_phrases import josa_eun_neun
 
 # 긴급어 감지 시의 응답. 실제 정지는 E-stop 래치 체인이 수행한다.
@@ -177,12 +179,26 @@ def expects_answer(reply: str) -> bool:
     의도 종류(need_confirm·clarify)만 보던 옛 열쇠는 LLM 이 자유 생성한
     질문("무엇을 도와드릴까요?", intent=unknown)을 놓쳤다 — 질문해 놓고
     안 듣는 사건의 원인(2026-08-28). 문장 꼴로 판정한다: "?"로 끝나거나 INVITE_ENDINGS 로 끝난다.
+    비카에 대한 정해진 대답은 "?"가 있어도 알리는 말이다(_about_sentence, Task N3).
     """
     reply = reply.strip()
+    if _about_sentence(reply):
+        return False
     if reply.endswith("?"):
         return True
     tail = "".join(ch for ch in reply if not ch.isspace()).rstrip(".!~…")
     return tail.endswith(INVITE_ENDINGS)
+
+
+def _about_sentence(reply: str) -> bool:
+    """비카에 대한 정해진 대답(vica_facts.ABOUT_SENTENCES)과 글자까지 같은가 — 정해진 대답이 켜졌을 때만(fixed_answers.on()).
+
+    원칙 9(Task N3): 여덟 문장은 알리는 말이다. 이행시는 "?"로 끝나지만 말한 뒤 듣기 창을 열거나 질문으로 미션에 넘기면
+    15초 뒤 "잘 듣지 못했습니다…"가 나온다. 꺼졌으면 늘 거짓 — 문장 꼴 판정은 지금 그대로다."""
+    if reply not in vica_facts.ABOUT_SENTENCES.values():
+        return False
+    from . import fixed_answers   # 지연 import — fixed_answers 가 이 모듈을 import 한다
+    return fixed_answers.on()
 
 
 def choose_between(names) -> str:
@@ -192,6 +208,43 @@ def choose_between(names) -> str:
         a, b = names
         return f"{a}{'과' if josa_eun_neun(a) == '은' else '와'} {b} 중 어디로 갈까요?"
     return f"{', '.join(names)} 중 어디로 갈까요?"
+
+
+# --- 없는 목적지 되묻기 (2026-11-20 재단, 원칙 11) ---------------------------------
+#
+# 되묻는 문장은 LLM 이 짓지 않고 이 틀에서 만든다. {what} 은 사용자가 찾는 곳, {josa} 는 '은/는'.
+NOT_AVAILABLE = "제가 아는 목적지 중에서 {what}{josa} 없는데, 어디로 안내해드릴까요?"
+UNNAMED_PLACE = "말씀하신 곳"
+_WANTED_MAX_CHARS = 20
+
+
+def not_available(wanted: str) -> str:
+    """없는 곳을 찾을 때 되묻는 말. 찾는 곳 이름이 비었거나 길거나 줄바꿈·물음표·긴급어가 있거나 한글이 없으면 '말씀하신 곳'으로 말한다."""
+    from .emergency_filter import detect_emergency   # 지연 import — emergency_filter 가 이 모듈을 import 한다
+
+    what = (wanted or "").strip()
+    if (not what or len(what) > _WANTED_MAX_CHARS or "\n" in what or "?" in what or "？" in what
+            or detect_emergency(what)
+            or not any("가" <= ch <= "힣" for ch in what)):   # 원칙 11·31 — 한글이 없는 말은 소리 내지 않는다
+        what = UNNAMED_PLACE
+    return NOT_AVAILABLE.format(what=what, josa=josa_eun_neun(what))
+
+
+# --- 갈 수 있는 곳 (2026-11-21 4단계, 원칙 29) --------------------------------------------------------------------
+#
+# "어디 갈 수 있어?"의 대답 — LLM 이 짓지 않고 이 틀에서 만든다. {names} 는 갈 수 있는 곳 이름을 목록 순서로 셋까지
+# (넘으면 뒤에 " 등"), {josa} 는 그 끝에 맞춘 '로/으로'.
+PLACES_REPLY = "{names}{josa} 안내할 수 있습니다."
+_PLACES_MAX = 3
+
+
+def places_sentence(names) -> str:
+    """갈 수 있는 곳을 알리는 말. 이름이 없으면 빈 글자(말하지 않는다 — 부르는 쪽이 지금 길로 둔다)."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    head = ", ".join(names[:_PLACES_MAX]) + (" 등" if len(names) > _PLACES_MAX else "")
+    return PLACES_REPLY.format(names=head, josa=_josa_euro(head))
 
 
 def all_phrases() -> dict[str, str]:

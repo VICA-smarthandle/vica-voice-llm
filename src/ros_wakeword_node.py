@@ -43,12 +43,14 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import (Bool, Empty, Float32, MultiArrayDimension, String,
                           UInt8MultiArray)
+from std_srvs.srv import SetBool
 from vica_interfaces.msg import EmergencyEvent as EmergencyEventMsg
 from vica_interfaces.msg import RobotState as RobotStateMsg
 
 from .destination_loader import build_place_hint, load_destinations
 from .dsp_state import (agc_desired_from_env, agc_max_gain_from_env, apply_agc_desired_level,
                         apply_agc_max_gain, apply_echo_tuning, echo_tuning_from_env)
+from .echo_cancel import build_echo_stage, clip_info_with_aec
 from .patrol_sound import PatrolSoundTap, sound_watched
 from .realtime_intent import float32_to_pcm16
 from .speaker_follow import SpeakerFollow, spk_config_from_env
@@ -60,6 +62,8 @@ from .stt_qwen import QwenUnavailable, ear_stt_engines
 from .ros_convert import emergency_to_msg
 from .schema import EmergencyEvent
 from .tts_queue import RESPONSE, build_request
+from .wake_doa_turn import (WAKE_DOA_TURN_SERVICE, WAKE_DOA_TURN_STATE_TOPIC, wake_doa_turn_from_env,
+                            wake_doa_turn_reply)
 from .wakeword_monitor import (
     LISTEN_START_SEC, WakewordMonitor, describe_emergency_check, describe_emergency_near,
     ear_stt_model_names, listen_band_min_from_env, save_emergency_clip)
@@ -151,8 +155,8 @@ class WakewordNode(Node):
         # 방향을 /vica/wake_doa 로 미션에 보내 그쪽으로 돈다(SEEKING·핸들 쪽 곧장
         # 질문). 마이크 잡음이 강한 곳에서 방향이 틀려 엉뚱한 쪽으로 돌았다. 꺼도
         # 방향은 로그에 남기고, barge-in 방향 관문·호출 방향 잠금은 그대로 쓴다.
-        self._wake_doa_turn = os.environ.get(
-            "VICA_WAKE_DOA_TURN", "off").strip().lower() in ("1", "on", "true")
+        # 2026-11-19: 앱 대시보드 '빔포밍 회전' 스위치로 실행 중 바꾼다(_on_wake_doa_turn_set).
+        self._wake_doa_turn = wake_doa_turn_from_env(os.environ.get("VICA_WAKE_DOA_TURN"))
 
         # 장소 이름 귀띔 — 자유 명령 창의 목적지 오전사('휴게실'→'조계실') 대책.
         # 목적지를 못 읽어도 감시는 시작해야 하므로 실패는 경고로만 남긴다.
@@ -191,6 +195,12 @@ class WakewordNode(Node):
         # Realtime·받아쓰기가 무엇을 들었는지 다시 듣고 견주는 자료. 긴급 소리 저장처럼 기본 켬, "off" 면 끈다.
         listen_dir = os.environ.get("VICA_LISTEN_CLIP_DIR", "~/vica_data/listen_clips").strip()
         self._listen_clip_dir = None if listen_dir.lower() in ("", "off", "0", "false") else listen_dir
+        # 호출 소리 저장(2026-11-17 사용자) — 호출 점수가 문턱을 넘을 때마다(확정·놓침·자기 말) 직전 ~2.5 s 를 wav 로.
+        # 헛호출이 무슨 소리였는지 다시 듣고 문턱을 자료로 고르려는 것. 기본 켬, "off" 면 끈다.
+        wake_dir = os.environ.get("VICA_WAKE_CLIP_DIR", "~/vica_data/wake_clips").strip()
+        self._wake_clip_dir = None if wake_dir.lower() in ("", "off", "0", "false") else wake_dir
+        self._wake_clip_warned = False
+        self._dialog_state = ""
         self._listen_clip_warned = False
         self._estop_clip_warned = False
         self._pub_audio = self.create_publisher(UInt8MultiArray, "/vica/user_audio", 10)
@@ -225,6 +235,7 @@ class WakewordNode(Node):
             on_wake_doa=self._publish_wake_doa,
             on_user_audio=self._on_user_audio if self._intent_input == "audio" else None,
             on_listen_clip=self._save_listen_clip if self._listen_clip_dir else None,
+            on_wake_clip=self._save_wake_clip if self._wake_clip_dir else None,
             # 말소리 대역 관문(2026-10-21) — 바람·기계음이 청취 창을 붙잡지 않게. off 면 옛 동작.
             listen_band_min=listen_band_min_from_env(),
             voice_barge_in=self._voice_barge_in,
@@ -250,7 +261,8 @@ class WakewordNode(Node):
                if self._monitor.approach_min_rms is not None else "")
             + (f"말소리 대역 최소 {self._monitor.listen_band_min:.4f} · "
                if self._monitor.listen_band_min is not None else "말소리 대역 관문 꺼짐 · ")
-            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}")
+            + f"긴급 소리 저장 {self._estop_clip_dir or '꺼짐'} · 말소리 저장 {self._listen_clip_dir or '꺼짐'}"
+            + f" · 호출 소리 저장 {self._wake_clip_dir or '꺼짐'}")
         single = self._monitor.gate_b.single
         listen_stt, verify_stt = ear_stt_model_names()
         try:
@@ -308,6 +320,10 @@ class WakewordNode(Node):
                 self.get_logger().warning(
                     "에코 억제 설정 실패 — 공장 기본(1.0/0)으로 감시 계속")
 
+        self._echo_stage = build_echo_stage(
+            os.environ, self.get_logger().info, self.get_logger().warning)
+        self._monitor.echo_stage = self._echo_stage   # 감시 스레드를 띄우기 전에 붙인다
+
         # 경비(순찰) 큰 소리 판정(2026-11-14) — patrolling·patrol_dwell 에서만 계산·발행한다. 로직은 patrol_sound.py.
         self._pub_patrol = self.create_publisher(String, "/vica/patrol/event", 10)
         self._patrol = PatrolSoundTap(
@@ -317,6 +333,17 @@ class WakewordNode(Node):
         self.create_subscription(
             String, "/vica/patrol/watch", self._on_patrol_watch,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+        # 빔포밍 회전 켜고 끄기(2026-11-19 사용자) — 앱이 서비스를 부르고 latched 상태만 보고 그린다.
+        # 마이크 스레드보다 먼저 만들어 첫 상태를 낸다. 음성을 다시 띄우면 .env 값으로 돌아간다.
+        self._pub_wake_doa_turn = self.create_publisher(
+            Bool, WAKE_DOA_TURN_STATE_TOPIC,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_service(SetBool, WAKE_DOA_TURN_SERVICE, self._on_wake_doa_turn_set)
+        self._publish_wake_doa_turn_state()
+        # 앱이 음성보다 먼저 붙으면 rosbridge 가 VOLATILE 로 구독해 위 한 번을 놓친다
+        # (vica-app 은 부팅 묶음, 음성은 주행 묶음 — 11-19 검토). 1 s 마다 다시 낸다(전방 초음파 선례).
+        self.create_timer(1.0, self._publish_wake_doa_turn_state)
 
         # 마이크 감시 루프는 blocking 이라 별도 스레드 (ros_emergency_node 와 동일 패턴)
         self._monitor_error: "BaseException | None" = None
@@ -332,7 +359,7 @@ class WakewordNode(Node):
         self.get_logger().info(
             "VICA 웨이크워드 감시 시작 (발행: /vica/emergency, /vica/user_text | "
             f"TTS 중 {mode} | 음성 barge-in {barge} | DOA 관문 {gate} | "
-            f"호출 방향 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'} | "
+            f"빔포밍 회전 {'켜짐' if self._wake_doa_turn else '꺼짐'} | "
             f"호출 응답 {'미션 판정' if self._wake_by_mission else '이 노드(옛 판)'})")
 
     def _on_emergency(self, event: EmergencyEvent) -> None:
@@ -460,6 +487,7 @@ class WakewordNode(Node):
         사용자 결정). 말 끊기·"네?"·호출 창이 그 사람의 대답을 흐트린다. 긴급어는 그대로 듣는다."""
         self._monitor.set_wake_suppressed(msg.dialog_state == "awaiting_user")
         self._monitor.set_dialog_state(msg.dialog_state)   # 화자 판정의 세션 시작·끝(판정기 없으면 무시)
+        self._dialog_state = msg.dialog_state             # 호출 소리 저장 기록용
         self._patrol.set_state(msg.dialog_state)   # 경비 소리 판정 — patrolling·patrol_dwell 일 때만 켜진다
         off = msg.dialog_state == "awaiting_user"
         if off != self._wake_off:
@@ -475,6 +503,19 @@ class WakewordNode(Node):
         self._monitor.set_wake_verdict(verdict, seq)
         if verdict == "ignore":
             self.get_logger().info(f"🙊 미션 판정 #{seq_text or '-'}: 대답 안 함 — 호출 창의 말을 버린다")
+
+    def _publish_wake_doa_turn_state(self) -> None:
+        self._pub_wake_doa_turn.publish(Bool(data=bool(self._wake_doa_turn)))
+
+    def _on_wake_doa_turn_set(self, request, response):
+        """앱 '빔포밍 회전' 스위치. 이미 보낸 회전은 미션 몫이라 끝까지 간다."""
+        on = bool(request.data)
+        self._wake_doa_turn = on
+        self._publish_wake_doa_turn_state()
+        self.get_logger().info(f"🧭 빔포밍 회전 {'켜짐' if on else '꺼짐'} (앱)")
+        response.success = True
+        response.message = wake_doa_turn_reply(on)
+        return response
 
     def _publish_wake_doa(self, doa: float) -> None:
         """호출이 온 방향. 못 읽으면 monitor 가 아예 부르지 않는다.
@@ -525,12 +566,16 @@ class WakewordNode(Node):
         self.get_logger().info(describe_emergency_near(info, self._monitor.gate_b.threshold))
         self._save_estop_clip(info.get("audio"), info)
 
+    def _aec_mode(self) -> str:
+        # 저장 순간의 모드 — 에코 제거 단계가 도중에 죽으면 mode 가 off 로 바뀐다.
+        return self._echo_stage.mode if self._echo_stage is not None else "off"
+
     def _save_estop_clip(self, audio, info) -> None:
         # 기록일 뿐이다 — 저장이 실패해도 긴급 판정과 마이크 스레드는 계속 간다. 경고는 한 번만.
         if self._estop_clip_dir is None or audio is None or not info or len(audio) == 0:
             return
         try:
-            save_emergency_clip(self._estop_clip_dir, audio, info)
+            save_emergency_clip(self._estop_clip_dir, audio, clip_info_with_aec(info, self._aec_mode()))
         except Exception as exc:
             if not self._estop_clip_warned:
                 self._estop_clip_warned = True
@@ -539,11 +584,21 @@ class WakewordNode(Node):
     def _save_listen_clip(self, audio, info) -> None:
         # 긴급 소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
         try:
-            save_emergency_clip(self._listen_clip_dir, audio, info)
+            save_emergency_clip(self._listen_clip_dir, audio, clip_info_with_aec(info, self._aec_mode()))
         except Exception as exc:
             if not self._listen_clip_warned:
                 self._listen_clip_warned = True
                 self.get_logger().warn(f"말소리 저장 실패(이후 경고 생략): {exc}")
+
+    def _save_wake_clip(self, audio, info) -> None:
+        # 긴급·말소리 저장과 같은 형식(wav + clips.jsonl 한 줄). 마이크 스레드에서 불린다 — 실패는 경고 한 번.
+        try:
+            save_emergency_clip(self._wake_clip_dir, audio, clip_info_with_aec(
+                {**info, "dialog_state": self._dialog_state}, self._aec_mode()))
+        except Exception as exc:
+            if not self._wake_clip_warned:
+                self._wake_clip_warned = True
+                self.get_logger().warn(f"호출 소리 저장 실패(이후 경고 생략): {exc}")
 
     def _greet(self) -> None:
         """호출 응답 "네?". 미리 만든 음성이 있으면 즉시, 없으면 TTS 로."""

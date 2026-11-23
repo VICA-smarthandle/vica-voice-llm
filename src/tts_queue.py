@@ -90,8 +90,9 @@ def request_for_intent(intent) -> Optional[str]:
     Mission Manager 가 거절했을 때 사용자는 안내가 시작된 줄 안다.
 
     - navigate + need_confirm=False → Mission Manager 가 말한다 (여기서는 침묵)
-    - navigate + need_confirm=True  → 확인 질문이므로 LLM 이 말한다
-    - 그 밖의 intent            → Mission Manager 가 관여하지 않으므로 LLM 이 말한다
+    - navigate + need_confirm=True  → 확인 질문. 질문 넘김이 켜지면(3-가) one_voice 가 reply 를 미리 비워
+                                      여기 오지 않고 미션이 confirm_prompt 로 묻는다. 꺼진 옛 설치본에서만 LLM 이 말한다
+    - 그 밖의 intent            → reply 가 남아 있으면 LLM 이 말한다(질문 문장은 3-가에서 미션에 넘어간다)
 
     VicaIntent(pydantic)와 ROS 메시지 양쪽에 쓰도록 속성으로만 접근한다.
     """

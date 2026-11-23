@@ -22,17 +22,23 @@ from __future__ import annotations
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import rclpy
 from langchain_core.messages import AIMessage, HumanMessage
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String, UInt8MultiArray
 from vica_interfaces.msg import RobotState as RobotStateMsg
 from vica_interfaces.msg import VicaIntent as VicaIntentMsg
+try:        # 질문 기록(2026-11-17). 옛 vica_interfaces 설치본이면 구독을 건너뛴다
+    from vica_interfaces.msg import VicaQuestion as VicaQuestionMsg
+except ImportError:
+    VicaQuestionMsg = None
 
-from . import local_rules
+from . import answer_field, fixed_answers, intent_recut, local_rules, question_record
 from .building_directory import directory_path, format_directory_block, load_directory
 from .destination_loader import load_voice_destinations
 from .emergency_filter import detect_emergency, stop_pause_intent_for
@@ -40,21 +46,28 @@ from .history import ConversationHistory
 from .speaker_link import SpeakerLink, verdict_from_labels
 from .langchain_intent_parser import (
     get_backend_manager, is_instant_utterance, is_relisten_noise, is_scripted_reply,
-    parse_intent, parse_intent_audio)
+    parse_intent, parse_intent_audio, text_tools_active)
 from .ledger_view import render_ledger
 from .mission_phrases import WAIT_BEACON
 from .mission_question import (identity_answer, quiet_for_mission, reask_held_resume,
                                should_reask_resume_on_silence, spk_gate_question)
 from .llm_backend import BackendState, parse_goal_event
-from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_turn_applies,
+from .realtime_intent import (RealtimeConnectionError, ab_shadow_enabled, audio_tools_active, audio_turn_applies,
                               get_realtime_client, pcm16_from_audio_msg)
 from .situation_board import SituationBoard, parse_goal_event_name
 from .replies import (COMMAND_DECLINED, LLM_UNAVAILABLE, RESUME_CONFIRM, RETRY_PROMPT,
                       WAKE_GREETING, expects_answer)
-from .ros_convert import intent_to_msg, msg_to_robot_state
+from .one_voice import (demote_unasked_confirm, hand_over_question, held_resume_carrier, mission_asks_resume,
+                        voice_may_speak)
+from .wake_echo import strip_wake_echo
+from .ros_convert import intent_to_msg, msg_to_robot_state, supports_ask_fields
 from .schema import should_forward_intent, RobotState, VicaIntent
 from .stt_guard import is_hallucination  # noqa: F401  (텍스트 경로 관문용, 소리 모드는 안 쓴다)
 from .tts_queue import RESPONSE, build_request, request_for_intent
+from .reservation_flow import (FlowOutput, ReservationFlow, ReserveCall, created_event, handle_result,
+                               join_situation, start_gate, to_intent)
+from .reservation_store import ReservationStore, default_facilities, reservation_dir
+from .tool_calls import audio_tools_on, text_tools_on
 
 
 # 재청취 창 문맥으로 보는 시간. 질문 발화(수 초) + 청취 창 + 답 처리까지
@@ -120,10 +133,14 @@ class LlmIntentNode(Node):
         self._board = SituationBoard()
 
         self._intent_pub = self.create_publisher(VicaIntentMsg, "/vica/intent", 10)
+        # 한 목소리(3-가) — 질문 문장은 말하지 않고 미션에 넘긴다. 옛 vica_interfaces(ask_text 칸 없음)면 지금처럼 직접 말한다.
+        self._hand_over = supports_ask_fields(VicaIntentMsg())
+        self.get_logger().info("질문 넘김: 켬" if self._hand_over else "질문 넘김: 꺼짐(옛 vica_interfaces)")
         self._tts_pub = self.create_publisher(String, "/vica/tts_request", 10)
         # 질문("~할까요?", 되묻기)을 말할 때 true — 웨이크워드 노드가 그 질문 TTS 가
         # 끝나는 순간 재청취 창을 열어, 사용자가 "비카야" 재호출 없이 "응"으로
-        # 답할 수 있게 한다.
+        # 답할 수 있게 한다. 질문 넘김이 꺼졌을 때(옛 설치본)만 이 노드가 낸다 —
+        # 켜지면 질문을 말하는 미션이 함께 낸다(3-가).
         self._listen_pub = self.create_publisher(Bool, "/vica/listen_request", 10)
         # LLM 해석 중 "생각 중" 배경 운율 스위치 — TTS 노드가 반복 재생한다
         # (2026-09-01 사용자 결정: "확인할게요" 말 대신 운율 루프).
@@ -145,10 +162,23 @@ class LlmIntentNode(Node):
         self._robot_recent: list = []
         self._last_robot_line = (0.0, "")   # (시각, 대기 알림 뺀 마지막 로봇 말) — 본인 확인 질문 판단용
         self.create_subscription(String, "/vica/tts_done", self._on_tts_done_text, 10)
+        # 미션이 낸 질문 기록(설계 2026-11-14 4.1) — 2단계: 발화마다 로그로만 남긴다. 해석에는 쓰지 않는다.
+        self._question = None
+        if VicaQuestionMsg is not None:
+            self.create_subscription(
+                VicaQuestionMsg, "/vica/question", self._on_question,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        else:
+            self.get_logger().info("질문 기록 없음(옛 vica_interfaces) — 구독 안 함")
         self.create_subscription(UInt8MultiArray, "/vica/user_audio", self._on_user_audio, 10)
         self.get_logger().info(
             f"의도 입력 모드: {self._intent_input} | 로컬 규칙: {'켬' if self._local else '꺼짐'}"
             f" | 비교 기록(GPT): {'켬' if self._ab_shadow else '꺼짐'}")
+        # 스위치 조합(최종 검토 I4) — VICA_RECUT·VICA_ANSWER·VICA_TALK 이 어긋나면 경고 한 줄만 낸다(동작은 막지 않는다).
+        switch_warn = fixed_answers.switch_warning()
+        if switch_warn:
+            self.get_logger().warning(switch_warn)
 
         # 화자 판정(2026-11-11 설계 speaker-follow) — 같은 글자의 의도에 싣는다. 글자보다 먼저 구독한다.
         self._spk_link = SpeakerLink()
@@ -167,6 +197,34 @@ class LlmIntentNode(Node):
         # 듣기 창이 빈손으로 닫혔다 — 음성이 쥔 "다시 출발할까요?"를 한 번 다시 묻는다(2026-10-08).
         self.create_subscription(String, "/vica/listen_state", self._on_listen_state_for_resume, 10)
         self.create_subscription(String, "/vica/wake", self._on_wake_signal, 10)
+
+        # ----- 시설 예약 — LLM 도구 호출 (설계 2026-11-18) ----------------------
+        # 스위치(.env VICA_TOOLS_TEXT · VICA_TOOLS_AUDIO)가 둘 다 꺼져 있으면 만들지 않는다 = 예전 동작 그대로.
+        # 진행 중인 예약은 한 번에 하나. 저장되면 앱에 알릴 사건을 /vica/reservation/event 로 낸다(설계 5.5).
+        self._reservation: ReservationFlow | None = None
+        self._reservation_pub = None
+        if (text_tools_on() or audio_tools_on()) and not (VicaQuestionMsg is not None and self._hand_over):
+            # 예약 질문은 미션이 말하고, 그 질문이 열리고 닫히는 것을 질문 기록으로 본다. 둘 다 없는 옛
+            # vica_interfaces 에서는 진행 중인 예약을 버릴 때를 알 수 없어 만들지 않는다.
+            self.get_logger().error("시설 예약 끔 — 질문 넘김·질문 기록이 없는 옛 vica_interfaces")
+        if (text_tools_on() or audio_tools_on()) and VicaQuestionMsg is not None and self._hand_over:
+            try:
+                facilities = default_facilities()
+                if not facilities:
+                    raise ValueError("예약할 시설 목록이 비어 있다(facilities.yaml)")
+                self._reservation = ReservationFlow(
+                    ReservationStore(reservation_dir() / "reservations.json"), facilities)
+                self._reservation_pub = self.create_publisher(String, "/vica/reservation/event", 10)
+                self.get_logger().info(
+                    f"시설 예약: 켬(글자 {'on' if text_tools_on() else 'off'} · 소리 {'on' if audio_tools_on() else 'off'})"
+                    f" | 시설 {len(facilities)}곳 | 저장 {self._reservation.store.path}")
+            except Exception as exc:   # 시설 파일이 깨져도 음성 노드는 떠야 한다 — 예약만 끈다
+                self._reservation = None
+                self.get_logger().error(f"시설 예약 준비 실패({exc}) — 예약 없이 동작한다")
+            if self._intent_input == "audio" and not (text_tools_on() and audio_tools_on()):
+                # 소리 모드에서 Realtime 이 실패한 발화는 글자 경로가 받는다 — 한쪽만 켜지면 그 경로의 '예약' 말은 ⑨다.
+                self.get_logger().warning(
+                    "시설 예약: 소리 모드인데 VICA_TOOLS_TEXT·VICA_TOOLS_AUDIO 가 하나만 켜졌다 — 꺼진 경로의 예약 말은 받지 않는다")
 
         # ----- 클라우드→로컬 자동 전환 (2026-09-19 설계) ------------------------
         # 관리자는 파서와 같은 싱글턴이다. 주행 사건·로봇 상태를 흘려 넣고,
@@ -275,15 +333,22 @@ class LlmIntentNode(Node):
 
     def _on_user_text(self, msg: String) -> None:
         """발화를 받아 VicaIntent 를 만들어 발행한다."""
-        text = msg.data.strip()
-        if not text:
+        raw = msg.data.strip()
+        if not raw:
             return
+        # 호출 응답 "네?"가 녹음에 섞여 글자 앞에 붙은 "네"를 뗀다(3-나-1). 아래 규칙·LLM·대화 기록은 뗀 글자를,
+        # 화자 판정 찾기만 원문(raw)을 쓴다 — 호출어 노드가 원문 글자로 판정을 실어 보낸다.
+        text = strip_wake_echo(raw, self._question, self._robot_state.dialog_state)
+        if text != raw:
+            self.get_logger().info(f"앞 '네' 뗌: '{raw}' → '{text}'")
         self._reload_destinations_if_changed()
 
         # 0) 한동안 발화가 없었으면 다른 사용자로 보고 이전 맥락을 버린다.
         #    안 그러면 다음 사람의 "거기로 가줘"가 앞사람 목적지로 해석된다.
         if self._history.begin_turn(time.time()):
             self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
+            if self._reservation is not None:
+                self._reservation.drop()   # 앞사람이 하다 만 예약이 다음 사람에게 붙지 않게
 
         # 1-0) 안내 주행 중 멈춤 말은 일시정지 제안으로 (2026-10-06 사용자 결정 (가)).
         #      소리 경로가 같은 발화로 이미 일시정지를 냈으면 다시 내지 않는다 — 두 번
@@ -296,13 +361,14 @@ class LlmIntentNode(Node):
                 self.get_logger().info(f"[멈춤] 소리 경로가 이미 일시정지 발행 — 받아쓰기 '{text}' 생략")
                 return
             self.get_logger().warning(f"[멈춤] '{text}' — 주행 중이라 일시정지 요청")
-            self._publish_intent(pause, text)
+            self._publish_intent(pause, text, link_text=raw)
             self._last_text_publish_t = time.time()
             self._last_text_publish_intent = pause.intent
             return
 
         # 1) 긴급어는 LLM 이전에 처리한다 (안전 경로).
         keyword = detect_emergency(text)
+        flow_out: FlowOutput | None = None
         if keyword:
             # reply 는 비운다 — 걸림 멘트("안전을 위해 멈추겠습니다. 관리자를
             # 호출했습니다")는 래치를 아는 미션이 말한다. 여기서도 말하면
@@ -318,6 +384,7 @@ class LlmIntentNode(Node):
             if self._intent_input == "audio" and audio_turn_applies(self._audio_turn, time.time()):
                 # 이 발화는 소리 경로가 이미 처리했다. 텍스트 경로 결과는 비교 로그로만.
                 turn, self._audio_turn = self._audio_turn, {}   # 1회 소비 — 다음 발화에 새지 않게
+                self._log_transcript_rule(text, turn)
                 self._shadow_text(text, turn)
                 return
             if self._intent_input == "audio" and self._audio_turn:
@@ -351,27 +418,69 @@ class LlmIntentNode(Node):
                     # 글자 경로에도 [지금 상황] 메모(2026-10-07 사용자 결정) — 와이파이가
                     # 끊겨 받아쓰기 경로로 넘어가도 "어디서 기다린다고?"에 답하게.
                     situation=self._situation_block(),
+                    # 열린 질문(질문 기록) — 대답 칸이 켜졌으면 LLM 이 질문 종류를 알고 answer 를 함께 낸다(3-나-2).
+                    question=self._question,
                 )
             finally:
                 # 실패해도 반드시 끈다 — 운율이 혼자 도는 것이 최악이다.
                 if thinking:
                     self._thinking_pub.publish(Bool(data=False))
-        self._publish_intent(intent, text)
+            # 2-1) 시설 예약(설계 2026-11-18 5.3): LLM 이 reserve_facility 를 불렀거나, 진행 중인 예약이
+            #      이 대답(승낙·거절)을 받는다. 흐름이 없으면(스위치 꺼짐) 결과가 그대로 내려간다.
+            if self._reservation is not None or isinstance(intent, ReserveCall):
+                flow = self._reservation
+                gate = (start_gate(self._robot_state.dialog_state, self._question, flow.asked_text)
+                        if flow is not None else "busy")
+                tools_used = text_tools_active() and self._backend.state is not BackendState.LOCAL
+                flow_out, intent = handle_result(flow, intent, text, gate=gate, tools_used=tools_used)
+        if flow_out is not None:
+            self._reservation_say(flow_out, text, link_text=raw)
+        elif intent is not None:
+            self._publish_intent(intent, text, link_text=raw)
+        else:
+            self.get_logger().info(f"[예약] 말하지 않는 상태 — 아무것도 내지 않음: '{text}'")
         # C) 소리 경로 이중 처리 방지 — 텍스트가 방금 이 발화를 발행했다는
         # 표식. _on_user_audio 는 이 시각에서 2초 안이면 소리 경로를 생략한다.
         self._last_text_publish_t = time.time()
-        self._last_text_publish_intent = intent.intent
+        self._last_text_publish_intent = intent.intent if intent is not None else ""
 
-    def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
+    def _on_question(self, msg) -> None:
+        """미션의 질문 기록. id 가 빈 기록은 열린 질문 없음."""
+        self._question = question_record.from_fields(
+            msg.id, msg.kind, msg.text, msg.option_ids, msg.opened_at.sec + msg.opened_at.nanosec / 1e9)
+        if self._reservation is not None:
+            # 내가 넘긴 예약 질문이 열렸다가 대답 없이 닫히면 진행 중인 예약을 버린다(설계 5.3).
+            self._reservation.on_question_record(msg.text if msg.id else "")
+
+    def _reservation_say(self, out: FlowOutput, text: str, link_text: str = "") -> None:
+        """예약 흐름이 정한 문장을 내보낸다. 저장됐으면 앱 알림 사건을 먼저 낸다(설계 5.5).
+
+        대답을 기다리는 문장은 ask_text 로 미션이 말하고, 안내(⑥·⑨)는 reply 로 이 노드가 말한다(to_intent).
+        """
+        if out.saved is not None:
+            self._reservation_pub.publish(String(data=created_event(out.saved, datetime.now())))
+            self.get_logger().info(
+                f"[예약] 저장 id={out.saved.id} {out.saved.facility} {out.saved.date} {out.saved.start}~{out.saved.end}")
+        self.get_logger().info(f"[예약] kind={out.kind or '안내'} 문장='{out.say}'")
+        self._publish_intent(to_intent(out), text, scripted=True, link_text=link_text)
+
+    def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False,
+                        link_text: str = "", scripted: bool = False) -> None:
         """intent 확정 뒤 공통 후처리 (재청취 기각 → 발행 → TTS → 재청취 준비 → 로그 → 히스토리).
 
         llm_first(소리 모드 모델 전결): 재청취 기각을 하지 않는다 — 대꾸할지 침묵할지
         (reply 가 빈 문자열)는 모델이 정했다.
+        link_text: 화자 판정을 찾을 원문 글자(text 에서 호출 응답 메아리를 뗐을 때). 비면 text 로 찾는다.
+        scripted: 예약 흐름이 만든 의도(2026-11-18) — 재청취 기각·로컬 대꾸 바꾸기·미션 질문 중 침묵을 건너뛴다.
+        reply 가 빈 clarify(질문은 ask_text 에 있다)는 질문 뒤 창 안에서 그 기각에 걸려 버려진다.
         """
         # 2-0) 음성이 쥔 "다시 출발할까요?"에 못 알아들은 답 — 같은 질문을 한 번 다시 묻는다
         #      (2026-10-08 다시 묻기). 아래 재청취 기각보다 먼저다 — 기각되면 아무도 안 묻는다.
-        intent = reask_held_resume(intent, self._history.messages)
-        spk = self._spk_link.take(text, time.time())
+        #      대답 칸이 켜졌으면(Task 3.4) 그 질문은 미션이 쥔다 — 다시 묻기도 미션이 한다.
+        if not answer_field.on():
+            intent = reask_held_resume(intent, self._history.messages)
+        question = self._question          # 미션은 의도를 받자마자 질문을 닫는다 — 내보내기 전에 잡아 둔다
+        spk = self._spk_link.take(link_text or text, time.time())
         if spk is None and self._audio_spk is not None:
             spk, self._audio_spk = self._audio_spk, None
         if spk is not None:
@@ -379,6 +488,25 @@ class LlmIntentNode(Node):
                 "speaker_verdict": str(spk.get("verdict", "")),
                 "speaker_score": float(spk.get("score", -1.0)),
                 "speaker_joined": float(spk.get("joined", -1.0))})
+        # 2-0a) 나에게 한 말이 아님(원칙 7) — 로그 한 줄만 남기고 끝낸다. 미션 발행·TTS·대화 기록·듣기 요청·
+        #       헛들음 관문·질문 기록 모두 건드리지 않는다(아무 말도 못 들은 것과 같다). 꺼져 있으면 이 값이 만들어지지 않는다.
+        if intent.intent == intent_recut.NOT_FOR_ROBOT:
+            self.get_logger().info(
+                f"[끼어들지 않음] 나에게 한 말이 아님: '{text}' 화자={intent.speaker_verdict or '-'}")
+            return
+        # 2-0a') 다시 말해줘(원칙 28 · 9) — 질문이면(열린 질문 기록, 또는 기록이 없거나 "네?"일 때 마지막 말이 질문 꼴) 그 글을 실어
+        #        repeat 를 미션에 보낸다: 미션이 쥐거나 접어 둔 질문이 있으면 그것을, 없으면 실려 간 글을 말한다(누가 쥐었는지는
+        #        미션이 가른다, 음성은 말하지 않는다). 마지막 말이 평서문이면 음성이 다시 한다(_robot_recent — /vica/tts_done 으로
+        #        들어온 미션·음성 말, "네?"·대기 알림 빼고). 갈래는 fixed_answers.settle_repeat. 대답 칸은 싣지 않는다 — 미션이
+        #        repeat 를 다른 의도로 바꿔 읽지 않게. 화자 판정은 그대로 싣는다. 꺼져 있으면 이 값이 만들어지지 않는다.
+        if intent.intent == fixed_answers.REPEAT:
+            settled = fixed_answers.settle_repeat(question, self._robot_recent)
+            self.get_logger().info(
+                f"[다시 말함] 질문={question.kind if question is not None else '-'} → intent={settled.intent} "
+                f"'{settled.reply}'")
+            intent = settled.model_copy(update={
+                "confidence": intent.confidence, "speaker_verdict": intent.speaker_verdict,
+                "speaker_score": intent.speaker_score, "speaker_joined": intent.speaker_joined})
         # 2-0b) 대기 중 본인 확인 질문이 열려 있나. 본인 질문의 네/아니요는 글자로 정한다(11-11 실기).
         gate_t, gate_text = self._last_robot_line
         spk_gate = spk_gate_question(gate_text, time.time() - gate_t,
@@ -398,9 +526,11 @@ class LlmIntentNode(Node):
         #      긴급(safety_flag)도 절대 삼키지 않는다 — fail-closed.
         #      로봇의 마지막 말이 호출 응답 "네?"면 호출 창이라 기각하지 않는다(2026-10-24, is_relisten_noise).
         last_spoken = self._robot_recent[-1][1] if self._robot_recent else ""
-        if not llm_first and is_relisten_noise(intent, self._destinations,
-                                               in_window=time.time() < self._followup_until,
-                                               last_robot_text=last_spoken):
+        noise = False if scripted else (
+            not llm_first and is_relisten_noise(intent, self._destinations,
+                                                in_window=time.time() < self._followup_until,
+                                                last_robot_text=last_spoken))
+        if noise:
             self.get_logger().info(
                 f"재청취 기각(무의미): '{text}' intent={intent.intent}")
             return
@@ -409,66 +539,130 @@ class LlmIntentNode(Node):
         #      지어낸 대꾸 대신 녹음된 고정 문구 하나만, 같은 상황이 이어지면 침묵.
         #      코드가 정한 문구("네?"·"계속 진행할게요"·LLM 실패 안내·확인 질문)는
         #      손대지 않는다. 미션이 말하는 상태 안내도 이 노드를 거치지 않아 그대로다.
-        if self._local and not llm_first:
+        if self._local and not llm_first and not scripted:
             intent = self._apply_misheard_rule(intent, text)
 
         # 2-3) 미션이 질문 중이면 못 알아들은 답에 LLM 은 말하지 않는다 — 미션이 같은 질문을
         #      한 번 다시 한다. 접근 질문·돌아서기 중 목적지 답의 확인 질문도 미션 몫이다
         #      (2026-10-08 미션 요청 반응표). 판단은 순수 함수(mission_question)가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
-        quieted = quiet_for_mission(intent, self._robot_state.dialog_state, last_text,
-                                    time.time() - last_t, [d.name for d in self._destinations],
-                                    spk_on=self._spk_on, spk_gate=spk_gate)
+        quieted = intent if scripted else quiet_for_mission(
+            intent, self._robot_state.dialog_state, last_text,
+            time.time() - last_t, [d.name for d in self._destinations],
+            spk_on=self._spk_on, spk_gate=spk_gate)
         silenced = quieted is not intent
         intent = quieted
 
+        # 2-4) 한 목소리(3-가, 설계 4.4) — 대답을 기다리는 문장은 말하지 않고 미션에 넘긴다. 미션이 말하고
+        #      질문 기록·듣기 요청을 낸다. 목적지 확인 질문은 미션이 confirm_prompt 로 묻는다(결정 A).
+        if self._hand_over:
+            # 확인 질문 없이 나온 '확정'은 제안으로 낮춘다 — 그 목적지의 확인 질문이 열려 있을 때만 확정이다
+            # (11-18 사용자). 낮추면 미션이 confirm_prompt 로 묻는다.
+            asked = demote_unasked_confirm(intent, question, self._destinations)
+            if asked is not intent:
+                self.get_logger().info(
+                    f"[확정 막음] 열린 확인 질문이 없어 제안으로 낮춤: dest={intent.matched_destination_id}")
+            intent = asked
+        history_line = (intent.ask_text or intent.reply) if scripted else intent.reply
+        if mission_asks_resume(intent):
+            # Task 3.4 — "다시 출발할까요?"는 미션이 묻는다. 미션이 실제로 물었는지 이 노드는 모른다(미션 answer_field 가
+            # 꺼져 있으면 묻지 않는다) — 기록에 그 질문을 적으면 다음 "다시 가자"가 확정 재개가 된다(_finalize 의
+            # pending_command). 소리 모드는 미션이 실제로 말한 줄이 /vica/tts_done 으로 들어온다.
+            history_line = ""
+        if self._hand_over:
+            handed = hand_over_question(intent, self._destinations)
+            if handed is not intent:
+                self.get_logger().info(
+                    f"[한목소리] 질문을 미션으로 kind={handed.ask_kind or 'confirm'} 글자='{history_line}'")
+            intent = handed
+
         # 3) VicaIntent 를 커스텀 메시지로 발행한다 (이동 명령이 아니라 '제안').
-        #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent.
+        #    resume 제안만 확인 응답("네")까지 보류한다 — should_forward_intent. 대답 칸이 켜졌으면
+        #    보류하지 않는다 — 미션이 "다시 출발할까요?"를 묻는다(Task 3.4).
         if should_forward_intent(intent):
             self._intent_pub.publish(intent_to_msg(intent))
             self._board.on_intent(intent)
+        elif intent.ask_text:
+            # 확인 전 resume 은 보류한 채 질문 문장만 실어 보낸다 — 말은 미션이 한다(결정 B).
+            self._intent_pub.publish(intent_to_msg(held_resume_carrier(intent)))
+            self.get_logger().info("resume 확언 대기 — 발행 보류 (질문은 미션이 말함)")
         else:
             self.get_logger().info("resume 확언 대기 — 발행 보류 (질문만 나감)")
 
         # 3-1) 이 노드가 말해야 하는 응답만 TTS 로 보낸다.
         #      navigate 확정 요청은 Mission Manager 가 게이트 판단 뒤에 말한다.
-        request = request_for_intent(intent)
+        #      미션 질문이 열려 있으면 사용자 질문의 답만 말한다(설계 4.4).
+        if not self._hand_over or voice_may_speak(intent, question):
+            request = request_for_intent(intent)
+        else:
+            request = None
+            if intent.reply:
+                self.get_logger().info(f"[한목소리] 질문 열림 — 음성 말 안 함: '{intent.reply}'")
         if request:
             self._tts_pub.publish(String(data=request))
 
         # 3-2) 지금 한 말이 질문이면 답을 들을 준비를 시킨다. 의도 종류만
         #      보면 LLM 이 자유 생성한 질문(unknown 등)을 놓친다 — 문장 꼴
         #      판정(expects_answer)을 함께 쓴다 (2026-08-28).
-        if (intent.need_confirm or intent.intent == "clarify"
-                or expects_answer(intent.reply)):
+        #      질문 넘김이 꺼졌을 때(옛 설치본)만 — 켜지면 듣기 요청은 미션이 질문과 함께 낸다.
+        if not self._hand_over and (intent.need_confirm or intent.intent == "clarify"
+                                    or expects_answer(intent.reply)):
             self._listen_pub.publish(Bool(data=True))
         self.get_logger().info(
             f"입력='{text}' -> intent={intent.intent} "
             f"matched={intent.matched_destination_id} safety={intent.safety_flag}"
         )
+        self.get_logger().info(question_record.log_line(question, time.time()))
+        if answer_field.on():
+            # 대답 칸 — 이 말에 채워진 대답 값을 한 줄로 남긴다. 미션으로 나가는 메시지에는 칸이 있으면 ros_convert 가
+            # 싣는다(Task 3.2).
+            self.get_logger().info(answer_field.log_line(intent, question))
 
         # 4) 대화 히스토리를 갱신한다 (다음 발화가 맥락을 기억하도록).
         #    소리 모드에서는 로봇 줄(AI)을 여기서 넣지 않는다 — 실제로 소리 난 말이
         #    /vica/tts_done 으로 들어와 _on_tts_done_text 가 넣는다(미션의 질문 포함).
-        if self._spoken_history or silenced:
+        human = [] if scripted and not text else [HumanMessage(text)]   # 대답 없음으로 다시 묻는 예약 질문 — 사용자 줄 없음
+        if (self._spoken_history or silenced or intent.intent == fixed_answers.REPEAT
+                or mission_asks_resume(intent)):
             # 2-3 에서 지운 대답은 기록에 빈 줄로 남기지 않는다 — 물어 둔 질문이 마지막 로봇
-            # 말로 남아야 다음 "네"가 그 질문의 답이 된다.
-            self._history.extend([HumanMessage(text)])
+            # 말로 남아야 다음 "네"가 그 질문의 답이 된다. 미션에 보낸 "다시 말해줘"도 같다 — 빈 로봇 줄이 남으면 다시 물은
+            # 확인 질문의 "음"이 확인 대기 없는 승낙(affirm)이 돼 출발한다(4.2 검토 C1, 09-28 '음'으로는 출발 안 함).
+            # 미션에 보낸 재개 제안(Task 3.4 — "다시 출발할까요?"는 미션이 묻는다)도 같다 — 사람 줄만(최종 검토 Minor).
+            self._history.extend(human)
         else:
-            self._history.extend([HumanMessage(text), AIMessage(intent.reply)])
+            self._history.extend([*human, AIMessage(history_line)])   # 넘긴 질문도 이 사람에게 한 말
 
     def _on_listen_state_for_resume(self, msg: String) -> None:
         """듣기 창이 빈손으로 닫혔다. 마지막 로봇 말이 음성이 쥔 "다시 출발할까요?"이고 아직
-        다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다."""
-        if not (msg.data or "").startswith("empty"):
+        다시 묻지 않았으면 한 번 더 묻는다(2026-10-08 다시 묻기). 그래도 없으면 선 채로 둔다.
+        대답 칸이 켜졌으면(Task 3.4) 이 질문은 미션이 쥐므로 다시 묻지 않는다(예약 질문의 대답 없음은 그대로)."""
+        state = msg.data or ""
+        if not state.startswith("empty"):
             return
+        # 시설 예약(2026-11-19 사용자): 예약 질문에 대답이 없으면 같은 질문을 한 번 다시 넘기고, 그래도 없으면
+        # "예약이 취소되었습니다."를 말한다. 호출 기각(empty:wake-…)은 대답 창이 닫힌 것이 아니라 세지 않는다.
+        if (self._reservation is not None and self._reservation.active
+                and not state.startswith("empty:wake-")):
+            gate = start_gate(self._robot_state.dialog_state, self._question, self._reservation.asked_text)
+            out = self._reservation.on_silence(gate)
+            if out is not None:
+                self.get_logger().info(f"[예약] 대답 없음({state[:24]}) — {'다시 묻는다' if out.kind else '취소'}")
+                self._reservation_say(out, "")
+                return
+        if answer_field.on():
+            return   # Task 3.4 — "다시 출발할까요?"는 미션이 쥔다. 대답 없음의 다시 묻기도 미션 시계가 한다.
         last_t, last_text = self._robot_recent[-1] if self._robot_recent else (0.0, "")
         if not should_reask_resume_on_silence(self._history.messages, last_text,
                                               time.time() - last_t):
             return
         self.get_logger().info("다시 출발 확인 — 대답이 없어 한 번 다시 묻는다")
-        self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
-        self._listen_pub.publish(Bool(data=True))
+        if self._hand_over:
+            # 말은 미션이 한다(결정 B) — 보류한 resume 대신 질문 문장만 실어 보낸다.
+            ask = VicaIntent(intent="resume", need_confirm=True, ask_text=RESUME_CONFIRM, ask_kind="yesno")
+            self._intent_pub.publish(intent_to_msg(held_resume_carrier(ask)))
+        else:
+            self._tts_pub.publish(String(data=build_request(RESPONSE, RESUME_CONFIRM)))
+            self._listen_pub.publish(Bool(data=True))
         if not self._spoken_history:
             self._history.extend([AIMessage(RESUME_CONFIRM)])
 
@@ -545,6 +739,8 @@ class LlmIntentNode(Node):
         self._reload_destinations_if_changed()
         if self._history.begin_turn(time.time()):
             self.get_logger().info("대화가 끊겨 이전 맥락을 비웠다")
+            if self._reservation is not None:
+                self._reservation.drop()
         # A) 이력 스냅샷은 parse_intent_audio 호출 '직전'에 찍어 turn 에 담는다.
         #    audio 경로가 whisper 텍스트 경로보다 느리면, 그 사이 텍스트 경로가
         #    history 에 [Human(heard), AI(reply)] 를 먼저 쌓을 수 있다 — 그 뒤의
@@ -552,15 +748,21 @@ class LlmIntentNode(Node):
         #    미래'의 문맥으로 다시 해석하게 된다. _shadow_text 는 이 스냅샷만 쓴다.
         history_snapshot = self._history.messages
         robot_state = self._robot_state
-        self._audio_turn.update(history=history_snapshot, robot_state=robot_state)
+        # 이 말이 들어올 때 열려 있던 질문 — 뒤따라 오는 받아쓴 글자(그림자 갈래)도 같은 질문으로 규칙을 본다(3-나-2).
+        question = self._question
+        self._audio_turn.update(history=history_snapshot, robot_state=robot_state, question=question)
+        # 화자 확인 단서(원칙 19) — 값은 읽기만 한다. _publish_intent 가 같은 값으로 의도에 판정을 붙인다.
+        situation = intent_recut.with_speaker(self._situation_block(), (self._audio_spk or {}).get("verdict"))
         self._thinking_pub.publish(Bool(data=True))
         call_started = time.monotonic()
         try:
             intent, heard, dt, info = parse_intent_audio(
                 pcm, self._destinations, history=history_snapshot, robot_state=robot_state,
-                situation=self._situation_block(),
+                situation=situation,
                 directory_block=format_directory_block(
-                    self._directory, self._robot_state.current_building, self._robot_state.current_floor))
+                    self._directory, self._robot_state.current_building, self._robot_state.current_floor),
+                question=question,
+                tool_trail=self._reservation.tool_trail() if self._reservation is not None else None)
         except Exception as exc:
             # 연결 오류(접속 실패·끊김)면 이 발화부터 글자 경로를 바로 로컬 LLM 으로 — 클라우드 글자 LLM 도
             # 같은 인터넷이라 VICA_LLM_CLOUD_TIMEOUT 기다려 실패할 뿐이다(2026-10-24 사용자). 응답 지연·그 밖의
@@ -610,24 +812,63 @@ class LlmIntentNode(Node):
         # 모델 전결(2026-09-20): 빈 말·환각·에코 판정도 모델 몫이다 — 사람 말이
         # 아니면 모델이 unknown + 빈 reply 로 답하고, 그건 침묵으로 발행된다.
         # 텍스트 경로가 이 발화를 다시 처리하지 않도록 handled 로 표시한다.
-        self._audio_turn.update(handled=True, intent=intent, heard=heard, dt=dt)
         usage = info.get("usage") or {}
         audio_tok = usage.get("audio_tokens", 0)
         text_tok = usage.get("text_tokens", 0)
         out_tok = usage.get("output_tokens", 0)
         cached_tok = usage.get("cached_tokens", 0)
-        self.get_logger().info(
-            f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
-            f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
-            f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
-            f"cached={cached_tok} clip={clip_sec:.2f}s")
-        self._publish_intent(intent, heard, llm_first=True)
+        if isinstance(intent, ReserveCall):
+            given = " ".join(f"{k}={v}" for k, v in vars(intent).items() if v and k != "name") or "-"
+            self.get_logger().info(
+                f"[RT] heard='{heard}' intent=reserve_facility {given} name={'있음' if intent.name else '-'} "
+                f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
+                f"cached={cached_tok} clip={clip_sec:.2f}s")
+        else:
+            self.get_logger().info(
+                f"[RT] heard='{heard}' intent={intent.intent} dest={intent.matched_destination_id or '-'} "
+                f"nc={intent.need_confirm} conf={intent.confidence:.2f} reply='{intent.reply[:30]}' "
+                f"src={info['src']} dt={dt:.2f}s tokens={audio_tok}/{text_tok}/{out_tok} "
+                f"cached={cached_tok} clip={clip_sec:.2f}s")
+        # 시설 예약(설계 2026-11-18 5.3): Realtime 이 reserve_facility 를 불렀거나, 진행 중인 예약이 이 대답을 받는다.
+        # 예약 질문이 열려 있어도 소리 경로는 평소대로 Realtime 이 해석한다 — 여기는 그 결과를 가르기만 한다.
+        flow_out: FlowOutput | None = None
+        if self._reservation is not None or isinstance(intent, ReserveCall):
+            flow = self._reservation
+            gate = (start_gate(self._robot_state.dialog_state, self._question, flow.asked_text)
+                    if flow is not None else "busy")
+            flow_out, intent = handle_result(flow, intent, heard, gate=gate, tools_used=audio_tools_active())
+        # 그림자 비교·멈춤 중복 방지가 읽는 칸 — 예약 흐름이 말하면 그 의도를, 아무것도 안 내면 None 을 둔다.
+        shown = to_intent(flow_out) if flow_out is not None else intent
+        self._audio_turn.update(handled=True, intent=shown, heard=heard, dt=dt)
+        if flow_out is not None:
+            self._reservation_say(flow_out, heard)
+        elif intent is not None:
+            self._publish_intent(intent, heard, llm_first=True)
+        else:
+            self.get_logger().info(f"[예약] 말하지 않는 상태 — 아무것도 내지 않음: heard='{heard}'")
 
     def _situation_block(self) -> str:
         """지시문 맨 뒤 [지금 상황]: 미션 대장(P1)이 오면 그것, 옛 미션이면 goal-event 상황판."""
-        awaiting = time.time() < self._followup_until
+        # 대답 칸이 켜졌으면 시간 기준의 "방금 질문하고 답을 기다리는 중" 줄을 내지 않는다 — 해석기가 질문 기록으로
+        # '로봇이 물은 질문' 줄을 붙인다(설계 2026-11-18 4.2: 질문이 열려 있는 동안만 참).
+        awaiting = time.time() < self._followup_until and not answer_field.on()
         text = render_ledger(self._robot_state, awaiting_answer=awaiting, now_text=time.strftime("%H:%M"))
-        return text or self._board.render(awaiting_answer=awaiting)
+        text = text or self._board.render(awaiting_answer=awaiting)
+        # 진행 중인 예약(설계 2026-11-18 5.3) — 상태 한 줄만. LLM 이 이름·날짜 대답을 그 예약에 잇게.
+        return join_situation(text, self._reservation.situation_line() if self._reservation is not None else "")
+
+    def _log_transcript_rule(self, text: str, turn: dict) -> None:
+        """소리 모드: 받아쓴 글자가 통째로 짧은 대답(네/아니요 · N분)이면 그 규칙의 대답과 Realtime 이 낸 대답을
+        한 줄로 남긴다(3-나-2 1단계 — 기록만, 내보내는 것은 없다). 2단계가 이 줄로 둘이 얼마나 갈리는지 본다."""
+        question = turn.get("question")
+        ruled = answer_field.short_answer(text, question)
+        if ruled is None:
+            return
+        heard = turn.get("intent")
+        self.get_logger().info(
+            f"[대답] 받아쓴 글자 규칙={ruled[0]}/{ruled[1] or '-'} · "
+            f"Realtime={getattr(heard, 'answer', '') or '-'}/{getattr(heard, 'answer_value', '') or '-'} · "
+            f"kind={question.kind} · 글자='{text}'")
 
     def _shadow_text(self, text: str, turn: dict) -> None:
         """audio 모드에서 같은 발화의 텍스트 경로 결과를 로그로만 남긴다(발행 안 함).
@@ -653,7 +894,11 @@ class LlmIntentNode(Node):
             started = time.monotonic()
             try:
                 shadow = parse_intent(text, destinations, history=history, robot_state=robot_state)
-                text_part = f"{shadow.intent}/{shadow.matched_destination_id or '-'} {time.monotonic() - started:.2f}s"
+                if isinstance(shadow, ReserveCall):
+                    text_part = f"reserve_facility/- {time.monotonic() - started:.2f}s"
+                else:
+                    text_part = (f"{shadow.intent}/{shadow.matched_destination_id or '-'} "
+                                 f"{time.monotonic() - started:.2f}s")
             except Exception as exc:
                 text_part = f"실패({type(exc).__name__}) {time.monotonic() - started:.2f}s"
             self.get_logger().info(

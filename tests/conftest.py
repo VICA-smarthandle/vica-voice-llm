@@ -32,9 +32,32 @@ _DEFAULTS = {
     "VICA_LISTEN_BLIP_VOID_SEC": "0.32",
     "VICA_CONFIRM_WINDOW_SEC": "30.0",
     "VICA_APPROACH_MIN_RMS": "",     # 접근 대답 수음 최소(2026-10-15) — 기본은 줄 없음
+    # 마이크 점검기가 운영 .env 에 저장하는 나머지 값(src/env_file.py KEYS). 2026-11-21 앱 점검이
+    # 수음·짧은 답 최소를 0.027 로 저장하자 test_wakeword_followup 4건이 무너졌다. "" = 줄 없음(코드 기본값).
+    "VICA_LISTEN_MIN_RMS": "",
+    "VICA_SHORT_ANSWER_MIN_RMS": "",
+    "VICA_LISTEN_BAND_MIN": "",
+    "VICA_WAKE_THRESHOLD": "",
+    "VICA_EMERGENCY_SINGLE_FRAME": "",
+    "VICA_MIC_AGC_DESIRED": "0.010",   # 이 키만 줄이 없을 때의 기본이 0.010 이다(ros_wakeword_node)
+    "VICA_MIC_AGC_MAX_GAIN": "",
+    "VICA_MIC_GAMMA_ETAIL": "",
+    "VICA_MIC_NLATTEN": "",
     # 귀 받아쓰기 엔진(2026-10-15) — 운영 .env 가 qwen 이어도 시험은 기본 whisper 로 돈다.
     "VICA_STT_ENGINE": "whisper",
     "VICA_VERIFY_STT_ENGINE": "whisper",
+    "VICA_SW_AEC": "off",   # 운영 .env 가 on 이어도 시험은 끈 채로 돈다
+    # LLM 도구 출력(2026-11-18) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_TOOLS_TEXT": "off",
+    "VICA_TOOLS_AUDIO": "off",
+    # 대답 칸(2026-11-19, 3-나-2 1단계) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_ANSWER": "off",
+    # 로컬(Ollama)에도 질문 줄·대답 칸을 줄지(2026-11-21) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_ANSWER_LOCAL": "off",
+    # 의도 재단(2026-11-20) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_RECUT": "off",
+    # 정해진 대답(2026-11-21, 4단계) — 운영 .env 가 on 이어도 시험은 기본(꺼짐)으로 돈다.
+    "VICA_TALK": "off",
 }
 
 for _key, _value in _DEFAULTS.items():

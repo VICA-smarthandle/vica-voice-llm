@@ -11,6 +11,10 @@
     # 구운 것은 건너뛴다(--force 면 다시).
     PYTHONPATH=... ~/venvs/cosyvoice/bin/python scripts/bake_one_cv.py --mission
 
+    # 비카에 대한 정해진 대답 여덟 문장(src/vica_facts.ABOUT_SENTENCES, 2026-11-22 Task N3)을 같은 방식으로 —
+    # 파일 이름 vica_about_<주제>.wav. 이미 같은 글자로 구운 것은 건너뛴다(--force 면 다시).
+    PYTHONPATH=... ~/venvs/cosyvoice/bin/python scripts/bake_one_cv.py --about
+
 첫 인자는 assets/baked/ 의 파일명(확장자 없이), 둘째는 문구. 프롬프트
 참조 음성(F2)은 supertonic 으로 그 자리에서 만들어 쓴다(정본 목소리).
 manifest.json 도 함께 갱신한다(한 문장 구울 때마다 — 중간에 끊겨도 앞의 것은 남는다).
@@ -104,6 +108,20 @@ def _takes(args: list[str]) -> None:
             print(f"후보: {name}__take{k}.wav ({sec:.1f}s) '{table[name]}'", flush=True)
 
 
+def _about_ments() -> dict[str, str]:
+    """비카에 대한 정해진 대답(src/vica_facts.ABOUT_SENTENCES, Task N3) — 파일 이름(확장자 없이) → 문장."""
+    from src.vica_facts import ABOUT_SENTENCES
+    return {f"vica_about_{topic}": text for topic, text in ABOUT_SENTENCES.items()}
+
+
+def _todo(table: dict[str, str], force: bool) -> list[tuple[str, str]]:
+    """묶음 가운데 구울 것 — manifest 에 같은 글자로 있고 파일도 있으면 건너뛴다(force 면 전부)."""
+    manifest = json.load(open(BAKED / "manifest.json"))
+    return [(name, text) for name, text in table.items()
+            if force or manifest.get(f"{name}.wav") != text
+            or not (BAKED / f"{name}.wav").exists()]
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args[:1] == ["--takes"]:
@@ -113,12 +131,14 @@ def main() -> None:
     args = [a for a in args if a != "--force"]
     if args[:1] == ["--mission"]:
         from src.mission_phrases import baked_mission_ments
-        manifest = json.load(open(BAKED / "manifest.json"))
-        items = [(name, text) for name, text in baked_mission_ments().items()
-                 if force or manifest.get(f"{name}.wav") != text
-                 or not (BAKED / f"{name}.wav").exists()]
+        items = _todo(baked_mission_ments(), force)
         if not items:
             print("굽을 것 없음 — 미션 문장이 전부 같은 글자로 구워져 있다")
+            return
+    elif args[:1] == ["--about"]:
+        items = _todo(_about_ments(), force)
+        if not items:
+            print("굽을 것 없음 — 비카에 대한 문장이 전부 같은 글자로 구워져 있다")
             return
     else:
         items = [(args[0], args[1])]

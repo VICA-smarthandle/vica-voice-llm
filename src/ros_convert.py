@@ -39,7 +39,22 @@ def intent_to_msg(intent: VicaIntent) -> VicaIntentMsg:
         msg.speaker_verdict = intent.speaker_verdict
         msg.speaker_score = float(intent.speaker_score)
         msg.speaker_score_joined = float(intent.speaker_joined)
+    if supports_ask_fields(msg):
+        # 질문 넘김 칸 — 옛 설치본에는 없다(3-가).
+        msg.ask_text = intent.ask_text
+        msg.ask_kind = intent.ask_kind
+        msg.ask_option_ids = list(intent.ask_option_ids)
+    if hasattr(msg, "question_id"):
+        # 대답 칸 — 옛 설치본에는 없다(3.2). 미션은 열린 질문의 id 와 같을 때만 대답으로 읽는다.
+        msg.question_id = intent.question_id
+        msg.answer = intent.answer
+        msg.answer_value = intent.answer_value
     return msg
+
+
+def supports_ask_fields(msg) -> bool:
+    """이 VicaIntent 메시지에 질문 넘김 칸이 있나 — 없으면(옛 설치본) 음성이 질문을 직접 말한다."""
+    return hasattr(msg, "ask_text")
 
 
 def msg_to_intent(msg: VicaIntentMsg) -> VicaIntent:

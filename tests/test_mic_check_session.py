@@ -149,7 +149,7 @@ def test_double_record_is_ignored(tmp_path):
     s, hw, msgs = make(tmp_path)
     s.handle({"cmd": "record"})
     s.handle({"cmd": "record"})
-    assert last(msgs, "toast")["text"].startswith("지금은")
+    assert last(msgs, "toast")["text"] == "지금은 녹음 중입니다 · 끝난 뒤 다시 누르세요"
     feed(s, hw, NOISE, 188)
     assert len(s.meas.noise) == 3 and s.step.key == "call"
 
@@ -157,10 +157,10 @@ def test_double_record_is_ignored(tmp_path):
 def test_set_value_out_of_range_ignored(tmp_path):
     s, hw, msgs = make(tmp_path)
     before = s.values
-    for cmd in ({"cmd": "set", "key": "wake_threshold", "value": 0.95},
+    for cmd in ({"cmd": "set", "key": "wake_threshold", "value": 0.96},     # 11-21 한계 0.95 바로 위
                 {"cmd": "set", "key": "listen_min_rms", "value": "abc"},
                 {"cmd": "set", "key": "모르는값", "value": 1},
-                {"cmd": "set", "key": "agc", "value": 0.02},
+                {"cmd": "set", "key": "agc", "value": 0.025},              # 고르는 값(0.003~0.020)에 없음
                 {"cmd": "set", "key": "echo", "value": "엄청 셈"}):
         s.handle(cmd)
         assert s.values == before
@@ -233,7 +233,9 @@ def test_save_and_restore(tmp_path):
     s.handle({"cmd": "save"})
     assert "VICA_WAKE_THRESHOLD=0.65" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert s.env_values.wake_threshold == 0.65 and (tmp_path / "bk").is_dir()
+    assert last(msgs, "toast")["text"] == "저장했습니다 · 음성 노드를 다시 켜야 적용됩니다"
     s.handle({"cmd": "restore"})
+    assert last(msgs, "toast")["text"].endswith(" 으로 되돌렸습니다 · 음성 노드를 다시 켜야 적용됩니다")
     assert "VICA_WAKE_THRESHOLD" not in read_env(tmp_path / ".env")      # 저장이 넣은 줄은 사라진다(기본값)
     assert values_from(read_env(tmp_path / ".env")) == original_values
     assert s.values.wake_threshold == 0.70 and s.env_values.wake_threshold == 0.70
@@ -357,6 +359,7 @@ def test_chip_problems_block_recording_and_robot(tmp_path):
     s.chip_problems = ["AGC 쓰기 실패"]
     s.handle({"cmd": "record"})
     assert "칩에 .env 값을 쓰지 못해" in last(msgs, "toast")["text"] and s.recording_kind is None
+    assert last(msgs, "toast")["text"].endswith(" · 끝내기 뒤 다시 시작하세요")
     go_to_robot(s)
     s.handle({"cmd": "robot"})
     assert "AGC 쓰기 실패" in last(msgs, "toast")["text"] and not s.robot_running
@@ -471,13 +474,16 @@ def test_set_max_gain_writes_chip_and_needs_rerecord(tmp_path):
 def test_status_offers_gain_choices_and_new_names(tmp_path):
     s, hw, msgs = make(tmp_path)
     st = last(msgs, "status")
-    assert st["gain_choices"] == [2.0, 4.0, 8.0, 31.6]
+    assert st["gain_choices"] == [1.0, 2.0, 4.0, 8.0, 16.0, 31.6]
+    assert st["agc_choices"] == [0.003, 0.005, 0.007, 0.01, 0.014, 0.02]
+    assert list(st["echo_choices"])[:5] == ["weak", "mid", "strong", "max", "factory"]
+    assert st["echo_choices"]["weak"] == "약 (0.5·켜짐)" and st["echo_choices"]["max"] == "최대 (3.0·켜짐)"
     assert st["values"]["agc_max_gain"] is None and st["values"]["band_min"] is None
     assert st["env_keys"]["agc_max_gain"] == "VICA_MIC_AGC_MAX_GAIN"
     assert st["env_keys"]["approach_min_rms"] == "VICA_APPROACH_MIN_RMS"
     assert st["env_keys"]["band_min"] == "VICA_LISTEN_BAND_MIN"
-    assert st["ranges"]["band_min"] == [0.001, 0.008, 0.0005]
-    assert st["ranges"]["listen_min_rms"] == [0.005, 0.04, 0.0005]
+    assert st["ranges"]["band_min"] == [0.0005, 0.03, 0.0005]
+    assert st["ranges"]["listen_min_rms"] == [0.002, 0.1, 0.0005]
     assert st["short_over_listen"] == 1.0
 
 

@@ -51,7 +51,7 @@ class DestinationData(BaseModel):
 # 검증한 뒤에만 need_confirm=False 로 내려가고, 실제 실행은 Mission Manager 의
 # MissionCommand 서비스(관리자 앱과 같은 경로)가 상태를 보고 최종 판정한다.
 # 즉시 정지(멈춰·정지)는 여기 없다 — 긴급어 필터가 LLM 이전에 처리한다.
-VicaIntentType = Literal[
+BaseIntentType = Literal[
     "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
     # 로봇이 직전에 던진 질문에 대한 짧은 답 (2026-08-25, 사람 접근 인수).
     # 어느 질문의 답인지는 담지 않는다 — Mission 이 상태로 판정한다.
@@ -63,6 +63,28 @@ VicaIntentType = Literal[
     # 관리자 호출(도움 요청, 2026-10-15 설계). 직원·관리자의 도움을 원함 — 판단은 LLM 만 한다
     # (키워드 규칙 없음). 확인 질문·안내는 미션이 하므로 reply="". VicaIntent.msg 는 문자열이라 그대로.
     "help",
+]
+# 의도 재단(2026-11-20, 원칙 9·10) — 나에게 한 말이 아님·대화 끝내기. LLM 에게는 VICA_RECUT=on 일 때만 보인다.
+# 재단 초안(_RecutDraft)의 값이다 — 이 글자·순서가 재단 출력 스키마다(2·3단계 측정으로 고정, 4단계가 바꾸지 않는다).
+RecutIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+]
+# 정해진 대답(2026-11-21 4단계, 원칙 28) — repeat("다시 말해줘")는 미션에 간다: 미션이 쥔 질문을 다시 말한다.
+# VicaIntent.intent 는 스위치와 상관없이 이 넓은 형을 받는다.
+VicaIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+    "repeat",
+]
+# LLM 이 고르는 값(VICA_TALK=on, 원칙 28·29) — places("어디 갈 수 있어?")는 해석기가 question 으로 바꿔 미션에 가지 않는다.
+TalkIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+    "repeat", "places",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
@@ -90,6 +112,17 @@ class VicaIntent(BaseModel):
     speaker_verdict: str = ""
     speaker_score: float = -1.0
     speaker_joined: float = -1.0
+    # 질문 넘김(설계 2026-11-14 4.4, 3-가) — LLM 이 만들지 않는다. one_voice 가 질문 문장을 reply 에서 옮긴다.
+    # 미션이 이 문장을 말하고 질문 기록을 낸다. 없으면 "" · [].
+    ask_text: str = ""
+    ask_kind: str = ""
+    ask_option_ids: list[str] = Field(default_factory=list)
+    # 대답 칸(설계 2026-11-18 answer-interpretation, 3-나-2) — answer_field.fill 이 채운다: 읽을 때 열려 있던 질문 id,
+    # 그 질문에 대한 대답(yes·no·destination·choice·minutes·other·unclear), 값(목적지 id · 분). 1단계에서는 로그·재생
+    # 채점에만 쓰고 메시지로는 나가지 않는다(ros_convert 는 싣지 않는다). 없으면 "".
+    question_id: str = ""
+    answer: str = ""
+    answer_value: str = ""
 
 
 class EmergencyEvent(BaseModel):
@@ -139,7 +172,14 @@ def should_forward_intent(intent) -> bool:
     이미 굴러가는 결함이 됐다(2026-08-26 실기). 질문의 답("네")은 파서의
     확인 단축이 확정 resume(need_confirm=False)으로 만들어 그때 보낸다.
     취소는 미션 안에 확인 게이트가 있으므로(실주행 검증 경로) 그대로 보낸다.
+
+    대답 칸이 켜졌으면(.env VICA_ANSWER=on, Task 3.4) resume 제안도 보낸다 — 미션(파라미터 answer_field)이
+    "다시 출발할까요?"를 묻고 대답을 받는다(원칙 3 · 9, 11-18 설계 4.4·4.5).
     """
+    from .answer_field import on as answers_on   # 늦은 import — answer_field 가 이 모듈을 import 한다
+
+    if answers_on():
+        return True
     return not (
         getattr(intent, "intent", "") == "resume"
         and bool(getattr(intent, "need_confirm", False))

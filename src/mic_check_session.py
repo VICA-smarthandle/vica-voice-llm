@@ -1,6 +1,6 @@
 """마이크 현장 점검기의 진행 — 단계·녹음·실시간 귀·재채점·값 고치기·저장·기록. 하드웨어와 웹은 밖에서 넣는다.
 
-도구(tools/mic_venue_check.py)가 마이크·칩·스피커·휴대폰 중계를 붙이고, 시험은 가짜를 붙인다. 메서드는 모두
+도구(tools/mic_venue_check.py)가 마이크·칩·스피커·앱 중계를 붙이고, 시험은 가짜를 붙인다. 메서드는 모두
 한 스레드(처리 스레드)에서 부른다. 예외는 6단계 재생 루틴 하나로, 그것만 다른 스레드에서 귀의
 note_robot_speech·set_speaking 을 부른다(⑫ 노드도 ROS 스레드가 같은 일을 한다). 시각은 벽시계가 아니라
 조각 시계(0.08 s 씩)다 — 재채점과 실시간이 같은 시간 규칙을 쓰게.
@@ -280,7 +280,7 @@ class Session:
             return
         if self._busy():
             what = "로봇이 말하는" if self._robot_running else "녹음"
-            self._toast(f"지금은 {what} 중입니다. 끝난 뒤 다시 누르세요.")
+            self._toast(f"지금은 {what} 중입니다 · 끝난 뒤 다시 누르세요")
             return
         action()
 
@@ -309,7 +309,7 @@ class Session:
         if not self.chip_problems:
             return False
         self._toast("칩에 .env 값을 쓰지 못해 점검을 시작하지 않습니다: " + "; ".join(self.chip_problems)
-                    + " — 도구를 다시 실행하세요.")
+                    + " · 끝내기 뒤 다시 시작하세요")
         return True
 
     def _start_recording(self) -> None:
@@ -649,7 +649,7 @@ class Session:
         self.env_values = self.values
         self._saves.append({"time": self.clock().isoformat(timespec="seconds"), "backup": str(backup),
                             "lines": [change_line(c, self._note()) for c in changes]})
-        self._toast("저장했습니다. ⑫를 다시 켜야 적용됩니다.")
+        self._toast("저장했습니다 · 음성 노드를 다시 켜야 적용됩니다")
         self._publish_status()
         self._write_record()
 
@@ -667,7 +667,7 @@ class Session:
         self.env_values = self.values = restored
         self._apply_thresholds(restored)
         self._saves.append({"time": self.clock().isoformat(timespec="seconds"), "restored_from": str(src)})
-        self._toast(f"{src.name} 으로 되돌렸습니다. ⑫를 다시 켜야 적용됩니다.")
+        self._toast(f"{src.name} 으로 되돌렸습니다 · 음성 노드를 다시 켜야 적용됩니다")
         self._publish_status()
         self._publish_results()
         self._write_record()

@@ -73,6 +73,9 @@ class TestSentences:
         assert mp.WAIT_SPOT_BLOCKED == ml.MSG_WAIT_SPOT_BLOCKED
         assert mp.WAIT_EXPIRED == ml.MSG_WAIT_EXPIRED
         assert mp.ESTOP_WAKE == ml.MSG_ESTOP_WAKE
+        assert mp.DOCK_WAKE == ml.MSG_DOCK_WAKE   # 도킹 중 호출(2026-11-18) — ROS feat/docking 과 같은 날 올린다
+        assert mp.DOCK_WAIT == ml.MSG_DOCK_WAIT   # 나오다 멈춘 상태의 호출(2026-11-19)
+        assert mp.DOCK_GO == ml.MSG_DOCK_GO       # 도킹 시작 안내(2026-11-19)
         assert mp.OBSTACLE_AVOID == ml.MSG_OBSTACLE_AVOID   # 주행 중 장애물 안내(2026-10-09)
         assert mp.OBSTACLE_SLOW == ml.MSG_OBSTACLE_SLOW
         assert mp.OBSTACLE_STOP == ml.MSG_OBSTACLE_STOP     # 정지 문장(2026-10-10)
@@ -82,6 +85,7 @@ class TestSentences:
         assert mp.APPROACH_REASK == ml.MSG_APPROACH_REASK   # 접근 질문 다시 묻기(2026-10-09)
         assert mp.APPROACH_UNANSWERED == ml.MSG_APPROACH_UNANSWERED   # 대답 없이 물러날 때(2026-10-09 '나')
         assert mp.WAIT_FINISH_ASK == ml.MSG_WAIT_FINISH_ASK
+        assert mp.DISMISS_ACK == ml.MSG_DISMISS_ACK         # 대화 끝내기 끝맺는 말(원칙 14)
         assert replies.WAKE_GREETING == ml.MSG_WAKE_GREETING
         # 빈 확인 문구를 미션이 직접 물을 때의 문장 = 음성 기본 확인 문구(미리 합성됨).
         dest = DestinationData(id="x", name="식당")
@@ -105,6 +109,25 @@ class TestSentences:
         mission.add(ml.MSG_WAIT_SPOT_DEFAULT.format(place=ml.WAIT_PLACE_AT_DESTINATION))
         assert set(mp.wait_front_sentences().values()) == mission
         assert len(mission) == 6
+
+    def test_p8_reask_sentences_match_mission(self, ml):
+        """세 단계 되묻기(원칙 8, 미션 reask_ladder) — ① 은 음성 RETRY_PROMPT 와 같은 글자(사본을 따로 두지 않는다), ② 는 사본."""
+        assert replies.RETRY_PROMPT == ml.MSG_REASK_RETRY
+        assert mp.REASK_LOUDER == ml.MSG_REASK_LOUDER
+
+    def test_p3_resume_confirm_matches_mission(self, ml):
+        """Task 3.4 — 미션이 묻는 "다시 출발할까요?"는 음성 RESUME_CONFIRM 과 같은 글자(사본을 따로 두지 않는다)."""
+        assert replies.RESUME_CONFIRM == ml.MSG_RESUME_CONFIRM
+
+    def test_p8_reask_louder_is_prewarmed(self):
+        """② "더 크게, 또박또박"은 녹음이 없어 미리 합성한다(DISMISS_ACK 와 같은 목록)."""
+        assert mp.REASK_LOUDER in mp.standalone_prewarm([])
+        assert mp.REASK_LOUDER not in mp.baked_mission_ments().values()
+
+    def test_p14_dismiss_ack_is_prewarmed(self):
+        """원칙 14 — 끝맺는 말은 미리 합성한다(녹음은 아직 안 구움 — baked_mission_ments 에는 없다)."""
+        assert mp.DISMISS_ACK in mp.standalone_prewarm([])
+        assert mp.DISMISS_ACK not in mp.baked_mission_ments().values()
 
     def test_switch_question_is_prewarmed(self):
         dests = [DestinationData(id="x", name="식당", confirm_prompt="식당으로 안내해드릴까요?")]
@@ -180,7 +203,7 @@ class TestDialogWords:
         states = {s.value for s in ml.State} | {ml.DIALOG_GRIP_WAIT, ml.DIALOG_PAUSED_HANDLE}
         missing = states - set(DIALOG_KO)
         assert not missing, f"DIALOG_KO 에 없는 미션 상태: {sorted(missing)}"
-        assert len(states) == 20
+        assert len(states) == 25   # 경비(순찰) 상태 5개가 더해졌다(2026-11-14, patrolling·patrol_dwell·patrol_alarm·patrol_light·patrol_paused)
 
 
 class TestBaked:
@@ -195,3 +218,9 @@ class TestBaked:
     def test_wake_greeting_is_baked(self):
         manifest = json.loads((ASSETS_DIR / "baked" / "manifest.json").read_text(encoding="utf-8"))
         assert replies.WAKE_GREETING in manifest.values()
+
+    def test_p3_resume_confirm_is_baked(self):
+        """미션이 묻는 "다시 출발할까요?"(Task 3.4)도 구운 녹음을 쓴다 — 그때 합성으로 늦어지지 않는다."""
+        manifest = json.loads((ASSETS_DIR / "baked" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest.get("reply_resume_confirm.wav") == replies.RESUME_CONFIRM
+        assert (ASSETS_DIR / "baked" / "reply_resume_confirm.wav").exists()
