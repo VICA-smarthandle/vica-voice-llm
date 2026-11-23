@@ -4,8 +4,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from .ko_numbers import korean_numbers_to_digits
 from .schema import DestinationData
+from .ko_numbers import korean_numbers_to_digits
 
 
 def _normalize(text: str) -> str:

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-
 from .ko_numbers import korean_numbers_to_digits
 
 NO_SPEECH_THRESHOLD = 0.6

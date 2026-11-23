@@ -22,12 +22,19 @@ WAIT_BEACON = "비카가 대기 중입니다."
 WAIT_SPOT_BLOCKED = "대기 자리가 막혀 입구 앞에서 기다리겠습니다."
 WAIT_EXPIRED = "대기 시간이 종료되어 제자리로 돌아갑니다."
 WAIT_FINISH_ASK = "네, 어디로 모실까요?"
+SPK_REASK = "확인을 위해 한 번 더 말씀해 주세요"
+SPK_IDENTITY = "아까 {dest}에 가자고 하신 사용자님이신가요?"
 ESTOP_WAKE = "지금은 비상 멈춤 상태입니다."
+DOCK_WAKE = "비카가 밥 먹고 있어요. 밥 먹을때는 개도 안 건드린다는 속담이 있죠"
+DOCK_GO = "도킹 위치로 복귀합니다"
+DOCK_WAIT = "비카가 아직 밥을 덜 먹었어요. 조금만 기다려주세요"
 OBSTACLE_AVOID = "앞에 장애물이 있어 비켜갈게요."
 OBSTACLE_SLOW = "앞에 장애물이 있어 감속할게요."
 OBSTACLE_STOP = "앞에 장애물이 있어 정지합니다."
 APPROACH_REASK = "안내를 받으시겠어요?"
 APPROACH_UNANSWERED = "필요하시면 '비카야'라고 불러 주세요."
+DISMISS_ACK = "네, 필요하시면 '비카야'라고 불러 주세요."
+REASK_LOUDER = "죄송합니다. 더 크게, 또박또박 말씀해 주세요."
 
 WAIT_NEED_ASK = "안내가 필요 없으신가요?"
 CONFIRM_SWITCH = "네, {prompt}"
@@ -42,6 +49,16 @@ HELP_SENTENCES = (
     "도움 요청을 취소했습니다.",
     "지금은 도움 요청을 보낼 수 없습니다",
 )
+PATROL_INTRUDER = "침입자 발생"
+PATROL_LIGHT = "불 켜짐 감지"
+PATROL_STARTED = "경비 모드를 시작합니다."
+PATROL_ENDED = "경비 모드를 종료합니다."
+PATROL_MENTS = {
+    "mission_msg_patrol_intruder": PATROL_INTRUDER,
+    "mission_msg_patrol_light": PATROL_LIGHT,
+    "mission_msg_patrol_started": PATROL_STARTED,
+    "mission_msg_patrol_ended": PATROL_ENDED,
+}
 
 _DIGIT_HAS_BATCHIM = {
     "0": True, "1": True, "2": False, "3": True, "4": False,
@@ -122,6 +139,17 @@ def standalone_prewarm(destinations: Iterable) -> list[str]:
     phrases = [d.confirm_prompt for d in dests]
     phrases += [CONFIRM_SWITCH.format(prompt=d.confirm_prompt) for d in dests if d.confirm_prompt]
     phrases += list(HELP_SENTENCES)
+    phrases.append(DOCK_WAKE)
+    phrases.append(DOCK_WAIT)
+    phrases.append(DOCK_GO)
+    phrases.append(DISMISS_ACK)
+    phrases.append(REASK_LOUDER)
+    from .tool_calls import any_tools_on
+
+    if any_tools_on():
+        from .reservation_phrases import FIXED
+
+        phrases += list(FIXED)
     return _unique(phrases)
 
 

@@ -1,4 +1,4 @@
-"""마이크 현장 점검기 — 시연장에서 한 번 돌려 '이 장소에서 비카가 제대로 듣는가'를 휴대폰으로 본다."""
+"""마이크 현장 점검기 — 시연장에서 한 번 돌려 '이 장소에서 비카가 제대로 듣는가'를 앱으로 본다."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -27,9 +27,9 @@ if __name__ == "__main__":
 
     load_dotenv(ROOT / ".env")
 
-from src.env_file import EnvEditError, latest_backup, restore_latest, values_from  # noqa: E402
+from src.env_file import KEYS, EnvEditError, latest_backup, restore_latest, values_from  # noqa: E402
 from src.mic_check_replay import Models  # noqa: E402
-from src.mic_check_rules import MicValues  # noqa: E402
+from src.mic_check_rules import AGC_MAX_GAIN_FACTORY, MicValues  # noqa: E402
 from src.mic_check_session import Clip, Hardware, Session, previous_robot_level  # noqa: E402
 from src.wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor  # noqa: E402
 from tools.mic_check_web import DEFAULT_PORT, LiveServer  # noqa: E402
@@ -37,7 +37,7 @@ from tools.mic_check_web import DEFAULT_PORT, LiveServer  # noqa: E402
 ENV_PATH = ROOT / ".env"
 DATA = Path.home() / "vica_data" / "mic_checks"
 BACKUP_DIR = DATA / "env_backups"
-PAGE = Path(__file__).with_name("mic_check_page.html")
+LAUNCHER_ENV = "VICA_MIC_CHECK_LAUNCHER"
 CHANNELS = 6
 SETTLE_SEC = 2.0
 VOICE_PATTERNS = ("vica_voice.launch.py", "-m src.ros_")
@@ -51,6 +51,11 @@ ROBOT_CLIPS = (
     "mission_msg_estop_reject.wav",
     "mission_msg_obstacle_avoid.wav",
 )
+
+
+def launched_by_mode(environ: Mapping[str, str]) -> bool:
+    """앱이 모드 노드를 거쳐 띄운 점검기인가. 값이 정확히 "mode" 일 때만 참."""
+    return environ.get(LAUNCHER_ENV) == "mode"
 
 
 def voice_stack_running(cmdlines: Sequence[str]) -> list:
@@ -93,7 +98,7 @@ def load_clips(baked_dir: Path, names: Sequence[str] = ROBOT_CLIPS) -> tuple:
 
 
 def lan_ip() -> str:
-    """휴대폰이 열 주소. 바깥으로 아무것도 보내지 않고 나가는 쪽 주소만 고른다."""
+    """앱이 붙을 주소. 바깥으로 아무것도 보내지 않고 나가는 쪽 주소만 고른다."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("10.255.255.255", 1))
@@ -105,16 +110,16 @@ def lan_ip() -> str:
 def write_chip(values: MicValues) -> list:
     """칩에 AGC·에코를 쓰고 읽어서 확인한다. 문제 목록(빈 목록 = 성공). 마이크 스트림이 닫혀 있을 때만 부를 것."""
     from src import audio_out
-    from src.dsp_state import agc_max_gain_from_env, apply_agc_desired_level, apply_agc_max_gain, apply_echo_tuning
+    from src import dsp_state
 
     audio_out.reset_device_cache()
     problems = []
-    if not apply_agc_desired_level(values.agc):
+    if not dsp_state.apply_agc_desired_level(values.agc):
         problems.append(f"AGC {values.agc:.3f} 쓰기 실패")
-    max_gain = agc_max_gain_from_env(os.environ.get("VICA_MIC_AGC_MAX_GAIN", ""))
-    if max_gain is not None and not apply_agc_max_gain(max_gain):
+    max_gain = AGC_MAX_GAIN_FACTORY if values.agc_max_gain is None else values.agc_max_gain
+    if not dsp_state.apply_agc_max_gain(max_gain):
         problems.append(f"AGC 최대 증폭 ×{max_gain:g} 쓰기 실패")
-    wrote = apply_echo_tuning(values.echo_etail, values.echo_nlatten)
+    wrote = dsp_state.apply_echo_tuning(values.echo_etail, values.echo_nlatten)
     etail = wrote.get("GAMMA_ETAIL")
     if etail is None or abs(float(etail) - values.echo_etail) > 1e-3:
         problems.append(f"에코 꼬리 {values.echo_etail} 쓰기 실패(읽은 값 {etail})")
@@ -233,23 +238,29 @@ def _restore_cli() -> int:
     if latest is None:
         print(f"되돌릴 백업이 없습니다 ({BACKUP_DIR})")
         return 1
-    answer = input(f".env 의 마이크 값 7개를 {latest.name} 으로 되돌릴까요? "
+    answer = input(f".env 의 마이크 값 {len(KEYS)}개를 {latest.name} 으로 되돌릴까요? "
                    "다른 줄은 그대로이고, 지금 .env 는 .before-restore 로 남깁니다 [y/N] ")
     if answer.strip().lower() != "y":
         print("그대로 둡니다.")
         return 0
     restore_latest(ENV_PATH, BACKUP_DIR)
-    print("되돌렸습니다. ⑫를 다시 켜야 적용됩니다.")
+    print("되돌렸습니다. 음성 노드를 다시 켜야 적용됩니다.")
     return 0
 
 
 class _Demo:
-    """--demo: 마이크·모델·칩 없이 가짜 소리로 화면을 움직인다(휴대폰 화면 확인용). 진짜 .env 는 건드리지 않는다."""
+    """--demo: 마이크·모델·칩 없이 가짜 소리로 화면을 움직인다(앱 화면 확인용). 진짜 .env 는 건드리지 않는다."""
     WAKE, STOP, YES, NO, VOICE = 20001, 20002, 20003, 20004, 20005
 
     def __init__(self):
         self.vad = False
         self.rng = np.random.default_rng(0)
+        self._tone = (3000 * np.sin(2 * np.pi * 1000 * np.arange(FRAME) / SAMPLE_RATE)).astype(np.int16)
+
+    def _voice(self, mark: int) -> np.ndarray:
+        frame = self._tone.copy()
+        frame[0] = mark
+        return frame
 
     def predict(self, frame: np.ndarray) -> dict:
         v = int(frame[0])
@@ -267,10 +278,10 @@ class _Demo:
             return np.full(FRAME, self.WAKE, np.int16)
         if kind == "call" and 5 <= pos < 15:
             self.vad = True
-            return np.full(FRAME, self.VOICE, np.int16)
-        if kind == "answer" and 3 <= pos < 11:
+            return self._voice(self.VOICE)
+        if kind in ("answer", "far") and 3 <= pos < 11:
             self.vad = True
-            return np.full(FRAME, self.NO if session.recording_expected == "no" else self.YES, np.int16)
+            return self._voice(self.NO if session.recording_expected == "no" else self.YES)
         if kind == "stop" and pos == 3:
             return np.full(FRAME, self.STOP, np.int16)
         scale = 900 if session.robot_running else 100
@@ -328,16 +339,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--destinations", default=os.environ.get("VICA_DESTINATIONS_YAML", ""),
                     help="장소 귀띔용 destinations.yaml(⑫ 와 같은 파일). 없으면 귀띔 없이 받아쓴다")
-    ap.add_argument("--restore", action="store_true", help=".env 의 마이크 값 7개를 가장 최근 백업으로 되돌리고 끝낸다")
+    ap.add_argument("--restore", action="store_true", help=".env 의 마이크 값 10개를 가장 최근 백업으로 되돌리고 끝낸다")
     ap.add_argument("--demo", action="store_true", help="마이크·모델 없이 가짜 소리로 화면만 본다")
     args = ap.parse_args(argv)
     if args.restore:
         return _restore_cli()
+    if not args.demo and not launched_by_mode(os.environ):
+        print("마이크 점검은 앱에서만 합니다. (화면 개발: --demo · 비상 되돌리기: --restore)")
+        return 2
     os.chdir(ROOT)
     if not args.demo:
         running = voice_stack_running(_proc_cmdlines())
         if running:
-            print("⑫·⑬ 음성 칸이 켜져 있습니다. 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요:")
+            print("음성 노드가 켜져 있습니다. 앱에서 끈 뒤 다시 시작하세요:")
             for line in running[:5]:
                 print("   ", line[:120])
             return 1
@@ -352,9 +366,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     clips, missing = load_clips(ROOT / "assets" / "baked")
     for name in missing:
         print(f"  (멘트 {name} 없음 — 건너뜀)")
-    server = LiveServer(PAGE.read_text(encoding="utf-8"), port=args.port)
+    server = LiveServer(port=args.port)
     server.start()
-    print(f"\n  휴대폰으로 여세요:  http://{lan_ip()}:{server.port}\n")
+    print(f"\n  앱 연결 대기: ws://{lan_ip()}:{server.port}/ws\n")
     server.publish({"type": "prep", "text": "젯슨이 준비하는 중입니다(모델 올리기 1~2분)…"}, keep="status")
     if args.demo:
         return _run_demo(server, env_values, record_dir, clips, prev, args.name)
@@ -383,7 +397,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       record_dir=record_dir, backup_dir=BACKUP_DIR, clips=clips, previous_robot_level=prev,
                       chip_problems=problems)
     mic.open()
-    print("  준비 끝 — 휴대폰 화면을 따라 하세요. 끝낼 때는 화면의 '점검 끝내기' 또는 Ctrl+C.")
+    print("  준비 끝 — 앱 화면을 따라 하세요. 끝낼 때는 앱의 '끝내기'.")
     _install_signal_handlers()
     try:
         while not session.done:
@@ -427,7 +441,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠ 서버 끄기 문제: {exc}")
         print(f"  기록: {record_dir}")
-        print("  이제 ⑫를 켜고 시작 로그의 값을 확인한 뒤 시연 대화를 한 번 해 보세요.")
+        print("  이제 음성 노드를 켜고 시작 로그의 값을 확인한 뒤 시연 대화를 한 번 해 보세요.")
     return 0
 
 

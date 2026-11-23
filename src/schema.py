@@ -36,11 +36,28 @@ class DestinationData(BaseModel):
     door_yaw: Optional[float] = None
 
 
-VicaIntentType = Literal[
+BaseIntentType = Literal[
     "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
     "affirm", "deny",
     "wait", "finish",
     "help",
+]
+RecutIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+]
+VicaIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+    "repeat",
+]
+TalkIntentType = Literal[
+    "navigate", "question", "clarify", "unknown", "cancel", "pause", "resume",
+    "affirm", "deny", "wait", "finish", "help",
+    "not_for_robot", "dismiss",
+    "repeat", "places",
 ]
 SafetyFlag = Literal["normal", "emergency"]
 
@@ -56,6 +73,15 @@ class VicaIntent(BaseModel):
     reply: str = ""
     safety_flag: SafetyFlag = "normal"
     wait_minutes: int = -1
+    speaker_verdict: str = ""
+    speaker_score: float = -1.0
+    speaker_joined: float = -1.0
+    ask_text: str = ""
+    ask_kind: str = ""
+    ask_option_ids: list[str] = Field(default_factory=list)
+    question_id: str = ""
+    answer: str = ""
+    answer_value: str = ""
 
 
 class EmergencyEvent(BaseModel):
@@ -89,6 +115,10 @@ class RobotState(BaseModel):
 
 def should_forward_intent(intent) -> bool:
     """이 intent 를 /vica/intent 로 미션에 보낼 것인가 (ROS 무관 순수 판정)."""
+    from .answer_field import on as answers_on
+
+    if answers_on():
+        return True
     return not (
         getattr(intent, "intent", "") == "resume"
         and bool(getattr(intent, "need_confirm", False))

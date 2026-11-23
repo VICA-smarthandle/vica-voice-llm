@@ -1,0 +1,141 @@
+"""의도 재단(2026-11-20 voice-principles-intent-recut) — 순수 함수만 둔다."""
+from __future__ import annotations
+
+import os
+from typing import Optional, Sequence
+
+from . import answer_field
+from .one_voice import _CHOICE_TAIL, _choice_option_ids
+from .question_record import OpenQuestion
+from .replies import (ASK_DESTINATION, LLM_UNAVAILABLE, RETRY_PROMPT, WAKE_GREETING, choose_between,
+                      not_available)
+from .schema import DestinationData, VicaIntent
+
+NOT_FOR_ROBOT = "not_for_robot"
+DISMISS = "dismiss"
+CLARIFY_KINDS = ("several", "not_available", "no_destination")
+
+PROMPT_INTENTS = """- clarify: 로봇에게 한 말이고 가고 싶은 곳에 대한 말인데 한 곳으로 정할 수 없다. reply 는 빈 문자열로 두고(되묻는 문장은 시스템이 만든다) clarify_kind 에 까닭을 적는다.
+  several = 목록의 여러 곳에 똑같이 걸린다. clarify_options 에 그 곳들의 name 을 모두 적는다(하나만 적지 않는다).
+  not_available = 목록에 없는 곳을 찾는다. clarify_wanted 에 찾는 곳이나 물건의 이름만 사용자가 말한 낱말로 적는다(문장을 통째로 적지 않는다). 다른 곳인데 비슷하다고 그곳으로 바꾸지 않는다. 같은 곳을 조금 다르게 부른 것(띄어쓰기, 앞뒤에 붙은 말, 별칭)은 not_available 이 아니라 그 목적지로 navigate 다.
+  no_destination = 어디로 갈지 말하지 않았다.
+- unknown: 로봇에게 한 말인데 무슨 뜻인지 알아듣지 못했다. reply 는 빈 문자열 — 시스템이 다시 말해 달라고 한다.
+- not_for_robot: 로봇에게 한 말이 아니다(옆 사람과 나눈 말, 로봇을 두고 설명하는 말, 혼잣말, 로봇 목소리의 메아리, 소음). reply 는 빈 문자열 — 로봇은 끼어들지 않는다.
+- dismiss: 안내를 받고 있지 않은데 로봇과의 대화를 그만하려 한다("됐어", "아니야 괜찮아", "나중에 할게"). reply 는 빈 문자열.
+  안내 중에 그만두려는 말은 cancel, 로봇이 방금 한 질문을 거절하는 말은 deny 다."""
+
+PROMPT_ORDER = """[판단 순서] 들은 말을 이 순서로 판단하고, 앞에서 정해지면 뒤로 가지 않는다.
+1. 로봇에게 한 말인가. 아니면 not_for_robot 이다. [지금 상황]의 '로봇이 방금 한 말' 줄을 함께 본다 — 로봇이 방금 부름에 대답했거나 질문했다면 이어진 말은 대개 로봇에게 한 말이다. 그래도 사람끼리 주고받는 말이거나 로봇을 가리켜 설명하는 말이면 not_for_robot 이다.
+2. 로봇이 방금 한 질문의 대답인가. 대답이면 그 질문의 뜻으로 읽는다.
+3. 새 요청인가. 무엇을 원하는지 읽는다. 가려는 곳이 목록에 없으면 clarify(not_available)다.
+4. 로봇에게 한 말인데 알아듣지 못했으면 unknown 이다.
+로봇에게 한 말인지 확실하지 않으면 not_for_robot 이 아니라 unknown 을 고른다 — 진짜 요청을 버리는 것이 되묻는 것보다 나쁘다.
+외국어이거나 잘못 들린 듯해 뜻을 알 수 없는 말도 not_for_robot 이 아니다 — 로봇에게 한 말일 수 있으니 unknown 이다."""
+
+SEVERAL_RULE = "clarify(clarify_kind=several)로 내고 clarify_options 에 그 곳들의 name 을 모두 적는다. 하나만 적지 않는다(2026-10-11 실기)."
+NOT_AVAILABLE_TAG = "(clarify_kind=not_available)"
+NO_DESTINATION_TAG = "(clarify_kind=no_destination)"
+WAKE_LINE = '호출어 "비카야"만 들리면 로봇을 부른 것이다 — intent=unknown, reply="네?".'
+
+_HEADER = "\n[지금 상황]\n"
+
+
+def on() -> bool:
+    """스위치. `.env` VICA_RECUT=on 일 때만 참이다. 매번 읽는다 — 시험이 monkeypatch 로 켜고 끌 수 있게."""
+    return os.environ.get("VICA_RECUT", "").strip().lower() == "on"
+
+
+def clarify_reply(kind: str, wanted: str, names: Sequence[str]) -> str:
+    """되묻기 종류별 문장(원칙 4). 이름이 하나뿐인 several·모르는 종류는 짐작하지 않고 목적지를 묻는다."""
+    if kind == "several":
+        names = [n for n in names if n]
+        return choose_between(names) if len(names) >= 2 else ASK_DESTINATION
+    if kind == "not_available":
+        return not_available(wanted)
+    return ASK_DESTINATION
+
+
+def clue_line(question: Optional[OpenQuestion]) -> str:
+    """[지금 상황]에 넣을 '로봇이 방금 한 말' 한 줄(원칙 7). 질문이 없으면 빈 글자. 스위치는 보지 않는다."""
+    if question is None:
+        return ""
+    if question.kind == "open":
+        note = '사용자가 "비카야"라고 불러서 대답했다'
+    else:
+        note = f"{answer_field._KIND_KO.get(question.kind, '질문')} — 대답을 기다리는 중"
+    return f'- 로봇이 방금 한 말: "{question.text}" ({note})'
+
+
+def with_clue(block: str, question: Optional[OpenQuestion]) -> str:
+    """[지금 상황] 글 끝에 단서 줄을 붙인다. 꺼졌거나·질문이 없으면 그대로. 대답 칸이 켜졌으면 미션 질문에는 붙이지 않는다"""
+    if not on() or question is None or (answer_field.on() and question.kind != "open"):
+        return block
+    line = clue_line(question)
+    if not block:
+        return _HEADER + line + "\n"
+    return block.rstrip("\n") + "\n" + line + "\n"
+
+
+def speaker_line(verdict: str) -> str:
+    """화자 확인 결과 한 줄(원칙 19). pass·fail 만 말하고, 확인하지 못한 값은 빈 글자. 스위치는 보지 않는다."""
+    if verdict == "pass":
+        return "- 이 말의 목소리: 안내를 요청한 사용자와 같다"
+    if verdict == "fail":
+        return "- 이 말의 목소리: 안내를 요청한 사용자와 다르다"
+    return ""
+
+
+def with_speaker(block: str, verdict: Optional[str]) -> str:
+    """[지금 상황] 글 끝에 화자 단서 줄을 붙인다(원칙 19). 꺼졌거나 pass·fail 이 아니면 그대로."""
+    line = speaker_line(verdict or "") if on() else ""
+    if not line:
+        return block
+    if not block:
+        return _HEADER + line + "\n"
+    return block.rstrip("\n") + "\n" + line + "\n"
+
+
+def early(draft) -> Optional[VicaIntent]:
+    """뒤처리 맨 앞(원칙 7·31): not_for_robot·dismiss 면 문장·목적지 없는 의도로 바로 돌려보낸다. 꺼졌거나 다른 값이면 None."""
+    if not on() or getattr(draft, "intent", "") not in (NOT_FOR_ROBOT, DISMISS):
+        return None
+    return VicaIntent(intent=draft.intent, reply="", need_confirm=False,
+                      confidence=getattr(draft, "confidence", None) or 0.0)
+
+
+def _is_wake(heard: str) -> bool:
+    from . import langchain_intent_parser as parser
+    return parser._normalize_short_reply(heard) in parser._WAKE_WORDS
+
+
+def settle(result: VicaIntent, draft, destinations: Sequence[DestinationData], heard: str) -> VicaIntent:
+    """뒤처리 끝(원칙 4·8·11·18): clarify 의 문장을 코드 틀에서 만들고 unknown 의 문장을 정해진 되묻는 말로 둔다."""
+    if not on() or result.safety_flag == "emergency":
+        return result
+    if result.intent == "clarify":
+        reply = (result.reply or "").strip()
+        ok = {d.name: d for d in destinations if d.name and d.is_approachable}
+        options = list(dict.fromkeys(n for n in (getattr(draft, "clarify_options", None) or []) if n in ok))
+        wanted = getattr(draft, "clarify_wanted", "") or ""
+        if len(options) >= 2:
+            kind = "several"
+        else:
+            tail = _CHOICE_TAIL.search(reply)
+            named = _choice_option_ids(reply[:tail.start()], destinations) if tail else []
+            by_id = {d.id: d for d in destinations}
+            if len(named) >= 2 and all(by_id[i].is_approachable for i in named):
+                if reply != (getattr(draft, "reply", "") or "").strip():
+                    return result
+                options, kind = [by_id[i].name for i in named], "several"
+            elif getattr(draft, "clarify_kind", "") == "not_available" or draft.intent == "navigate":
+                kind = "not_available"
+                wanted = wanted or (draft.destination_candidate or "")
+            else:
+                kind = "no_destination"
+        return result.model_copy(update={"reply": clarify_reply(kind, wanted, options)})
+    if result.intent == "unknown":
+        if result.reply == LLM_UNAVAILABLE:
+            return result
+        wake = (result.reply or "").strip() == WAKE_GREETING or _is_wake(heard or "")
+        return result.model_copy(update={"reply": WAKE_GREETING if wake else RETRY_PROMPT})
+    return result

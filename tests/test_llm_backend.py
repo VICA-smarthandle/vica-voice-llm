@@ -100,6 +100,28 @@ class TestInvoke:
         assert logs[-1][1] == (
             "[LLM] 클라우드 실패(연결 오류: boom) → 로컬(gemma4-e2b-text)로 대피. 같은 발화 재처리")
 
+    def test_p16_local_fallback_gets_its_own_messages(self):
+        mgr, cloud, local, *_ = make(cloud_fail=APIConnectionError("boom"))
+        assert mgr.invoke(["cloud"], local_messages=lambda: ["local"]) == "local:ok"
+        assert cloud.calls == [["cloud"]] and local.calls == [["local"]]
+
+    def test_p16_without_local_messages_the_same_messages_are_reused(self):
+        mgr, cloud, local, *_ = make(cloud_fail=APIConnectionError("boom"))
+        mgr.invoke(["cloud"])
+        assert local.calls == [["cloud"]]
+
+    def test_p16_local_messages_are_built_only_when_needed(self):
+        built = []
+        mgr, cloud, local, *_ = make()
+        mgr.invoke(["cloud"], local_messages=lambda: built.append(1) or ["local"])
+        assert built == [] and local.calls == []
+
+    def test_p16_already_local_uses_local_messages(self):
+        mgr, cloud, local, *_ = make()
+        assert mgr.go_local("Realtime 연결 오류") is True
+        mgr.invoke(["cloud"], local_messages=lambda: ["local"])
+        assert cloud.calls == [] and local.calls == [["local"]]
+
     def test_both_fail_raises_local_error(self):
         mgr, cloud, local, *_ = make(cloud_fail=APIConnectionError("boom"))
         local.fail_with = RuntimeError("ollama down")

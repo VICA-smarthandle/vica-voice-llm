@@ -265,3 +265,626 @@ class TestAudioPromptStyle:
 
     def test_reask_without_listing_examples(self):
         assert "예시를 늘어놓지 않는다" in parser.build_audio_prompt([DEST])
+
+
+def test_reserve_tool_result_is_handed_back(monkeypatch):
+    """Realtime 이 reserve_facility 를 부르면 의도 배달(deliver_audio_draft)을 거치지 않고 ReserveCall 을 돌려준다."""
+    import types
+
+    from src.reservation_flow import ReserveCall
+    result = RealtimeResult(draft={"facility": "세미나실", "date": "내일", "start_time": "14:00"},
+                            heard_text="내일 오후 두 시에 세미나실 예약해 줘", latency_sec=1.0, tool="reserve_facility")
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: types.SimpleNamespace(ask=lambda *a, **k: result))
+    out, heard, dt, info = parser.parse_intent_audio(b"\x00\x00", [DEST])
+    assert out == ReserveCall(facility="세미나실", date="내일", start_time="14:00")
+    assert heard == "내일 오후 두 시에 세미나실 예약해 줘" and info["src"] == "llm" and dt == 1.0
+
+
+def test_text_replay_goes_through_the_same_delivery(monkeypatch):
+    """재생 측정용 글자 입력 — Realtime 에 글자를 넣고, 그 뒤 처리는 소리 경로와 같다."""
+    class Client:
+        def ask_text(self, text, history, instructions):
+            self.seen = (text, list(history or []), instructions)
+            return RealtimeResult(draft={"intent": "navigate", "destination_candidate": DEST.name,
+                                         "need_confirm": True, "confidence": 0.9},
+                                  heard_text=text, latency_sec=0.4)
+
+    client = Client()
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: client)
+    out, heard, dt, info = parser.parse_intent_realtime_text("화장실로 가자", [DEST], situation="[진행 중인 예약] 가\n")
+    assert out.intent == "navigate" and out.matched_destination_id == DEST.id
+    assert heard == "화장실로 가자" and dt == 0.4 and info["src"] == "llm"
+    assert "[진행 중인 예약] 가" in client.seen[2]
+
+
+def _minutes_q():
+    from src.question_record import OpenQuestion
+    return OpenQuestion(id="q7", kind="minutes", text="몇 분쯤 걸리실까요?", option_ids=(), opened_at=0.0)
+
+
+def test_realtime_answer_is_filled(monkeypatch):
+    from src.realtime_intent import RealtimeResult
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    result = RealtimeResult(draft={"intent": "wait", "wait_minutes": 15, "answer": "minutes"},
+                            heard_text="삼십분", latency_sec=1.0)
+    intent, heard, _dt, info = parser._deliver_realtime_result(result, [], None, question=_minutes_q())
+    assert (intent.question_id, intent.answer, intent.answer_value, heard) == ("q7", "minutes", "30", "삼십분")
+    assert (intent.intent, intent.wait_minutes, info["src"]) == ("wait", 30, "llm+대답규칙")
+    clamped = RealtimeResult(draft={"intent": "unknown", "answer": "yes"}, heard_text="네", latency_sec=1.0)
+    assert parser._deliver_realtime_result(clamped, [], None, question=_minutes_q())[0].answer == "unclear"
+
+
+def test_realtime_answer_is_empty_when_off():
+    from src.realtime_intent import RealtimeResult
+    result = RealtimeResult(draft={"intent": "wait", "wait_minutes": 15, "answer": "minutes"},
+                            heard_text="삼십분", latency_sec=1.0)
+    assert parser._deliver_realtime_result(result, [], None, question=_minutes_q())[0].answer == ""
+
+
+OTHER = DestinationData(id="info", name="안내소", confirm_prompt="안내소로 안내해드릴까요?")
+
+
+def _confirm_q():
+    from src.question_record import OpenQuestion
+    return OpenQuestion(id="q3", kind="confirm", text=DEST.confirm_prompt, option_ids=(DEST.id,), opened_at=0.0)
+
+
+def _other_proposal(heard):
+    return RealtimeResult(draft={"intent": "navigate", "destination_candidate": OTHER.name, "need_confirm": True,
+                                 "reply": OTHER.confirm_prompt, "confidence": 0.6, "answer": "destination"},
+                          heard_text=heard, latency_sec=0.9)
+
+
+def test_p6_sound_path_uses_the_heard_words_for_a_whole_yes(monkeypatch, capsys):
+    """확인 질문 + heard "네" + Realtime affirm·answer 빈 값 → 대답 칸 yes(의도 그대로) — 같은 읽기일 때만 채운다(수정 2차 ③)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said = RealtimeResult(draft={"intent": "affirm", "reply": "", "confidence": 0.8, "answer": ""}, heard_text="네.",
+                          latency_sec=0.9)
+    intent, heard, dt, info = parser._deliver_realtime_result(said, [DEST, OTHER], None, question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.answer_value, intent.question_id) == ("affirm", "yes", "", "q3")
+    assert intent.confidence == pytest.approx(0.8) and (heard, dt) == ("네.", 0.9)
+    assert info["src"] == "llm+대답규칙"
+    log = capsys.readouterr().err
+    assert "[대답규칙] 규칙 전(짧은답규칙 뒤) intent=affirm answer=-/-" in log
+
+
+def test_p6_sound_path_whole_yes_does_not_overturn_a_destination_reading(monkeypatch, capsys):
+    """확인 질문 + heard "네" + Realtime 다른 곳 제안·answer destination → 그대로(수정 2차 ④ — 규칙이 덮지 않는다)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    intent, heard, dt, info = parser._deliver_realtime_result(_other_proposal("네."), [DEST, OTHER], None,
+                                                              question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.answer_value, intent.question_id) == ("navigate", "destination", "info", "q3")
+    assert (intent.need_confirm, intent.matched_destination_id, info["src"]) == (True, OTHER.id, "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
+
+
+def test_p7_sound_path_yes_from_not_for_robot_is_asked_again(monkeypatch):
+    """확인 질문 + heard "네" + Realtime not_for_robot → unknown·unclear·reply 빈 값(affirm 아님) — 옆 사람의 "네"가 출발이 되지"""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_RECUT", "on")
+    for llm in ("", "yes"):
+        aside = RealtimeResult(draft={"intent": "not_for_robot", "reply": "", "answer": llm}, heard_text="네",
+                               latency_sec=1.0)
+        intent, _h, _dt, info = parser._deliver_realtime_result(aside, [DEST], None, question=_confirm_q())
+        assert (intent.intent, intent.answer, intent.reply, intent.need_confirm) == ("unknown", "unclear", "", False), llm
+        assert info["src"] == "llm+대답규칙"
+
+
+REVIEW_SCENES = [
+    ("yesno", "안내를 취소할까요?", "가자", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
+    ("yesno", "안내를 취소할까요?", "가자", {"intent": "resume", "answer": "other"}, "navigating", "resume", "other"),
+    ("yesno", "다녀오시는 동안 여기서 기다릴까요?", "가자", {"intent": "resume", "answer": "no"}, "asking_next", "resume", "no"),
+    ("yesno_inverted", "안내가 필요 없으신가요?", "가자", {"intent": "resume", "answer": "no"}, "waiting", "resume", "no"),
+    ("yesno", "직원의 도움이 필요하신가요?", "가줘", {"intent": "deny", "answer": "no"}, "navigating", "deny", "no"),
+    ("yesno", "여기까지 안내를 마칠까요?", "가자", {"intent": "resume", "answer": "other"}, "asking_next", "resume", "other"),
+]
+
+
+@pytest.mark.parametrize("kind,text,heard,draft,state,want_intent,want_answer", REVIEW_SCENES)
+def test_p6_sound_path_rule_does_not_overturn_the_review_scenes(monkeypatch, kind, text, heard, draft, state,
+                                                               want_intent, want_answer):
+    from src.question_record import OpenQuestion
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    question = OpenQuestion(id="q1", kind=kind, text=text, option_ids=(), opened_at=0.0)
+    result = RealtimeResult(draft=draft, heard_text=heard, latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
+                                                            question=question)
+    assert (intent.intent, intent.answer, info["src"]) == (want_intent, want_answer, "llm")
+
+
+def test_p6_sound_path_whole_yes_against_realtime_no_is_asked_again(monkeypatch):
+    """최종 검토 I1 ②: 들은 글자가 통째 "네"(규칙 yes)인데 Realtime 이 no 로 읽으면 어느 쪽도 따르지 않는다 — 대답 칸 unclear,"""
+    from src.question_record import OpenQuestion
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    for kind, text, heard, state in (("yesno", "안내를 취소할까요?", "네", "navigating"),
+                                     ("confirm", "화장실로 안내해드릴까요?", "가자", "confirming")):
+        question = OpenQuestion(id="q1", kind=kind, text=text, option_ids=(), opened_at=0.0)
+        result = RealtimeResult(draft={"intent": "deny", "answer": "no"}, heard_text=heard, latency_sec=1.0)
+        intent, _h, _dt, info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
+                                                                question=question)
+        assert (intent.intent, intent.answer, info["src"]) == ("deny", "unclear", "llm+대답규칙"), (kind, heard)
+
+
+@pytest.mark.parametrize("state,heard,draft,want_intent,want_answer", [
+    ("confirming", "음", {"intent": "unknown", "reply": "", "answer": "unclear"}, "affirm", "unclear"),
+    ("confirming", "어어", {"intent": "unknown", "reply": "", "answer": "unclear"}, "affirm", "unclear"),
+    ("confirming", "음", {"intent": "affirm", "reply": "", "answer": "unclear"}, "affirm", "unclear"),
+    ("confirming", "거기가 어디야", {"intent": "question", "reply": "1층에 있어요.", "answer": "unclear"}, "question", "other"),
+])
+def test_p3_i2_sound_path_soft_yes_with_unclear_is_asked_again(monkeypatch, state, heard, draft, want_intent, want_answer):
+    """원칙 3·6(최종 검토 I2, 재현 v5): 확인 질문 중 '음' + Realtime unknown·unclear → _audio_short_answer 가 affirm 으로 바꾼 뒤에도"""
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_RECUT", "on")
+    result = RealtimeResult(draft=draft, heard_text=heard, latency_sec=1.0)
+    intent, _h, _dt, _info = parser._deliver_realtime_result(result, [DEST, OTHER], RobotState(dialog_state=state),
+                                                             question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.question_id) == (want_intent, want_answer, "q3")
+
+
+def test_sound_path_is_unchanged_when_off(monkeypatch):
+    monkeypatch.delenv("VICA_ANSWER", raising=False)
+    intent, heard, _dt, info = parser._deliver_realtime_result(_other_proposal("네."), [DEST, OTHER], None,
+                                                               question=_confirm_q())
+    assert (intent.intent, intent.matched_destination_id, intent.need_confirm, intent.reply) == (
+        "navigate", OTHER.id, True, OTHER.confirm_prompt)
+    assert (intent.answer, intent.question_id, info["src"]) == ("", "", "llm")
+
+
+def test_p6_sound_path_whole_no_on_a_proposal(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    intent, _h, _dt, info = parser._deliver_realtime_result(_other_proposal("아니요"), [DEST, OTHER], None,
+                                                            question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.matched_destination_id, info["src"]) == (
+        "navigate", "destination", OTHER.id, "llm")
+    refused = RealtimeResult(draft={"intent": "deny", "reply": "", "answer": ""}, heard_text="아니요", latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(refused, [DEST, OTHER], None, question=_confirm_q())
+    assert (intent.intent, intent.answer, info["src"]) == ("deny", "no", "llm+대답규칙")
+
+
+@pytest.mark.parametrize("asked,need_confirm,answer", [
+    ("confirm", True, "other"),
+    ("cancel_q", False, "yes"),
+])
+def test_p6_sound_path_cancel_word_keeps_the_realtime_cancel(monkeypatch, capsys, asked, need_confirm, answer):
+    """수정 1차: heard "취소"는 네/아니요 규칙 대답이 아니다 — Realtime 의 cancel 그대로, src 에 꼬리표 없음."""
+    from src.question_record import OpenQuestion
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    question = (_confirm_q() if asked == "confirm" else
+                OpenQuestion(id="q9", kind="yesno", text=parser.CANCEL_CONFIRM, option_ids=(), opened_at=0.0))
+    said = RealtimeResult(draft={"intent": "cancel", "need_confirm": need_confirm, "reply": "", "answer": answer},
+                          heard_text="취소.", latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(said, [DEST], None, question=question)
+    assert (intent.intent, intent.need_confirm, intent.answer, info["src"]) == ("cancel", need_confirm, answer, "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
+
+
+def test_p6_sound_path_minutes_rule_yields_to_a_refusal(monkeypatch, capsys):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    refused = RealtimeResult(draft={"intent": "finish", "answer": "no"}, heard_text="십 분 말고 그냥 안내 끝내 줘",
+                             latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(refused, [DEST], None, question=_minutes_q())
+    assert (intent.intent, intent.answer, intent.answer_value, intent.wait_minutes) == ("finish", "no", "", -1)
+    assert info["src"] == "llm" and "[대답규칙]" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("heard,llm", [("십 분 정도요", ""), ("오 분만 있다가 가자", "unclear")])
+def test_p7_sound_path_answer_is_not_dropped_as_not_for_robot(monkeypatch, heard, llm):
+    """수정 3차: not_for_robot 인 분 대답은 버리지 않되 wait 로 살리지도 않는다 — unknown·unclear(미션이 다시 묻는다)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_RECUT", "on")
+    dropped = RealtimeResult(draft={"intent": "not_for_robot", "answer": llm}, heard_text=heard, latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(dropped, [DEST], None, question=_minutes_q())
+    assert (intent.intent, intent.wait_minutes, intent.reply, intent.need_confirm) == ("unknown", -1, "", False)
+    assert (intent.answer, intent.answer_value, info["src"]) == ("unclear", "", "llm+대답규칙")
+    monkeypatch.delenv("VICA_ANSWER")
+    off, _h, _dt, info = parser._deliver_realtime_result(dropped, [DEST], None, question=_minutes_q())
+    assert (off.intent, off.answer, info["src"]) == ("not_for_robot", "", "llm")
+
+
+def test_p6_sound_path_minutes_rule_does_not_turn_a_non_reading_into_wait(monkeypatch, capsys):
+    """"아까 한 시간 기다렸잖아"(Realtime unknown) — 분 규칙이 60분 대기로 바꾸지 않는다(수정 3차, 검토 재현)."""
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    said = RealtimeResult(draft={"intent": "unknown", "reply": "", "answer": ""}, heard_text="아까 한 시간 기다렸잖아",
+                          latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(said, [DEST], None, question=_minutes_q())
+    assert (intent.intent, intent.wait_minutes, intent.answer, info["src"]) == ("unknown", -1, "", "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
+
+
+def test_p6_sound_path_marks_nothing_when_the_rule_agrees(monkeypatch, capsys):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    agreed = RealtimeResult(draft={"intent": "affirm", "answer": "yes"}, heard_text="네", latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(agreed, [DEST], None, question=_confirm_q())
+    assert (intent.intent, intent.answer, info["src"]) == ("affirm", "yes", "llm")
+    assert "[대답규칙]" not in capsys.readouterr().err
+
+
+def test_p6_sound_path_without_an_open_question_is_unchanged(monkeypatch):
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    intent, _h, _dt, info = parser._deliver_realtime_result(_other_proposal("네"), [DEST, OTHER], None, question=None)
+    assert (intent.intent, intent.matched_destination_id, intent.answer, info["src"]) == ("navigate", OTHER.id, "", "llm")
+
+
+def test_p6_sound_path_reserve_call_is_untouched(monkeypatch):
+    from src.reservation_flow import ReserveCall
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    call = RealtimeResult(draft={"facility": "세미나실"}, heard_text="네", latency_sec=1.0, tool="reserve_facility")
+    out, _h, _dt, info = parser._deliver_realtime_result(call, [DEST], None, question=_confirm_q())
+    assert out == ReserveCall(facility="세미나실") and info["src"] == "llm"
+
+
+def test_p6_sound_path_short_answer_rule_then_answer_rule(monkeypatch, capsys):
+    """대답을 기다리는 단계의 짧은 대답 규칙(_audio_short_answer)이 먼저 의도를 바꾸고, 대답 칸은 질문 기록의 규칙이 채운다."""
+    from src.schema import RobotState
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    asked = RealtimeResult(draft={"intent": "question", "reply": "네, 말씀하세요.", "answer": ""}, heard_text="그래",
+                           latency_sec=1.0)
+    intent, _h, _dt, info = parser._deliver_realtime_result(asked, [DEST], RobotState(dialog_state="confirming"),
+                                                            question=_confirm_q())
+    assert (intent.intent, intent.answer, intent.reply) == ("affirm", "yes", "")
+    assert info["src"] == "llm+짧은답규칙+대답규칙"
+    assert "규칙 전(짧은답규칙 뒤) intent=affirm" in capsys.readouterr().err
+
+
+def test_sound_path_does_not_wait_for_the_local_transcript():
+    """규칙에 대는 글자는 Realtime 이 들은 글자(heard_text)다 — 로컬 받아쓰기(/user_text)를 받는 인자가 없다."""
+    import inspect
+    assert list(inspect.signature(parser._deliver_realtime_result).parameters) == [
+        "result", "destinations", "robot_state", "question"]
+    assert "answer_field.short_answer(heard, question)" in inspect.getsource(parser._deliver_realtime_result)
+
+
+def test_audio_prompt_carries_the_question_line(monkeypatch):
+    from src import answer_field as af
+    from src.realtime_intent import RealtimeResult
+    seen = {}
+
+    class Client:
+        def ask(self, pcm, history, instructions):
+            seen["instructions"] = instructions
+            return RealtimeResult(draft={"intent": "unknown"}, heard_text="", latency_sec=0.1)
+
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: Client())
+    parser.parse_intent_audio(b"", [], question=_minutes_q())
+    assert "로봇이 물은 질문" not in seen["instructions"]
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    parser.parse_intent_audio(b"", [], question=_minutes_q())
+    assert seen["instructions"].endswith(af.with_question("", _minutes_q()))
+
+
+def test_audio_prompt_gets_reservation_rules_only_when_the_reserve_tool_is_on(monkeypatch, tmp_path):
+    """11-19 원인 실험 V2: 소리 지시문에 예약 대화 규칙이 없어 값 바꾸기를 목적지 정정으로 읽었다(0/4 → 4/4)."""
+    monkeypatch.setenv("VICA_RESERVATION_DIR", str(tmp_path))
+    monkeypatch.delenv("VICA_TOOLS_AUDIO", raising=False)
+    off = parser.build_audio_prompt([DEST], None, "[지금 상황] 끝\n")
+    assert "set_intent 함수 한 번으로 정한다" in off and "[시설 예약]" not in off
+    monkeypatch.setenv("VICA_TOOLS_AUDIO", "on")
+    on = parser.build_audio_prompt([DEST], None, "[지금 상황] 끝\n")
+    assert "set_intent 함수 한 번으로" not in on and "reserve_facility" in on.split("\n")[1]
+    assert on.endswith("[지금 상황] 끝\n")
+    rules = parser.AUDIO_RESERVE_RULES
+    assert rules in on and "affirm" in rules and "destination_candidate" in rules
+    assert on.replace(rules, "").replace(parser.AUDIO_FIRST_LINE_WITH_RESERVE, parser.AUDIO_FIRST_LINE) == off
+
+
+def test_parse_intent_audio_passes_the_trail_to_realtime(rt):
+    client = rt({"intent": "affirm"}, "그래")
+    trail = [{"args": {"name": "김민수"}, "heard": "김민수", "asked": "확인?"}]
+    seen = {}
+    original = client.ask
+
+    def ask(pcm, history, instructions, **kw):
+        seen.update(kw)
+        return original(pcm, history, instructions)
+
+    client.ask = ask
+    parse_intent_audio(PCM, [DEST], tool_trail=trail)
+    assert seen == {"tool_trail": trail}
+    seen.clear()
+    parse_intent_audio(PCM, [DEST])
+    assert seen == {}
+
+
+WEATHER = "오늘 날씨 어때?"
+EMPTY_QUESTION = {"intent": "question", "reply": ""}
+
+
+def talk_on(monkeypatch):
+    """fixed_answers.on() 은 재단·대답 칸·정해진 대답 셋이 함께 켜졌을 때만 참이다."""
+    monkeypatch.setenv("VICA_RECUT", "on")
+    monkeypatch.setenv("VICA_ANSWER", "on")
+    monkeypatch.setenv("VICA_TALK", "on")
+
+
+class _Sound:
+    """첫 호출(소리, ask)만 받는 가짜 Realtime — 재시도는 parse_intent_realtime_text 를 바꿔 끼워 센다."""
+
+    def __init__(self, draft, heard, latency=0.7, timeout_sec=8.0):
+        self.draft, self.heard, self.latency, self.timeout_sec = draft, heard, latency, timeout_sec
+
+    def ask(self, pcm, history, instructions, **kw):
+        return RealtimeResult(draft=dict(self.draft), heard_text=self.heard, latency_sec=self.latency,
+                              usage={"audio_tokens": 20})
+
+
+def _retry_gives(monkeypatch, out=None, fail=None):
+    """재시도(parse_intent_realtime_text)를 가짜로 바꾼다 — 부른 인자를 적고 정해 둔 결과(또는 예외)를 돌려준다."""
+    calls = []
+
+    def fake(text, destinations, **kw):
+        calls.append((text, list(destinations), kw))
+        if fail is not None:
+            raise fail
+        return out, text, 0.5, {"src": "llm", "usage": {"text_tokens": 9}}
+
+    monkeypatch.setattr(parser, "parse_intent_realtime_text", fake)
+    return calls
+
+
+def _heard_once(monkeypatch, draft, heard, latency=0.7, timeout_sec=8.0, **kw):
+    sound = _Sound(draft, heard, latency, timeout_sec)
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: sound)
+    return parse_intent_audio(PCM, [DEST, OTHER], **kw)
+
+
+def test_p25_n1_empty_question_is_asked_again_with_the_heard_words(monkeypatch, capsys):
+    """(가) question + 빈 reply + heard → 같은 대화 기록·로봇 상태·열린 질문으로 들은 글자를 한 번 더 — 그 reply 를 쓴다."""
+    from src.schema import RobotState
+    talk_on(monkeypatch)
+    answered = parser.VicaIntent(intent="question", reply="날씨는 제가 알 수 없어요.", need_confirm=False)
+    calls = _retry_gives(monkeypatch, answered)
+    hist, state, q = [HumanMessage("안녕"), AIMessage("네?")], RobotState(dialog_state="idle"), _minutes_q()
+    trail = [{"args": {"name": "김민수"}, "heard": "김민수", "asked": "확인?"}]
+    intent, heard, dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER, history=hist, robot_state=state,
+                                          situation="\n[지금 상황]\n- 안내 중: 없음\n", directory_block="\n[다른 층 장소]\n",
+                                          question=q, tool_trail=trail)
+    assert (intent.intent, intent.reply, heard, info["src"]) == ("question", "날씨는 제가 알 수 없어요.", WEATHER, "llm+빈대답재시도")
+    assert dt >= 0.7 and info["usage"] == {"audio_tokens": 20}
+    assert calls == [(WEATHER, [DEST, OTHER], {"history": hist, "robot_state": state,
+                                               "situation": "\n[지금 상황]\n- 안내 중: 없음\n",
+                                               "directory_block": "\n[다른 층 장소]\n", "question": q,
+                                               "tool_trail": trail})]
+    log = capsys.readouterr().err
+    assert "[빈 대답]" in log and WEATHER in log
+
+
+@pytest.mark.parametrize("kind", ["dismiss", "repeat"])
+def test_p3_p7_n1_retry_dismiss_or_repeat_is_kept(monkeypatch, kind):
+    """(나) 재시도가 dismiss · repeat 면 그 의도 — 움직이지 않는 읽기는 처음 읽기(question)와 어긋나지 않는다."""
+    talk_on(monkeypatch)
+    _retry_gives(monkeypatch, parser.VicaIntent(intent=kind, reply="", need_confirm=False))
+    intent, _h, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, "됐어 그만할게")
+    assert (intent.intent, intent.reply, info["src"]) == (kind, "", "llm+빈대답재시도")
+
+
+def test_p29_n1_retry_places_sentence_made_by_code_is_kept(monkeypatch):
+    """(가) 재시도가 갈 수 있는 곳(places)을 고르면 코드가 만든 문장의 question — 진짜 parse_intent_realtime_text 를 지난다."""
+    talk_on(monkeypatch)
+    seen = {}
+
+    class Both(_Sound):
+        def ask(self, pcm, history, instructions, **kw):
+            seen["sound"] = (list(history or []), instructions)
+            return super().ask(pcm, history, instructions, **kw)
+
+        def ask_text(self, text, history, instructions, **kw):
+            seen["text"] = (text, list(history or []), instructions)
+            return RealtimeResult(draft={"intent": "places", "reply": ""}, heard_text=text, latency_sec=0.4)
+
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: Both(EMPTY_QUESTION, "어디 갈 수 있어"))
+    hist = [AIMessage("네?")]
+    intent, heard, _dt, info = parse_intent_audio(PCM, [DEST], history=hist)
+    assert (intent.intent, intent.reply, info["src"]) == ("question", "별빛관 1층 화장실로 안내할 수 있습니다.", "llm+빈대답재시도")
+    assert seen["text"] == ("어디 갈 수 있어", *seen["sound"]) and seen["sound"][0] == hist
+
+
+RETRY_NOT_USED = [
+    parser.VicaIntent(intent="navigate", destination_candidate=DEST.name, matched_destination_id=DEST.id,
+                      need_confirm=True, reply=DEST.confirm_prompt),
+    parser.VicaIntent(intent="affirm", reply="", need_confirm=False),
+    parser.VicaIntent(intent="not_for_robot", reply="", need_confirm=False),
+    parser.VicaIntent(intent="unknown", reply=parser.RETRY_PROMPT, need_confirm=False),
+    parser.VicaIntent(intent="clarify", reply=parser.ASK_DESTINATION, need_confirm=False),
+    parser.VicaIntent(intent="question", reply="", need_confirm=False),
+    parser.VicaIntent(intent="question", reply="   ", need_confirm=False),
+]
+
+
+@pytest.mark.parametrize("again", RETRY_NOT_USED, ids=lambda i: f"{i.intent}-{i.reply[:6]!r}")
+def test_p8_p25_n1_retry_that_moves_or_stays_silent_asks_again(monkeypatch, capsys, again):
+    """(다) 재시도가 움직이는 의도·not_for_robot·unknown·clarify·또 빈 question 이면 쓰지 않는다 — unknown + RETRY_PROMPT."""
+    talk_on(monkeypatch)
+    calls = _retry_gives(monkeypatch, again)
+    intent, heard, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER)
+    assert (intent.intent, intent.reply, intent.need_confirm) == ("unknown", parser.RETRY_PROMPT, False)
+    assert (intent.destination_candidate, intent.matched_destination_id) in ((None, None), (None, ""))
+    assert (heard, info["src"], len(calls)) == (WEATHER, "llm+빈대답되묻기", 1)
+    assert "[빈 대답]" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("fail", [TimeoutError("8초"), RuntimeError("연결이 응답 없이 닫혔다")])
+def test_p8_n1_retry_failure_asks_again(monkeypatch, fail):
+    """(다) 재시도 호출이 실패·시간 초과면 되묻는다 — 예외를 올리지 않는다(올리면 노드가 그 말을 글자 경로에 넘긴다)."""
+    talk_on(monkeypatch)
+    _retry_gives(monkeypatch, fail=fail)
+    intent, _h, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER)
+    assert (intent.intent, intent.reply, info["src"]) == ("unknown", parser.RETRY_PROMPT, "llm+빈대답되묻기")
+
+
+def test_p8_n1_retry_reserve_call_asks_again(monkeypatch):
+    from src.reservation_flow import ReserveCall
+    talk_on(monkeypatch)
+    _retry_gives(monkeypatch, ReserveCall(facility="세미나실"))
+    intent, _h, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER)
+    assert (intent.intent, intent.reply, info["src"]) == ("unknown", parser.RETRY_PROMPT, "llm+빈대답되묻기")
+
+
+def test_p8_n1_asking_again_under_a_confirm_question_answers_unclear(monkeypatch):
+    """(라) 확인 질문(kind confirm)이 열린 채 3번이면 대답 칸 unclear — 미션이 그 질문을 다시 묻는다(원칙 8)."""
+    talk_on(monkeypatch)
+    _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="", need_confirm=False))
+    intent, _h, _dt, _info = _heard_once(monkeypatch, {**EMPTY_QUESTION, "answer": ""}, WEATHER, question=_confirm_q())
+    assert (intent.intent, intent.reply, intent.question_id, intent.answer, intent.answer_value) == (
+        "unknown", parser.RETRY_PROMPT, "q3", "unclear", "")
+
+
+def test_n1_empty_heard_is_left_as_it_is(monkeypatch):
+    """(마) 들은 글자가 비면 재시도하지 않고 지금처럼(빈 question — 침묵)."""
+    talk_on(monkeypatch)
+    calls = _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="말씀하세요."))
+    intent, heard, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, "  ")
+    assert (intent.intent, intent.reply, heard, info["src"], calls) == ("question", "", "", "llm", [])
+
+
+@pytest.mark.parametrize("draft,heard,want", [
+    ({"intent": "question", "reply": "날씨는 제가 알 수 없어요."}, WEATHER, ("question", "날씨는 제가 알 수 없어요.")),
+    ({"intent": "unknown", "reply": ""}, "어버버", ("unknown", parser.RETRY_PROMPT)),
+    ({"intent": "not_for_robot", "reply": ""}, "저기 봐", ("not_for_robot", "")),
+    ({"intent": "affirm", "reply": ""}, "응", ("affirm", "")),
+    ({"intent": "navigate", "destination_candidate": DEST.name, "need_confirm": True, "reply": ""}, "화장실",
+     ("navigate", DEST.confirm_prompt)),
+])
+def test_p3_p7_n1_other_results_are_not_retried(monkeypatch, draft, heard, want):
+    """(바) reply 가 있는 question · 다른 의도는 재시도하지 않는다 — 재시도 함수가 불리지 않는다."""
+    talk_on(monkeypatch)
+    calls = _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="엉뚱한 말"))
+    intent, _h, _dt, info = _heard_once(monkeypatch, draft, heard)
+    assert ((intent.intent, intent.reply), info["src"], calls) == (want, "llm", [])
+
+
+@pytest.mark.parametrize("recut,answer,talk", [
+    ("off", "off", "off"), ("on", "on", "off"), ("on", "off", "on"), ("off", "on", "on"), ("off", "off", "on")])
+def test_n1_nothing_changes_when_talk_is_off(monkeypatch, recut, answer, talk):
+    """(사) fixed_answers.on() 이 거짓이면 아무것도 하지 않는다 — 지금과 같은 결과(빈 question = 침묵), 재시도 0회."""
+    monkeypatch.setenv("VICA_RECUT", recut)
+    monkeypatch.setenv("VICA_ANSWER", answer)
+    monkeypatch.setenv("VICA_TALK", talk)
+    calls = _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="날씨는 제가 알 수 없어요."))
+    intent, heard, dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER, question=_confirm_q())
+    assert (intent.intent, intent.reply, heard, dt, info["src"], calls) == ("question", "", WEATHER, 0.7, "llm", [])
+
+
+def _asked(kind):
+    """미션 질문 종류별 열린 질문(kind open 은 호출 응답 "네?")."""
+    from src.question_record import OpenQuestion
+    return {"confirm": _confirm_q(), "minutes": _minutes_q(),
+            "yesno": OpenQuestion("q9", "yesno", "다시 출발할까요?", (), 0.0),
+            "yesno_inverted": OpenQuestion("q8", "yesno_inverted", "안내가 필요 없으신가요?", (), 0.0),
+            "choice": OpenQuestion("q6", "choice", "별빛관 1층 화장실과 안내소 중 어디로 갈까요?", (DEST.id, OTHER.id), 0.0),
+            "open": OpenQuestion("q0", "open", "네?", (), 0.0)}[kind]
+
+
+class _SoundAndText(_Sound):
+    """소리(ask)와 재시도 글자(ask_text) 둘 다 받는 가짜 Realtime — 재시도가 진짜 parse_intent_realtime_text 를 지난다."""
+
+    def __init__(self, draft, heard, retry):
+        super().__init__(draft, heard)
+        self.retry, self.texts = retry, 0
+
+    def ask_text(self, text, history, instructions, **kw):
+        self.texts += 1
+        return RealtimeResult(draft=dict(self.retry), heard_text=text, latency_sec=0.3)
+
+
+def _through_text(monkeypatch, retry, heard, question):
+    client = _SoundAndText({**EMPTY_QUESTION, "answer": "other"}, heard, retry)
+    monkeypatch.setattr(parser, "get_realtime_client", lambda: client)
+    out = parse_intent_audio(PCM, [DEST, OTHER], question=question)
+    return out, client.texts
+
+
+@pytest.mark.parametrize("kind", ["confirm", "yesno", "yesno_inverted", "choice", "minutes"])
+def test_p3_n1_review_a_retry_question_with_yes_does_not_answer_the_mission(monkeypatch, kind):
+    """검토 A: 미션 질문이 열린 채 재시도가 question + answer=yes("응 근데 거기 몇 층이야") — 대답 칸은 other(질문과 상관없는 말)."""
+    talk_on(monkeypatch)
+    q = _asked(kind)
+    (intent, _h, _dt, info), texts = _through_text(monkeypatch, {"intent": "question", "reply": "1층이에요.", "answer": "yes"},
+                                                   "응 근데 거기 몇 층이야", q)
+    assert (intent.intent, intent.reply, intent.question_id, intent.answer, intent.answer_value) == (
+        "question", "1층이에요.", q.id, "other", "")
+    assert (info["src"], texts) == ("llm+빈대답재시도", 1)
+
+
+@pytest.mark.parametrize("given,value", [("yes", ""), ("no", ""), ("destination", OTHER.id), ("minutes", "5"),
+                                         ("unclear", ""), ("", "")])
+def test_p3_n1_adopted_question_always_answers_other(monkeypatch, given, value):
+    """채택한 question 의 대답 칸은 재시도가 무엇을 냈든 other — 재시도가 채운 answer·answer_value 는 버린다."""
+    talk_on(monkeypatch)
+    again = parser.VicaIntent(intent="question", reply="1층이에요.", need_confirm=False, question_id="q3",
+                              answer=given, answer_value=value)
+    _retry_gives(monkeypatch, again)
+    intent, _h, _dt, _info = _heard_once(monkeypatch, EMPTY_QUESTION, "근데 거기 몇 층이야", question=_confirm_q())
+    assert (intent.intent, intent.question_id, intent.answer, intent.answer_value) == ("question", "q3", "other", "")
+
+
+def test_p3_n1_adopted_question_without_an_open_question_has_no_answer(monkeypatch):
+    """열린 질문이 없으면 fill 이 아무것도 하지 않는다 — 재시도가 남긴 대답 칸도 버린 채 빈 값."""
+    talk_on(monkeypatch)
+    again = parser.VicaIntent(intent="question", reply="1층이에요.", need_confirm=False, question_id="q3", answer="yes")
+    _retry_gives(monkeypatch, again)
+    intent, _h, _dt, _info = _heard_once(monkeypatch, EMPTY_QUESTION, "거기 몇 층이야")
+    assert (intent.intent, intent.question_id, intent.answer, intent.answer_value) == ("question", "", "", "")
+
+
+@pytest.mark.parametrize("kind", ["confirm", "yesno", "yesno_inverted", "choice", "minutes"])
+def test_p3_n1_review_b_retry_dismiss_under_a_mission_question_asks_again(monkeypatch, kind):
+    """검토 B: 미션 질문(open 이 아닌 종류)이 열린 채 재시도가 dismiss(+yes, "됐어 그냥 가") — 쓰지 않고 되묻는다. 미션은 dismiss 를"""
+    talk_on(monkeypatch)
+    q = _asked(kind)
+    (intent, _h, _dt, info), texts = _through_text(monkeypatch, {"intent": "dismiss", "reply": "", "answer": "yes"},
+                                                   "됐어 그냥 가", q)
+    assert (intent.intent, intent.reply, intent.question_id, intent.answer) == ("unknown", parser.RETRY_PROMPT, q.id, "unclear")
+    assert (info["src"], texts) == ("llm+빈대답되묻기", 1)
+
+
+@pytest.mark.parametrize("kind", [None, "open"])
+def test_p3_p31_n1_retry_dismiss_is_kept_without_a_mission_question(monkeypatch, kind):
+    """dismiss 는 열린 질문이 없거나 "네?"(kind open)일 때만 쓴다."""
+    talk_on(monkeypatch)
+    q = _asked(kind) if kind else None
+    (intent, _h, _dt, info), _texts = _through_text(monkeypatch, {"intent": "dismiss", "reply": ""}, "됐어 그만할게", q)
+    assert (intent.intent, intent.reply, info["src"]) == ("dismiss", "", "llm+빈대답재시도")
+
+
+@pytest.mark.parametrize("kind,answer", [("open", "unclear"), ("yesno", "unclear"), ("minutes", "unclear")])
+def test_p8_n1_asking_again_under_other_open_questions(monkeypatch, kind, answer):
+    """검토 Minor 3: 되묻기를 "네?"(open)·yesno·minutes 가 열린 때에도 본다. yesno·minutes 는 unclear(미션이 그 질문을 다시 묻는다)."""
+    talk_on(monkeypatch)
+    q = _asked(kind)
+    _retry_gives(monkeypatch, parser.VicaIntent(intent="affirm", reply="", need_confirm=False))
+    intent, _h, _dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER, question=q)
+    assert (intent.intent, intent.reply, intent.need_confirm, intent.question_id, intent.answer, intent.answer_value) == (
+        "unknown", parser.RETRY_PROMPT, False, q.id, answer, "")
+    assert info["src"] == "llm+빈대답되묻기"
+
+
+@pytest.mark.parametrize("latency,timeout,retried", [
+    (0.7, 8.0, True), (5.9, 8.0, True),
+    (6.0, 8.0, False), (6.5, 8.0, False),
+    (0.7, 13.5, False),
+])
+def test_p8_n1_retry_only_within_the_audio_turn_budget(monkeypatch, capsys, latency, timeout, retried):
+    """검토 Minor 2: (첫 호출 시간 + Realtime 시간 초과 + 1 s) 가 AUDIO_TURN_MAX_AGE_SEC 이상이면 재시도하지 않고 바로 되묻는다."""
+    from src.realtime_intent import AUDIO_TURN_MAX_AGE_SEC
+    assert AUDIO_TURN_MAX_AGE_SEC == 15.0
+    talk_on(monkeypatch)
+    calls = _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="날씨는 제가 알 수 없어요.", need_confirm=False))
+    intent, _h, dt, info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER, latency=latency, timeout_sec=timeout)
+    assert len(calls) == (1 if retried else 0)
+    if retried:
+        assert (intent.intent, info["src"]) == ("question", "llm+빈대답재시도")
+    else:
+        assert (intent.intent, intent.reply, info["src"], dt) == ("unknown", parser.RETRY_PROMPT, "llm+빈대답되묻기", latency)
+        assert "재시도 생략" in capsys.readouterr().err
+
+
+def test_n1_log_line_keeps_the_two_times_apart(monkeypatch, capsys):
+    """검토 Minor 1: [빈 대답] 줄에 첫 호출 시간과 재시도 시간을 따로 적는다. [RT] 줄의 dt(돌려주는 지연초)는 둘을 더한 값이다."""
+    talk_on(monkeypatch)
+    _retry_gives(monkeypatch, parser.VicaIntent(intent="question", reply="날씨는 제가 알 수 없어요.", need_confirm=False))
+    _intent, _h, dt, _info = _heard_once(monkeypatch, EMPTY_QUESTION, WEATHER, latency=1.9)
+    line = next(l for l in capsys.readouterr().err.splitlines() if l.startswith("[빈 대답]"))
+    assert "dt=1.9s" in line and "재시도=0.0s" in line and dt >= 1.9

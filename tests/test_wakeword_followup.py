@@ -366,3 +366,68 @@ def test_approach_min_rms_from_env(monkeypatch):
         assert approach_min_rms_from_env() is None
     monkeypatch.delenv("VICA_APPROACH_MIN_RMS")
     assert approach_min_rms_from_env() is None
+
+
+class TestListenClip:
+    """말소리 저장(2026-10-20 STT 시험) — 말소리가 있던 창은 통과·기각 모두 소리와 판정을 넘긴다."""
+
+    LOUD1 = np.full(1280, 3000, dtype=np.int16)
+    MID = np.full(1280, 1500, dtype=np.int16)
+
+    def _followup(self, fake, texts, clips):
+        m = WakewordMonitor(
+            on_emergency=lambda e: None,
+            on_user_text=texts.append,
+            on_wake=lambda: None,
+            predict=fake.predict,
+            transcribe=fake.transcribe,
+            on_listen_clip=lambda audio, info: clips.append((len(audio), info)),
+        )
+        m.arm_followup(now=0.0)
+        m.set_muted(False, now=0.0)
+        return m
+
+    def test_passed_text_is_reported_with_its_audio(self):
+        texts, clips = [], []
+        m = self._followup(Fake(text="남자 화장실."), texts, clips)
+        speak_answer(m, 0.1)
+        assert texts == ["남자 화장실."]
+        assert len(clips) == 1 and clips[0][0] > 0
+        info = clips[0][1]
+        assert info["result"] == "text" and info["text"] == "남자 화장실." and info["followup"] is True
+        assert info["stt"] >= 0 and info["rms"] > 0 and info["stt_text"] == "남자 화장실."
+
+    def test_saving_comes_after_the_text_is_handed_on(self):
+        """글자를 LLM 쪽으로 넘긴 뒤에 저장한다 — 저장이 늦어도 대답 길은 기다리지 않는다."""
+        order = []
+        m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=lambda t: order.append("text"),
+                            on_wake=lambda: None, predict=Fake().predict, transcribe=Fake(text="네.").transcribe,
+                            on_listen_clip=lambda audio, info: order.append("clip"))
+        m.arm_followup(now=0.0)
+        m.set_muted(False, now=0.0)
+        speak_answer(m, 0.1)
+        assert order == ["text", "clip"]
+
+    def test_rejections_are_reported_too(self):
+        for text, frame, want in (("방2", self.LOUD1, "short-reject"), ("네.", self.MID, "ghost")):
+            texts, clips = [], []
+            m = self._followup(Fake(text=text), texts, clips)
+            run_frames(m, 1, frame, t0=0.1, vad=True)
+            run_frames(m, 12, QUIET, t0=0.18)
+            assert texts == [] and [c[1]["result"] for c in clips] == [want]
+
+    def test_a_silent_window_reports_nothing(self):
+        texts, clips = [], []
+        m = self._followup(Fake(text=""), texts, clips)
+        run_frames(m, int(CONFIRM_WINDOW_SEC / 0.08) + 2, QUIET, t0=0.1)
+        assert clips == []
+
+    def test_a_failing_saver_does_not_stop_the_ear(self):
+        texts = []
+        m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=texts.append, on_wake=lambda: None,
+                            predict=Fake().predict, transcribe=Fake(text="네.").transcribe,
+                            on_listen_clip=lambda audio, info: 1 / 0)
+        m.arm_followup(now=0.0)
+        m.set_muted(False, now=0.0)
+        speak_answer(m, 0.1)
+        assert texts == ["네."]

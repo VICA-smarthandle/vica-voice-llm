@@ -18,12 +18,17 @@ DIALOG_KO = {
     "asking_next": "도착 질문 중",
     "asking_wait_time": "대기 시간 질문 중",
     "waiting": "대기 중",
-    "waiting_release": "손 놓기 기다림(손을 놓으면 혼자 대기 장소로 감)",
+    "waiting_release": "대기 장소로 떠나기 직전(말이 끝나면 곧 혼자 감, 손은 안 봄 — 2026-10-21)",
     "moving_to_wait_spot": "대기 장소로 혼자 이동 중",
     "moving_back_to_dest": "대기 장소가 막혀 입구 앞으로 돌아가는 중",
     "returning": "제자리로 복귀 중",
     "estopped": "비상 정지",
     "failed": "이동 실패",
+    "patrolling": "경비 순찰 중(다음 지점으로 이동)",
+    "patrol_dwell": "경비 순찰 중(지점에서 잠깐 정지)",
+    "patrol_alarm": "경비 경보로 정지(사람·큰 소리·카메라 끊김)",
+    "patrol_light": "경비 경보로 정지(불 켜짐)",
+    "patrol_paused": "경비 순찰 일시정지",
 }
 
 HEADER = ("\n[지금 상황] (미션이 확인한 사실 — 대화 이력이 비어 있어도 이것은 맞다. "

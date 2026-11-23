@@ -1,6 +1,7 @@
 """마이크 점검기의 .env 편집 — 백업 먼저, 표시 남기기, 관계없는 줄 보존, 중복 키 거절, 되돌리기(설계 7절)."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -9,8 +10,9 @@ from dotenv import dotenv_values
 from src.env_file import (EnvEditError, change_line, format_value, latest_backup, plan_changes, read_env,
                           restore_latest, values_from, write_changes)
 from src.mic_check_rules import MicValues
-from src.wakeword_monitor import (emergency_single_frame_from_env, listen_thresholds_from_env,
-                                  wake_threshold_from_env)
+from src.dsp_state import agc_max_gain_from_env
+from src.wakeword_monitor import (approach_min_rms_from_env, emergency_single_frame_from_env,
+                                  listen_band_min_from_env, listen_thresholds_from_env, wake_threshold_from_env)
 
 SAMPLE = """# 맨 위 주석
 VICA_LLM_PROVIDER=openai
@@ -32,11 +34,26 @@ def env(tmp_path):
 
 
 def test_values_from_defaults_match_node():
-    assert values_from({}) == MicValues(0.008, 0.02, 0.70, 0.50, 0.010, 1.0, 0)
+    assert values_from({}) == MicValues(0.008, 0.02, 0.70, 0.50, 0.010, 1.0, 0, band_min=0.004)
 
 
 def test_values_from_sample(env):
-    assert values_from(read_env(env)) == MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1)
+    assert values_from(read_env(env)) == MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1, band_min=0.004)
+
+
+@pytest.mark.parametrize("raw", ["0.006", "0.0035", "abc", "1.2", "", "0", "off", "OFF"])
+def test_new_values_parse_like_node(monkeypatch, raw):
+    """접근 대답 최소·대역 최소는 wakeword_monitor, 최대 증폭은 dsp_state 의 ⑫ 해석과 같은 값이어야 한다."""
+    monkeypatch.setenv("VICA_APPROACH_MIN_RMS", raw)
+    monkeypatch.setenv("VICA_LISTEN_BAND_MIN", raw)
+    v = values_from({"VICA_APPROACH_MIN_RMS": raw, "VICA_LISTEN_BAND_MIN": raw})
+    assert v.approach_min_rms == approach_min_rms_from_env()
+    assert v.band_min == listen_band_min_from_env()
+
+
+@pytest.mark.parametrize("raw", ["2", "4", "31.6", "0.5", "1001", "", "0", "off", "abc"])
+def test_max_gain_parses_like_node(raw):
+    assert values_from({"VICA_MIC_AGC_MAX_GAIN": raw}).agc_max_gain == agc_max_gain_from_env(raw)
 
 
 @pytest.mark.parametrize("raw", ["0.65", "abc", "1.2", "", "0"])
@@ -73,6 +90,10 @@ def test_format_value():
     assert format_value("agc", 0.01) == "0.010"
     assert format_value("echo_etail", 1.0) == "1.0"
     assert format_value("echo_nlatten", 0) == "0"
+    assert format_value("agc_max_gain", 4.0) == "4" and format_value("agc_max_gain", 31.6) == "31.6"
+    assert format_value("approach_min_rms", 0.006) == "0.006" and format_value("band_min", 0.0035) == "0.0035"
+    for field in ("agc_max_gain", "approach_min_rms", "band_min"):
+        assert format_value(field, None) == "off"
 
 
 def test_plan_changes_only_differences():
@@ -88,9 +109,31 @@ def test_plan_changes_only_differences():
     assert change_line(changes[1], NOTE) == "VICA_WAKE_THRESHOLD=0.65  # 10-27 시연장 점검에서 바꿈 (전 0.70)"
 
 
+def test_plan_changes_new_keys():
+    a = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1, band_min=0.004)
+    b = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1, agc_max_gain=2.0, approach_min_rms=0.003, band_min=0.002)
+    assert [(c.key, c.old, c.new) for c in plan_changes(a, b)] == [
+        ("VICA_MIC_AGC_MAX_GAIN", "off", "2"),
+        ("VICA_APPROACH_MIN_RMS", "off", "0.003"),
+        ("VICA_LISTEN_BAND_MIN", "0.004", "0.002"),
+    ]
+
+
+def test_restore_removes_new_key_lines_the_save_added(env, tmp_path):
+    bk = tmp_path / "bk"
+    before = values_from(read_env(env))
+    after = MicValues(0.008, 0.02, 0.70, 0.50, 0.007, 1.5, 1, agc_max_gain=2.0, band_min=0.002)
+    write_changes(env, plan_changes(before, after), NOTE, bk, NOW)
+    assert values_from(read_env(env)) == after
+    restore_latest(env, bk, datetime(2026, 10, 27, 18, 0, 0))
+    saved = read_env(env)
+    assert "VICA_MIC_AGC_MAX_GAIN" not in saved and "VICA_LISTEN_BAND_MIN" not in saved
+    assert values_from(saved) == before
+
+
 def test_write_replaces_existing_and_appends_missing(env, tmp_path):
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.010, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.010, 1.5, 1, band_min=0.004)
     backup = write_changes(env, plan_changes(before, after), NOTE, tmp_path / "bk", NOW)
     assert backup.name == ".env.20261027-143205" and backup.read_text(encoding="utf-8") == SAMPLE
     text = env.read_text(encoding="utf-8")
@@ -111,7 +154,7 @@ def test_duplicate_key_refused_and_nothing_written(tmp_path):
     p.write_text("VICA_WAKE_THRESHOLD=0.7\nVICA_WAKE_THRESHOLD=0.6\n", encoding="utf-8")
     a = values_from(read_env(p))
     b = MicValues(a.listen_min_rms, a.short_answer_min_rms, 0.65, a.emergency_single, a.agc,
-                  a.echo_etail, a.echo_nlatten)
+                  a.echo_etail, a.echo_nlatten, band_min=a.band_min)
     with pytest.raises(EnvEditError, match="2줄"):
         write_changes(p, plan_changes(a, b), NOTE, tmp_path / "bk", NOW)
     assert p.read_text(encoding="utf-8") == "VICA_WAKE_THRESHOLD=0.7\nVICA_WAKE_THRESHOLD=0.6\n"
@@ -126,7 +169,7 @@ def test_no_changes_refused(env, tmp_path):
 def test_restore_latest_and_before_restore(env, tmp_path):
     bk = tmp_path / "bk"
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     write_changes(env, plan_changes(before, after), NOTE, bk, NOW)
     restored_from = restore_latest(env, bk, datetime(2026, 10, 27, 18, 0, 0))
     assert restored_from.name == ".env.20261027-143205"
@@ -144,7 +187,7 @@ def test_restore_latest_and_before_restore(env, tmp_path):
 def test_restore_touches_only_mic_keys(env, tmp_path):
     bk = tmp_path / "bk"
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     write_changes(env, plan_changes(before, after), NOTE, bk, NOW)
     with env.open("a", encoding="utf-8") as f:
         f.write("VICA_DESTINATIONS_YAML=/new\n")
@@ -162,7 +205,7 @@ def test_restore_touches_only_mic_keys(env, tmp_path):
 def test_restore_removes_keys_absent_in_backup(env, tmp_path):
     bk = tmp_path / "bk"
     before = values_from(read_env(env))
-    after = MicValues(0.008, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.008, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     write_changes(env, plan_changes(before, after), NOTE, bk, NOW)
     assert "VICA_WAKE_THRESHOLD" in read_env(env)
     restore_latest(env, bk, datetime(2026, 10, 27, 18, 0, 0))
@@ -173,7 +216,7 @@ def test_restore_removes_keys_absent_in_backup(env, tmp_path):
 def test_restore_duplicate_key_refused(env, tmp_path):
     bk = tmp_path / "bk"
     before = values_from(read_env(env))
-    write_changes(env, plan_changes(before, MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)), NOTE, bk, NOW)
+    write_changes(env, plan_changes(before, MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)), NOTE, bk, NOW)
     with env.open("a", encoding="utf-8") as f:
         f.write("VICA_MIC_AGC_DESIRED=0.02\n")
     text = env.read_text(encoding="utf-8")
@@ -190,9 +233,9 @@ def test_restore_without_backup(env, tmp_path):
 def test_backup_same_second_gets_suffix(env, tmp_path):
     bk = tmp_path / "bk"
     a = values_from(read_env(env))
-    b = MicValues(0.010, 0.02, 0.70, 0.50, 0.007, 1.5, 1)
+    b = MicValues(0.010, 0.02, 0.70, 0.50, 0.007, 1.5, 1, band_min=0.004)
     first = write_changes(env, plan_changes(a, b), NOTE, bk, NOW)
-    c = MicValues(0.012, 0.02, 0.70, 0.50, 0.007, 1.5, 1)
+    c = MicValues(0.012, 0.02, 0.70, 0.50, 0.007, 1.5, 1, band_min=0.004)
     second = write_changes(env, plan_changes(b, c), NOTE, bk, NOW)
     assert first.name == ".env.20261027-143205" and second.name == ".env.20261027-143205-1"
     assert latest_backup(bk) == second
@@ -205,7 +248,7 @@ def _tmp_leftovers(folder):
 def test_write_keeps_file_mode_and_leaves_no_temp(env, tmp_path):
     env.chmod(0o600)
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     write_changes(env, plan_changes(before, after), NOTE, tmp_path / "bk", NOW)
     assert env.stat().st_mode & 0o777 == 0o600
     assert _tmp_leftovers(env.parent) == []
@@ -215,7 +258,7 @@ def test_restore_keeps_file_mode(env, tmp_path):
     env.chmod(0o600)
     bk = tmp_path / "bk"
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     write_changes(env, plan_changes(before, after), NOTE, bk, NOW)
     restore_latest(env, bk, datetime(2026, 10, 27, 18, 0, 0))
     assert env.stat().st_mode & 0o777 == 0o600
@@ -230,8 +273,22 @@ def test_failed_write_leaves_original(env, tmp_path, monkeypatch):
 
     monkeypatch.setattr(env_file_mod.os, "replace", boom)
     before = values_from(read_env(env))
-    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1)
+    after = MicValues(0.010, 0.02, 0.65, 0.50, 0.007, 1.5, 1, band_min=0.004)
     with pytest.raises(OSError):
         write_changes(env, plan_changes(before, after), NOTE, tmp_path / "bk", NOW)
     assert env.read_text(encoding="utf-8") == SAMPLE
     assert _tmp_leftovers(env.parent) == []
+
+
+def test_restore_keeps_hand_written_lines_absent_in_backup(env, tmp_path):
+    """백업에 없는 키라도 점검기가 쓴 줄이 아니면(10-15 손으로 넣은 최대 증폭·접근 대답 최소) 그대로 둔다(검토 10-21)."""
+    bk = tmp_path / "bk"
+    before = values_from(read_env(env))
+    write_changes(env, plan_changes(before, replace(before, wake_threshold=0.65)), NOTE, bk, NOW)
+    with env.open("a", encoding="utf-8") as f:
+        f.write("VICA_MIC_AGC_MAX_GAIN=2  # 10-15 옆사람 잡담 막기\nVICA_APPROACH_MIN_RMS=0.006\n")
+    restore_latest(env, bk, datetime(2026, 10, 27, 18, 0, 0))
+    saved = read_env(env)
+    assert "VICA_WAKE_THRESHOLD" not in saved
+    assert saved["VICA_MIC_AGC_MAX_GAIN"] == "2" and saved["VICA_APPROACH_MIN_RMS"] == "0.006"
+    assert "VICA_MIC_AGC_MAX_GAIN=2  # 10-15 옆사람 잡담 막기" in env.read_text(encoding="utf-8").splitlines()

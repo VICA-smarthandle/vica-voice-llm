@@ -112,7 +112,8 @@ class LlmBackendManager:
         with self._lock:
             self._log = safe
 
-    def invoke(self, messages: Sequence[Any]) -> Any:
+    def invoke(self, messages: Sequence[Any],
+               local_messages: Optional[Callable[[], Sequence[Any]]] = None) -> Any:
         """현재 상태의 백엔드로 호출한다. 클라우드 실패는 로컬 재호출로 받는다."""
         with self._lock:
             use_cloud = self.state is BackendState.CLOUD
@@ -125,7 +126,18 @@ class LlmBackendManager:
                 self._switch_to_local(exc)
         if self._local is None:
             raise RuntimeError("LOCAL 상태인데 로컬 백엔드가 없다")
-        return self._local(messages)
+        return self._local(local_messages() if local_messages is not None else messages)
+
+    def go_local(self, reason: str) -> bool:
+        """클라우드를 부르지 않고 바로 LOCAL 로 — 다른 길(Realtime)에서 연결 오류를 이미 봤을 때(2026-10-24 사용자)."""
+        if not self.has_local:
+            return False
+        with self._lock:
+            if self.state is BackendState.LOCAL:
+                return False
+            self._enter_local()
+        self._log("warning", f"[LLM] {reason} → 클라우드 건너뛰고 로컬({self._local_name})로")
+        return True
 
     def _switch_to_local(self, exc: BaseException) -> None:
         kind = classify_failure(exc)

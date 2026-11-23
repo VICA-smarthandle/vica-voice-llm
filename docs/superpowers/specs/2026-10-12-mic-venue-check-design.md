@@ -1,5 +1,7 @@
 # 마이크 현장 점검기 설계 (mic_venue_check)
 
+> 11-19 휴대폰 페이지 폐지 — 2026-11-19-app-mic-check-design.md 참조
+
 작성 2026-10-12 · 저장소 `vica-voice-llm` · 브랜치 `after_feedback_waiting`(지금 ⑫가 도는 브랜치, 새 브랜치 안 만듦)
 상태: 사용자 검토 대기
 화면 목업: https://claude.ai/artifact/2dZ8TTfMTNnLoDAv9Kom5Q (비공개, 가짜 데이터)
