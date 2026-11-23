@@ -123,5 +123,17 @@
  "mission_msg_approach_reask.wav": "안내를 받으시겠어요?",
  "mission_msg_approach_unanswered.wav": "필요하시면 '비카야'라고 불러 주세요.",
  "mission_msg_obstacle_stop.wav": "앞에 장애물이 있어 정지합니다.",
- "mission_msg_tipped.wav": "비카가 넘어져 관리자를 호출했습니다. 지나가실 때 주의하세요."
+ "mission_msg_tipped.wav": "비카가 넘어져 관리자를 호출했습니다. 지나가실 때 주의하세요.",
+ "mission_msg_patrol_intruder.wav": "침입자 발생",
+ "mission_msg_patrol_light.wav": "불 켜짐 감지",
+ "mission_msg_patrol_started.wav": "경비 모드를 시작합니다.",
+ "mission_msg_patrol_ended.wav": "경비 모드를 종료합니다.",
+ "vica_about_name.wav": "제 이름은 비카입니다. 비전 컴패니언을 줄인 말이에요.",
+ "vica_about_makers.wav": "저는 문지원님, 문여원님, 김민서님, 이태규님이 만들었습니다. 제 부모님들이에요.",
+ "vica_about_abilities.wav": "건물 안 목적지까지 안내하기, 도착한 곳에서 대기하기, 물류배송하기, 짐 옮기기, 야간 순찰을 할 수 있습니다.",
+ "vica_about_call.wav": "저를 부르실 때는 비카야라고 불러주세요.",
+ "vica_about_intro.wav": "안녕하세요? 저는 시각장애인 안내로봇 비카입니다. 저와 함께 목적지까지 동행하실 수 있습니다.",
+ "vica_about_language.wav": "저는 지금은 한국어만 할 수 있습니다.",
+ "vica_about_acrostic.wav": "비, 비척비척 비가 올 때는. 카, 카스 한잔 어떠세요?",
+ "vica_about_cannot.wav": "죄송해요. 아직은 제가 할 수 없습니다."
 }

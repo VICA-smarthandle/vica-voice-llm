@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from src.mic_check_replay import Models, Recording, replay_answer, replay_call, replay_stop
+from src.mic_check_replay import Models, Recording, replay_answer, replay_call, replay_near, replay_stop
 from src.mic_check_rules import MicValues
 
 WAKE = np.full(1280, 1111, dtype=np.int16)
@@ -93,3 +93,53 @@ def test_cross_trigger_seen_in_answer():
 
 def test_without_quiet_recording():
     assert replay_stop(models(), STOP_REC, None, V).confirmed
+
+
+def tone(hz, amp=3000):
+    t = np.arange(1280) / 16000.0
+    return (amp * np.sin(2 * np.pi * hz * t)).astype(np.int16)
+
+
+HUM = tone(150)
+SPEECH = tone(1000)
+
+
+def test_band_gate_follows_values():
+    """⑫ 처럼 대역 최소를 귀에 넣는다 — 칩이 말이라 해도 대역 밖 소리는 청취 창을 열지 않는다."""
+    hum = rec((QUIET, 3, False), (HUM, 10, True), (QUIET, 5, False))
+    assert replay_answer(models(), hum, QUIET_REC, V, "yes").accepted
+    assert not replay_answer(models(), hum, QUIET_REC, replace(V, band_min=0.004), "yes").accepted
+    speech = rec((QUIET, 3, False), (SPEECH, 10, True), (QUIET, 5, False))
+    assert replay_answer(models(), speech, QUIET_REC, replace(V, band_min=0.004), "yes").accepted
+
+
+FAR = rec((QUIET, 3, False), (np.full(1280, 600, dtype=np.int16), 10, True), (QUIET, 5, False))
+
+
+def test_approach_answer_uses_approach_min():
+    """접근 질문 대답 창(⑫: 미션 awaiting_user → 호출 끔)은 접근 대답 최소로 받는다. 질문 창은 수음 최소 그대로."""
+    size = replay_answer(models(), FAR, QUIET_REC, V, "yes").clip_rms
+    v = replace(V, listen_min_rms=size * 1.2, approach_min_rms=size * 0.8)
+    assert not replay_answer(models(), FAR, QUIET_REC, v, "yes").accepted
+    far = replay_answer(models(), FAR, QUIET_REC, v, "yes", approach=True)
+    assert far.accepted and far.correct
+    assert not replay_answer(models(), FAR, QUIET_REC, replace(v, approach_min_rms=None), "yes", approach=True).accepted
+
+
+def test_near_checks_question_and_approach_windows():
+    size = replay_answer(models(), FAR, QUIET_REC, V, "yes").clip_rms
+    v = replace(V, listen_min_rms=size * 1.2, approach_min_rms=size * 0.8)
+    r = replay_near(models(confirm="어제 그거"), FAR, QUIET_REC, v)
+    assert not r.leaked and r.leaked_approach and r.text == "어제 그거"
+    assert r.clip_rms == pytest.approx(size) and not r.emergency
+    quiet = replay_near(models(), FAR, QUIET_REC, replace(v, approach_min_rms=size * 1.2))
+    assert not quiet.leaked and not quiet.leaked_approach and quiet.text == ""
+
+
+def test_approach_none_ignores_env_value(monkeypatch):
+    """점검기는 .env 를 환경에 올린다 — 값이 None(줄 없음)이면 귀가 환경의 옛 값을 쓰면 안 된다(검토 10-21)."""
+    size = replay_answer(models(), FAR, QUIET_REC, V, "yes").clip_rms
+    monkeypatch.setenv("VICA_APPROACH_MIN_RMS", f"{size * 0.8:.6f}")
+    v = replace(V, listen_min_rms=size * 1.2, approach_min_rms=None)
+    assert not replay_answer(models(), FAR, QUIET_REC, v, "yes", approach=True).accepted
+    assert not replay_near(models(), FAR, QUIET_REC, v).leaked_approach

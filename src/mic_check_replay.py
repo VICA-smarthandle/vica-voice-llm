@@ -7,7 +7,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 
 from .handle_mode import AFFIRMATIVES, NEGATIVES, SOFT_AFFIRMATIVES, normalize_short_reply
-from .mic_check_rules import AnswerTry, CallTry, MicValues, StopTry
+from .mic_check_rules import AnswerTry, CallTry, MicValues, NearTry, StopTry
 from .wakeword_monitor import FRAME, SAMPLE_RATE, WakewordMonitor
 
 DT = FRAME / SAMPLE_RATE
@@ -64,7 +64,10 @@ class _Run:
             single_b=values.emergency_single,
             listen_min_rms=values.listen_min_rms,
             short_answer_min_rms=values.short_answer_min_rms,
+            approach_min_rms=values.approach_min_rms,
+            listen_band_min=values.band_min,
         )
+        self.monitor.approach_min_rms = values.approach_min_rms
 
     def _tracked(self, frame: np.ndarray) -> dict:
         scores = self._predict(frame)
@@ -88,9 +91,11 @@ def _cycle(quiet: Optional[Recording], n: int) -> list:
 
 
 def _play(models: Models, values: MicValues, rec: Recording, quiet: Optional[Recording],
-          followup: bool) -> tuple:
+          followup: bool, approach: bool = False) -> tuple:
     """조용한 조각 → (질문 창 열기) → 녹음 → 조용한 조각. (_Run, 녹음 이후 결과들) 을 돌려준다."""
     run = _Run(models, values)
+    if approach:
+        run.monitor.set_wake_suppressed(True)
     t, _ = run.feed(_cycle(quiet, FLUSH_FRAMES), [False] * FLUSH_FRAMES, 0.0)
     if followup:
         run.monitor.arm_followup(now=t)
@@ -118,15 +123,26 @@ def replay_call(models: Models, rec: Recording, quiet: Optional[Recording], valu
 
 
 def replay_answer(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues,
-                  expected: str) -> AnswerTry:
-    """'네'·'아니요' — 질문 창을 열고 흘려 받아들여지는지와 긍정·부정을 본다."""
-    run, _ = _play(models, values, rec, quiet, followup=True)
+                  expected: str, approach: bool = False) -> AnswerTry:
+    """'네'·'아니요' — 질문 창을 열고 흘려 받아들여지는지와 긍정·부정을 본다. approach 면 접근 질문 대답 창."""
+    run, _ = _play(models, values, rec, quiet, followup=True, approach=approach)
     text = run.texts[0] if run.texts else ""
     stats = run.monitor.last_listen_stats
     correct = bool(text) and (is_affirmative(text) if expected == "yes" else is_negative(text))
     return AnswerTry(expected=expected, accepted=bool(run.texts), correct=correct,
                      clip_rms=float(stats["rms"]) if stats else None, text=text,
                      emergency=bool(run.emergencies))
+
+
+def replay_near(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues) -> NearTry:
+    """옆사람 잡담 — 질문 창과 접근 대답 창에 따로 흘린다. 받아쓰기까지 가면 샌 것이다."""
+    q, _ = _play(models, values, rec, quiet, followup=True)
+    a, _ = _play(models, values, rec, quiet, followup=True, approach=True)
+    stats = q.monitor.last_listen_stats or a.monitor.last_listen_stats
+    texts = q.texts or a.texts
+    return NearTry(leaked=bool(q.texts), leaked_approach=bool(a.texts),
+                   clip_rms=float(stats["rms"]) if stats else None, text=texts[0] if texts else "",
+                   emergency=bool(q.emergencies or a.emergencies))
 
 
 def replay_stop(models: Models, rec: Recording, quiet: Optional[Recording], values: MicValues) -> StopTry:

@@ -24,8 +24,11 @@ def test_handle_pause_reads_differently_from_voice_pause():
 
 
 def test_facts_cover_the_questions_users_ask():
-    for must in ("진동", "손을 놓으면", "다시 잡으면", "잡지 않고", "당기면", "세 번"):
+    for must in ("진동", "손을 놓아도", "서지 않는다", "잡지 않고", "당기면", "세 번"):
         assert must in parser.HANDLE_FACTS, must
+    assert "그 자리에 서고" not in parser.HANDLE_FACTS
+    for word in ("멈춰", "정지"):
+        assert word not in parser.HANDLE_FACTS, word
     for number in ("0.5", "80", "2초"):
         assert number not in parser.HANDLE_FACTS, number
 

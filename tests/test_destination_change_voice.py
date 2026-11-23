@@ -100,7 +100,7 @@ class TestSituationInPrompts:
             assert "바꿀까요?" in prompt
             assert "'대기 장소' 줄" in prompt
             assert "방향" in prompt and "question" in prompt
-            assert "손 놓기 기다림" in prompt
+            assert "대기 장소로 떠나기 직전" in prompt
             assert "다녀왔어" in prompt and "finish" in prompt
         assert "navigate(주행 중 바꾸기)" in audio
         assert "…에 도착했습니다" in audio and "… 앞에 도착했습니다" not in audio

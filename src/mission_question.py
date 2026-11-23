@@ -1,12 +1,15 @@
 """미션이 질문 중일 때 LLM 대답을 줄이는 판단 (미션 요청 반응표 2026-10-08, 규칙 2·다시 묻기)."""
 from __future__ import annotations
 
-from typing import Sequence
+import re
+from typing import Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage
 
+from .handle_mode import AFFIRMATIVES, NEGATIVES
 from .local_rules import ANSWER_WAIT_STATES
-from .mission_phrases import HELP_CANCEL_CONFIRM, HELP_CONFIRM, WAIT_FINISH_ASK, WAIT_NEED_ASK
+from .mission_phrases import (HELP_CANCEL_CONFIRM, HELP_CONFIRM, SPK_IDENTITY, SPK_REASK, WAIT_FINISH_ASK,
+                              WAIT_NEED_ASK)
 from .replies import CANCEL_CONFIRM, RESUME_CONFIRM, WAKE_GREETING, expects_answer
 from .schema import VicaIntent
 
@@ -40,11 +43,59 @@ def confirming_same_place(intent, dialog_state: str, last_robot_text: str,
     return outer == [name]
 
 
+SPK_WAIT_STATES = ("waiting", "waiting_release")
+SPK_GATED_KINDS = ("navigate", "cancel", "finish", "resume", "wait")
+SPK_GATE_FRESH_SEC = 20.0
+_IDENTITY_HEAD, _IDENTITY_TAIL = SPK_IDENTITY.split("{dest}")
+
+
+def spk_gate_question(last_robot_text: str, age_sec: float, dialog_state: str, spk_on: bool) -> str:
+    """대기 중 본인 확인 질문이 열려 있으면 "reask"·"identity", 아니면 "". 마지막 로봇 말로 판단한다."""
+    if not spk_on or dialog_state not in SPK_WAIT_STATES or age_sec > SPK_GATE_FRESH_SEC:
+        return ""
+    text = (last_robot_text or "").strip()
+    if text == SPK_REASK:
+        return "reask"
+    if text.startswith(_IDENTITY_HEAD) and text.endswith(_IDENTITY_TAIL):
+        return "identity"
+    return ""
+
+
+def _yes_no(text: str) -> Optional[str]:
+    """첫 낱말이 부정이면 deny, 낱말이 모두 긍정이면 affirm. '음' 같은 망설임은 긍정으로 안 본다."""
+    words = re.findall(r"[0-9A-Za-z가-힣]+", text or "")
+    if not words:
+        return None
+    if words[0] in NEGATIVES:
+        return "deny"
+    if all(w in AFFIRMATIVES for w in words):
+        return "affirm"
+    return None
+
+
+def identity_answer(intent, text: str, gate: str):
+    """본인 질문의 짧은 네/아니요는 글자로 정한다."""
+    if gate != "identity" or getattr(intent, "safety_flag", "") == "emergency":
+        return intent
+    kind = _yes_no(text)
+    if kind is None:
+        return intent
+    return intent.model_copy(update={"intent": kind, "destination_candidate": None,
+                                     "matched_destination_id": None, "need_confirm": False, "reply": ""})
+
+
 def quiet_for_mission(intent, dialog_state: str, last_robot_text: str,
-                      last_robot_age_sec: float, place_names: Sequence[str] = ()):
+                      last_robot_age_sec: float, place_names: Sequence[str] = (),
+                      spk_on: bool = False, spk_gate: str = ""):
     """미션이 이어서 말할 자리면 LLM reply 를 비운 intent 를, 아니면 그대로 돌려준다."""
     if getattr(intent, "safety_flag", "") == "emergency" or not intent.reply:
         return intent
+    if spk_on and dialog_state in SPK_WAIT_STATES and intent.intent in SPK_GATED_KINDS:
+        if intent.intent == "resume":
+            return intent.model_copy(update={"reply": "", "need_confirm": False})
+        return intent.model_copy(update={"reply": ""})
+    if spk_on and dialog_state in SPK_WAIT_STATES and spk_gate:
+        return intent.model_copy(update={"reply": ""})
     if dialog_state == "awaiting_user" and intent.intent != "question":
         return intent.model_copy(update={"reply": "", "need_confirm": False}
                                  if intent.intent == "resume" else {"reply": ""})

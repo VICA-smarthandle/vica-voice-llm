@@ -15,10 +15,11 @@ import numpy as np
 
 from .env_file import (KEYS, change_line, plan_changes, read_env, restore_latest, values_from,
                        write_changes)
-from .mic_check_replay import DT, Models, Recording, replay_answer, replay_call, replay_stop
-from .mic_check_rules import (AGC_CHOICES, ANSWER_REPS, CALL_REPS, ECHO_CHOICES, ECHO_LABELS, NAMES, RANGES,
-                              RUN_REPS, STOP_REPS, Measurements, MicValues, RobotRun, call_delivered, check_values,
-                              echo_name, judge, noise_floor)
+from .mic_check_replay import DT, Models, Recording, replay_answer, replay_call, replay_near, replay_stop
+from .mic_check_rules import (AGC_CHOICES, AGC_MAX_GAIN_FACTORY, ANSWER_REPS, CALL_REPS, ECHO_CHOICES, ECHO_LABELS,
+                              FAR_EXPECTED, FAR_REPS, GAIN_CHOICES, NAMES, NEAR_REPS, RANGES, RUN_REPS,
+                              SHORT_OVER_LISTEN, STOP_REPS, Measurements, MicValues, RobotRun, call_delivered,
+                              check_values, echo_name, gain_of, judge, noise_floor)
 from .wakeword_monitor import SAMPLE_RATE, WakewordMonitor
 
 NOISE_WINDOW = 125
@@ -28,9 +29,9 @@ AFTER_LINE_SEC = 1.0
 ROBOT_LEAD_SEC = 1.0
 ROBOT_SETTLE_SEC = 2.0
 STEP_NO_OFFSET = 2
-TOTAL_STEPS = 7
-REC_KINDS = ("quiet", "call", "answer", "stop")
-ROW_OF = {"quiet": "noise", "call": "call", "answer": "answer", "stop": "stop"}
+TOTAL_STEPS = 9
+REC_KINDS = ("quiet", "call", "answer", "stop", "far", "near")
+ROW_OF = {"quiet": "noise", "call": "call", "answer": "answer", "stop": "stop", "far": "far", "near": "near"}
 ANSWER_EXPECTED = ("yes", "yes", "no", "no")
 
 
@@ -49,9 +50,12 @@ STEPS = (
     Step("answer", "짧은 답", ("“그래”", "“그래”", "“아니”", "“아니”"), 4.0),
     Step("stop", "멈춰", ("“멈춰”",) * STOP_REPS, 4.0),
     Step("robot", "로봇 혼자 말하기", ("30초 동안 조용히 계세요",), 0.0),
+    Step("far", "먼 대답", ("로봇 앞 1~1.5 m 에서 “그래”", "로봇 앞 1~1.5 m 에서 “아니”"), 4.0),
+    Step("near", "옆사람", ("옆사람이 1~3 m 에서 평소 목소리로 잡담 — 사용자는 조용히",) * NEAR_REPS, 6.0),
     Step("result", "결과표", ("점검이 끝났습니다",), 0.0),
 )
-NEEDS = {"quiet": 1, "call": CALL_REPS + RUN_REPS, "answer": ANSWER_REPS, "stop": STOP_REPS, "robot": 1}
+NEEDS = {"quiet": 1, "call": CALL_REPS + RUN_REPS, "answer": ANSWER_REPS, "stop": STOP_REPS, "robot": 1,
+         "far": FAR_REPS, "near": NEAR_REPS}
 
 
 @dataclass(frozen=True)
@@ -89,7 +93,8 @@ def _noise_segments(rec: Recording) -> list:
 def _values_dict(v: MicValues) -> dict:
     return {"listen_min_rms": v.listen_min_rms, "short_answer_min_rms": v.short_answer_min_rms,
             "wake_threshold": v.wake_threshold, "emergency_single": v.emergency_single,
-            "agc": v.agc, "echo": echo_name(v.echo_etail, v.echo_nlatten) or "start"}
+            "agc": v.agc, "echo": echo_name(v.echo_etail, v.echo_nlatten) or "start",
+            "agc_max_gain": v.agc_max_gain, "approach_min_rms": v.approach_min_rms, "band_min": v.band_min}
 
 
 def previous_robot_level(root: Path, exclude: Optional[Path] = None) -> Optional[float]:
@@ -157,6 +162,8 @@ class Session:
         self._calls: list = []
         self._answers: list = []
         self._stops: list = []
+        self._fars: list = []
+        self._nears: list = []
         self._first: Optional[Measurements] = None
         self._rec: Optional[_Recorder] = None
         self._t = 0.0
@@ -190,7 +197,10 @@ class Session:
             listen_hint=models.listen_hint, voice_barge_in=False,
             gate_a=env_values.wake_threshold, single_b=env_values.emergency_single,
             listen_min_rms=env_values.listen_min_rms, short_answer_min_rms=env_values.short_answer_min_rms,
+            approach_min_rms=env_values.approach_min_rms, listen_band_min=env_values.band_min,
         )
+        self.live.approach_min_rms = env_values.approach_min_rms
+        self._far_release = False
         self._publish_status()
         self._publish_results()
 
@@ -221,6 +231,8 @@ class Session:
         vad = self.hw.read_vad() if (recording or listening) else None
         self._frame_vad = vad
         self.live.process_frame(frame, now=self._t, vad=(vad if listening else None))
+        if self._far_release and self.live.state != "listen":
+            self._release_far()
         rms = _rms(frame)
         if self._robot_running:
             self._robot_rms.append(rms)
@@ -255,7 +267,7 @@ class Session:
             return
         if self._busy():
             what = "로봇이 말하는" if self._robot_running else "녹음"
-            self._toast(f"지금은 {what} 중입니다. 끝난 뒤 다시 누르세요.")
+            self._toast(f"지금은 {what} 중입니다 · 끝난 뒤 다시 누르세요")
             return
         action()
 
@@ -276,13 +288,14 @@ class Session:
 
     def _attempts(self, key: str) -> int:
         return {"quiet": int(self._quiet is not None), "call": len(self._calls), "answer": len(self._answers),
-                "stop": len(self._stops), "robot": int(self.meas.robot is not None)}.get(key, 0)
+                "stop": len(self._stops), "robot": int(self.meas.robot is not None), "far": len(self._fars),
+                "near": len(self._nears)}.get(key, 0)
 
     def _chip_blocked(self) -> bool:
         if not self.chip_problems:
             return False
         self._toast("칩에 .env 값을 쓰지 못해 점검을 시작하지 않습니다: " + "; ".join(self.chip_problems)
-                    + " — 도구를 다시 실행하세요.")
+                    + " · 끝내기 뒤 다시 시작하세요")
         return True
 
     def _start_recording(self) -> None:
@@ -293,16 +306,22 @@ class Session:
             self._toast("이 단계에는 녹음이 없습니다.")
             return
         row = ROW_OF[kind]
-        if row in self._chips and self._chips[row][0] != self.values.chip()[0]:
+        if row in self._chips and gain_of(self._chips[row]) != self.values.gain():
             self._clear(kind)
             self._toast("AGC 가 바뀌어 이 단계를 처음부터 다시 녹음합니다.")
         if kind == "answer":
             expected = ANSWER_EXPECTED[len(self._answers)]
+        elif kind == "far":
+            expected = FAR_EXPECTED[len(self._fars)]
         elif kind == "call":
             expected = "pause" if len(self._calls) < CALL_REPS else "run"
         else:
             expected = None
-        if kind == "answer":
+        if kind == "far":
+            self.live.set_wake_suppressed(True)
+        elif self._far_release:
+            self._release_far()
+        if kind in ("answer", "far", "near"):
             self.live.arm_followup(now=self._t)
             self.live.set_speaking(False, now=self._t)
         self._rec = _Recorder(kind, int(round(self.step.seconds / DT)), expected)
@@ -311,6 +330,11 @@ class Session:
     def _finish_recording(self) -> None:
         rec_obj, self._rec = self._rec, None
         kind, rec = rec_obj.kind, rec_obj.recording()
+        if kind == "far":
+            if self.live.state == "listen":
+                self._far_release = True
+            else:
+                self.live.set_wake_suppressed(False)
         self._busy_note("채점 중")
         chip = self.values.chip()
         try:
@@ -320,6 +344,11 @@ class Session:
                 tried = replay_call(self.models, rec, self._quiet, self.judged_values)
             elif kind == "answer":
                 tried = replay_answer(self.models, rec, self._quiet, self.judged_values, rec_obj.expected)
+            elif kind == "far":
+                tried = replay_answer(self.models, rec, self._quiet, self.judged_values, rec_obj.expected,
+                                      approach=True)
+            elif kind == "near":
+                tried = replay_near(self.models, rec, self._quiet, self.judged_values)
             else:
                 tried = replay_stop(self.models, rec, self._quiet, self.judged_values)
         except Exception as exc:  # noqa: BLE001 — 한 번의 채점 실패가 도구 전체를 끝내지 않게
@@ -336,6 +365,12 @@ class Session:
         elif kind == "answer":
             self._answers.append((rec, rec_obj.expected))
             self.meas.answers.append(tried)
+        elif kind == "far":
+            self._fars.append((rec, rec_obj.expected))
+            self.meas.far.append(tried)
+        elif kind == "near":
+            self._nears.append(rec)
+            self.meas.near.append(tried)
         else:
             self._stops.append(rec)
             self.meas.stops.append(tried)
@@ -347,6 +382,10 @@ class Session:
         self._publish_status()
         self._publish_results()
 
+    def _release_far(self) -> None:
+        self._far_release = False
+        self.live.set_wake_suppressed(False)
+
     def _clear(self, kind: str) -> None:
         if kind == "quiet":
             self._quiet, self.meas.noise = None, []
@@ -356,6 +395,10 @@ class Session:
             self._answers, self.meas.answers = [], []
         elif kind == "stop":
             self._stops, self.meas.stops = [], []
+        elif kind == "far":
+            self._fars, self.meas.far = [], []
+        elif kind == "near":
+            self._nears, self.meas.near = [], []
         elif kind == "robot":
             self.meas.robot, self.meas.robot_thresholds = None, None
         self._chips.pop("noise" if kind == "quiet" else kind, None)
@@ -441,7 +484,7 @@ class Session:
     def _with_chip(self, v: MicValues) -> MicValues:
         """칩 값은 다시 채점할 수 없다(다시 녹음해야 한다) — 판정에는 늘 지금 칩 값을 쓴다."""
         return replace(v, agc=self.values.agc, echo_etail=self.values.echo_etail,
-                       echo_nlatten=self.values.echo_nlatten)
+                       echo_nlatten=self.values.echo_nlatten, agc_max_gain=self.values.agc_max_gain)
 
     def _new_values(self, key, value) -> MicValues:
         if key in RANGES:
@@ -463,6 +506,17 @@ class Session:
             if not any(abs(x - a) < 1e-9 for a in allowed):
                 raise ValueError("AGC 목표는 " + " · ".join(f"{a:.3f}" for a in sorted(allowed)) + " 중에서 고르세요.")
             return replace(self.values, agc=x)
+        if key == "agc_max_gain":
+            allowed = self._gain_choices()
+            try:
+                x = float(value)
+            except (TypeError, ValueError):
+                raise ValueError("AGC 최대 증폭 값이 숫자가 아닙니다.") from None
+            if not any(abs(x - a) < 1e-9 for a in allowed):
+                raise ValueError("AGC 최대 증폭은 " + " · ".join(f"×{a:g}" for a in allowed) + " 중에서 고르세요.")
+            if self.start_values.agc_max_gain is None and abs(x - AGC_MAX_GAIN_FACTORY) < 1e-9:
+                return replace(self.values, agc_max_gain=None)
+            return replace(self.values, agc_max_gain=x)
         if key == "echo":
             choices = self._echo_choices()
             if value not in choices:
@@ -470,6 +524,11 @@ class Session:
             etail, nlatten = choices[value]
             return replace(self.values, echo_etail=etail, echo_nlatten=nlatten)
         raise ValueError("모르는 값입니다.")
+
+    def _gain_choices(self) -> list:
+        """잰 적 있는 값 + 시작 값. 줄 없음(None)은 고르는 값이 아니다 — 돌아가려면 원래대로(되돌리기)."""
+        start = self.start_values.agc_max_gain
+        return sorted(set(GAIN_CHOICES) | ({start} if start is not None else set()))
 
     def _echo_choices(self) -> dict:
         choices = dict(ECHO_CHOICES)
@@ -498,6 +557,8 @@ class Session:
     def _apply_thresholds(self, v: MicValues) -> None:
         self.live.set_thresholds(wake=v.wake_threshold, emergency_single=v.emergency_single,
                                  listen_min_rms=v.listen_min_rms, short_answer_min_rms=v.short_answer_min_rms)
+        self.live.approach_min_rms = v.approach_min_rms
+        self.live.listen_band_min = v.band_min
 
     def _measure_all(self, values: MicValues) -> Measurements:
         m = Measurements(noise=list(self.meas.noise), chips=self._chips,
@@ -506,10 +567,12 @@ class Session:
         m.calls, m.runs = tries[:CALL_REPS], tries[CALL_REPS:]
         m.answers = [replay_answer(self.models, r, self._quiet, values, e) for r, e in self._answers]
         m.stops = [replay_stop(self.models, r, self._quiet, values) for r in self._stops]
+        m.far = [replay_answer(self.models, r, self._quiet, values, e, approach=True) for r, e in self._fars]
+        m.near = [replay_near(self.models, r, self._quiet, values) for r in self._nears]
         return m
 
     def _rejudge(self) -> None:
-        n = len(self._calls) + len(self._answers) + len(self._stops)
+        n = len(self._calls) + len(self._answers) + len(self._stops) + len(self._fars) + len(self._nears)
         if not n:
             self._toast("다시 채점할 녹음이 없습니다.")
             return
@@ -564,7 +627,7 @@ class Session:
         self.env_values = self.values
         self._saves.append({"time": self.clock().isoformat(timespec="seconds"), "backup": str(backup),
                             "lines": [change_line(c, self._note()) for c in changes]})
-        self._toast("저장했습니다. ⑫를 다시 켜야 적용됩니다.")
+        self._toast("저장했습니다 · 음성 노드를 다시 켜야 적용됩니다")
         self._publish_status()
         self._write_record()
 
@@ -582,7 +645,7 @@ class Session:
         self.env_values = self.values = restored
         self._apply_thresholds(restored)
         self._saves.append({"time": self.clock().isoformat(timespec="seconds"), "restored_from": str(src)})
-        self._toast(f"{src.name} 으로 되돌렸습니다. ⑫를 다시 켜야 적용됩니다.")
+        self._toast(f"{src.name} 으로 되돌렸습니다 · 음성 노드를 다시 켜야 적용됩니다")
         self._publish_status()
         self._publish_results()
         self._write_record()
@@ -667,6 +730,8 @@ class Session:
             "stop": ["pass" if t.confirmed else "fail" for t in self.meas.stops],
             "robot": [] if self.meas.robot is None else
                      ["pass" if self.meas.robot.self_reactions == 0 else "fail"],
+            "far": ["pass" if t.accepted and t.correct else "fail" for t in self.meas.far],
+            "near": ["fail" if t.leaked else "warn" if t.leaked_approach else "pass" for t in self.meas.near],
         }
 
     def _publish_status(self) -> None:
@@ -688,8 +753,9 @@ class Session:
             "progress": self._progress(),
             "values": _values_dict(self.values), "env_values": _values_dict(self.env_values),
             "ranges": {k: list(v) for k, v in RANGES.items()}, "names": NAMES,
-            "agc_choices": agc_choices, "echo_choices": echo_labels,
-            "env_keys": {**{k: KEYS[k] for k in RANGES}, "agc": KEYS["agc"],
+            "agc_choices": agc_choices, "echo_choices": echo_labels, "gain_choices": self._gain_choices(),
+            "gain_factory": AGC_MAX_GAIN_FACTORY, "short_over_listen": SHORT_OVER_LISTEN,
+            "env_keys": {**{k: KEYS[k] for k in RANGES}, "agc": KEYS["agc"], "agc_max_gain": KEYS["agc_max_gain"],
                          "echo": f"{KEYS['echo_etail']} · {KEYS['echo_nlatten']}"},
             "chip_ok": not self.chip_problems, "chip_problems": self.chip_problems,
             "noise_at_check": max(self.meas.noise) if self.meas.noise else None,
@@ -711,8 +777,10 @@ class Session:
 
     def _thresholds_differ(self) -> bool:
         a, b = self.values, self.judged_values
-        return (a.listen_min_rms, a.short_answer_min_rms, a.wake_threshold, a.emergency_single) != (
-            b.listen_min_rms, b.short_answer_min_rms, b.wake_threshold, b.emergency_single)
+        return (a.listen_min_rms, a.short_answer_min_rms, a.wake_threshold, a.emergency_single,
+                a.approach_min_rms, a.band_min) != (
+            b.listen_min_rms, b.short_answer_min_rms, b.wake_threshold, b.emergency_single,
+            b.approach_min_rms, b.band_min)
 
     def _save_wav(self, kind: str, rec: Recording, expected: Optional[str]) -> None:
         if not rec.frames:

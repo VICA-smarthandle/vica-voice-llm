@@ -1,7 +1,9 @@
 """cancel/pause/resume 제어 intent 테스트 (LLM 호출 없이 검증 가능한 경로만)."""
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.langchain_intent_parser import _finalize, _IntentDraft, parse_intent
+from src.langchain_intent_parser import (_finalize, _IntentDraft, _shortcut_intent, is_instant_utterance,
+                                         parse_intent)
 from src.replies import (
     CANCEL_CONFIRM,
     COMMAND_DECLINED,
@@ -128,3 +130,45 @@ class TestResumeConfirmGate:
         assert result.intent == "resume"
         assert result.need_confirm is False
         assert result.reply == ""
+
+
+class TestPauseResumeTextRules:
+    """일시정지·재개 말은 LLM 없이 읽는다(3-나-1, 설계 2026-11-18 4.2). 11-18 실기: 로컬 LLM 이 이 말들을 407호 이동으로 읽었다."""
+
+    @pytest.mark.parametrize("said", ["잠깐", "잠깐.", "잠시", "잠깐만", "잠시만요"])
+    def test_short_pause_words(self, said):
+        result = _shortcut_intent(said, [], [DEST])
+        assert (result.intent, result.need_confirm, result.reply) == ("pause", False, PAUSE_ACK)
+        assert is_instant_utterance(said)
+
+    @pytest.mark.parametrize("said", ["잠깐", "잠시"])
+    def test_bare_pause_words_may_be_a_time_answer(self, said):
+        assert _shortcut_intent(said, [], [DEST], dialog_state="asking_wait_time", local=True) is None
+        assert _shortcut_intent("잠깐만", [], [DEST], dialog_state="asking_wait_time", local=True).intent == "pause"
+
+    @pytest.mark.parametrize("said", [
+        "다시 가자.", "다시 가", "다시 가줘", "다시 출발", "다시 출발.", "다시 출발해", "다시 출발해줘", "다시 출발하자",
+        "출발", "출발해", "출발해줘", "출발하자", "계속 가자", "계속 가", "계속 가줘",
+        "다시 가요", "다시 출발해요", "다시 출발해 주세요", "출발해요", "출발해 주세요", "계속 가요", "계속 가 주세요",
+        "다시 가 주세요", "다시 가줘요", "다시 출발해줘요", "출발해줘요", "계속 가줘요",
+    ])
+    def test_resume_words_ask_before_moving(self, said):
+        result = _shortcut_intent(said, [], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", True, RESUME_CONFIRM)
+
+    @pytest.mark.parametrize("dialog_state", ["", "idle", "navigating", "waiting", "asking_next", "paused_handle"])
+    def test_resume_words_only_while_paused(self, dialog_state):
+        for said in ("다시 가자.", "출발"):
+            assert _shortcut_intent(said, [], [DEST], dialog_state=dialog_state, local=True) is None
+
+    @pytest.mark.parametrize("said", ["다시 가자고 했잖아", "출발지가 어디야", "화장실로 다시 가자", "다시"])
+    def test_longer_sentences_are_left_to_the_llm(self, said):
+        assert _shortcut_intent(said, [], [DEST], dialog_state="paused", local=True) is None
+
+    def test_resume_word_answers_the_open_resume_question(self):
+        result = _shortcut_intent("다시 가자", [AIMessage(RESUME_CONFIRM)], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", False, "")
+
+    def test_resume_word_during_cancel_question_asks_anew(self):
+        result = _shortcut_intent("다시 가자", [AIMessage(CANCEL_CONFIRM)], [DEST], dialog_state="paused", local=True)
+        assert (result.intent, result.need_confirm, result.reply) == ("resume", True, RESUME_CONFIRM)

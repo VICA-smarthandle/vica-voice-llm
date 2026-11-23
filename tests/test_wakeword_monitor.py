@@ -398,3 +398,148 @@ def test_out_of_window_speech_still_rejected_without_followup():
     results = run_frames(m, 2 + POST_ROLL_FRAMES, LOUD)
     assert "reject" in results
     assert texts == []
+
+
+from src.speaker_follow import Verdict  # noqa: E402
+
+
+class FakeSpeaker:
+    """정해 둔 판정을 돌려주고 호출을 기록한다."""
+
+    def __init__(self, verdict: Verdict):
+        self.verdict = verdict
+        self.wake_lens = []
+        self.checks = []
+        self.states = []
+
+    def note_wake_audio(self, audio, now):
+        self.wake_lens.append(len(audio))
+
+    def check(self, audio, is_wake_window, doa, speech_sec, now, text=""):
+        self.checks.append({"is_wake_window": is_wake_window, "doa": doa, "text": text})
+        return self.verdict
+
+    def on_dialog_state(self, state, now):
+        self.states.append(state)
+
+
+def _verdict(drop: bool) -> Verdict:
+    return Verdict("fail" if drop else "pass", 0.3, -1.0, "wake+utt", 0.4, None, drop, "시험")
+
+
+def make_spk(fake: Fake, speaker, order: list, clips: list, states: list):
+    return WakewordMonitor(
+        on_emergency=lambda e: order.append(("emergency", e)),
+        on_user_text=lambda t: order.append(("text", t)),
+        on_listen_state=states.append,
+        on_listen_clip=lambda a, d: clips.append(d),
+        predict=fake.predict,
+        transcribe=fake.transcribe,
+        speaker=speaker,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+
+
+def _wake_and_speak(m, doas=None):
+    run_frames(m, 2, LOUD)
+    for i in range(5):
+        d = None if doas is None else doas[i % len(doas)]
+        m.process_frame(LOUD, now=1.0 + i * 0.08, vad=True, doa=d)
+    return run_frames(m, 12, QUIET, t0=2.0)
+
+
+def test_wake_audio_copied_on_wake():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    assert run_frames(m, 2, LOUD)[-1] == "wake"
+    assert spk.wake_lens == [2 * 1280]
+
+
+def test_drop_verdict_suppresses_text():
+    spk = FakeSpeaker(_verdict(True))
+    order, clips, states = [], [], []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, clips, states)
+    results = _wake_and_speak(m)
+    assert "user_text" not in results
+    assert [k for k, _ in order] == ["verdict"]
+    assert clips[-1]["result"] == "spk-drop" and clips[-1]["spk_verdict"] == "fail"
+    assert any(s.startswith("empty:speaker") for s in states)
+
+
+def test_verdict_callback_before_text():
+    spk = FakeSpeaker(_verdict(False))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, order, [], [])
+    _wake_and_speak(m)
+    assert order == [("verdict", "pass"), ("text", "화장실 가자")]
+    assert spk.checks[0]["is_wake_window"] is True and spk.checks[0]["text"] == "화장실 가자"
+
+
+def test_doa_median_passed():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자"), spk, [], [], [])
+    _wake_and_speak(m, doas=[170.0, 182.0, 190.0])
+    assert spk.checks[0]["doa"] == 182.0
+
+
+def test_set_dialog_state_forwarded():
+    spk = FakeSpeaker(_verdict(False))
+    m = make_spk(Fake(scores=[]), spk, [], [], [])
+    m.set_dialog_state("confirming")
+    assert spk.states == ["confirming"]
+
+
+def test_no_speaker_unchanged():
+    order = []
+    m = WakewordMonitor(on_emergency=lambda e: None, on_user_text=lambda t: order.append(t),
+                        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="화장실 가자").predict,
+                        transcribe=lambda a: "화장실 가자")
+    _wake_and_speak(m)
+    m.set_dialog_state("confirming")
+    assert order == ["화장실 가자"]
+
+
+def test_drop_keeps_stop_words_in_text_path():
+    """C1: 다른 사람 말이라도 멈춤 말이 들었으면 버리지 않는다(글자 경로의 2차 정지, D12)."""
+    spk = FakeSpeaker(_verdict(True))
+    order = []
+    m = make_spk(Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40, text="멈춰 멈춰 앞에 사람 있어요"),
+                 spk, order, [], [])
+    _wake_and_speak(m)
+    assert ("text", "멈춰 멈춰 앞에 사람 있어요") in order
+
+
+def _audio_monitor(verdict, text):
+    spk = FakeSpeaker(verdict)
+    order = []
+    m = WakewordMonitor(
+        on_emergency=lambda e: None, on_user_text=lambda t: order.append(("text", t)),
+        on_user_audio=lambda a: order.append(("audio", len(a))),
+        predict=Fake(scores=[(0.9, 0), (0.9, 0)] + [(0, 0)] * 40).predict,
+        transcribe=lambda a: text, speaker=spk,
+        on_speaker_verdict=lambda v: order.append(("verdict", v.verdict)),
+    )
+    return m, order
+
+
+def test_audio_mode_drop_sends_no_audio():
+    """C2: 소리 의도 모드 — 판정을 소리 발송 앞에서 하고, 버리면 소리도 보내지 않는다."""
+    m, order = _audio_monitor(_verdict(True), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order] == ["verdict"]
+
+
+def test_audio_mode_verdict_before_audio():
+    m, order = _audio_monitor(_verdict(False), "화장실 가자")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    assert [o[0] for o in order][:2] == ["verdict", "audio"]
+
+
+def test_audio_mode_drop_but_stop_word_still_sends_audio():
+    m, order = _audio_monitor(_verdict(True), "멈춰 멈춰")
+    m._emit_free = lambda kind, value: order.append((kind, value if kind == "text" else len(value)))
+    _wake_and_speak(m)
+    kinds = [o[0] for o in order]
+    assert "audio" in kinds and ("text", "멈춰 멈춰") in order

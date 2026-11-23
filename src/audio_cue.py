@@ -67,3 +67,41 @@ def approach_chime() -> np.ndarray:
     wave[gap:] += second
     peak = float(np.max(np.abs(wave)))
     return (wave / peak).astype(np.float32) if peak > 0 else wave.astype(np.float32)
+
+
+LOCATOR_SWEEP_HZ = (250.0, 750.0)
+LOCATOR_ON_SEC = 0.21
+LOCATOR_PERIOD_SEC = 0.375
+LOCATOR_COUNT = 11
+LOCATOR_TOTAL_SEC = 4.0
+LOCATOR_THIRD_GAIN = 3 ** -1.3
+LOCATOR_CLICK_SEC = 0.003
+LOCATOR_CLICK_GAIN = 0.15
+LOCATOR_DBFS = -15.0
+
+
+def _locator_pulse() -> np.ndarray:
+    n = int(LOCATOR_ON_SEC * SAMPLE_RATE)
+    t = np.arange(n) / SAMPLE_RATE
+    f0, f1 = LOCATOR_SWEEP_HZ
+    k = np.log(f1 / f0) / LOCATOR_ON_SEC
+    phase = 2 * np.pi * f0 * (np.exp(k * t) - 1) / k
+    wave = np.sin(phase) + LOCATOR_THIRD_GAIN * np.sin(3 * phase)
+    attack, release = int(0.003 * SAMPLE_RATE), int(0.015 * SAMPLE_RATE)
+    wave[:attack] *= 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, attack))
+    wave[-release:] *= 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, release))
+    nc = int(LOCATOR_CLICK_SEC * SAMPLE_RATE)
+    click = np.diff(np.random.default_rng(0).standard_normal(nc + 1)) * np.hanning(nc)
+    wave[:nc] += LOCATOR_CLICK_GAIN * click / np.max(np.abs(click)) * np.max(np.abs(wave))
+    return wave
+
+
+def locator_beep() -> np.ndarray:
+    """위치 비프 한 묶음(4초). 재생 크기는 부르는 쪽이 정한다(LOCATOR_DBFS)."""
+    pulse = _locator_pulse()
+    total = int(LOCATOR_TOTAL_SEC * SAMPLE_RATE)
+    wave = np.zeros(total, dtype=np.float64)
+    for i in range(LOCATOR_COUNT):
+        start = int(round(i * LOCATOR_PERIOD_SEC * SAMPLE_RATE))
+        wave[start:start + len(pulse)] += pulse[: total - start]
+    return (wave / np.max(np.abs(wave))).astype(np.float32)

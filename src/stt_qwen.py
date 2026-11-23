@@ -114,8 +114,12 @@ class QwenTranscriber:
         text, lang = self._run(pcm, None)
         second = False
         if self._clean(text) and lang != "ko":
+            first = text
             text, _ = self._run(pcm, "ko")
             second = True
+            self._log(f"[보정] Qwen 언어 '{lang or '?'}' → 한국어로 다시: {first!r} → {text!r}")
+        elif text and not self._clean(text):
+            self._log(f"[보정] Qwen 문장부호뿐 → 빈칸: {text!r}")
         self.last = {"lang": lang or "none", "second_pass": second, "sec": time.monotonic() - t0}
         return self._clean(text)
 
@@ -130,6 +134,7 @@ class QwenTranscriber:
         if text and not is_emergency(text):
             checked = True
             if not self._clean(self._run(pcm, None)[0]):
+                self._log(f"[보정] 긴급 확인 {text!r} — 말소리 아님으로 봄 → 빈칸")
                 text = ""
         self.last = {"lang": "ko", "second_pass": checked, "sec": time.monotonic() - t0}
         return text

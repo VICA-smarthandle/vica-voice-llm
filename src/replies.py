@@ -1,6 +1,8 @@
 """로봇이 말하는 고정 문구 모음 (LLM 이 만들지 않는 말)."""
 from __future__ import annotations
 
+from . import vica_facts
+from .destination_loader import _josa_euro
 from .mission_phrases import josa_eun_neun
 
 EMERGENCY_REPLY = "안전을 위해 멈추겠습니다."
@@ -65,10 +67,20 @@ INVITE_ENDINGS = ("말씀하세요", "말씀해주세요", "말씀을해주세�
 def expects_answer(reply: str) -> bool:
     """이 발화가 사용자 답을 기대하는가 — 재청취 창을 열지 판정."""
     reply = reply.strip()
+    if _about_sentence(reply):
+        return False
     if reply.endswith("?"):
         return True
     tail = "".join(ch for ch in reply if not ch.isspace()).rstrip(".!~…")
     return tail.endswith(INVITE_ENDINGS)
+
+
+def _about_sentence(reply: str) -> bool:
+    """비카에 대한 정해진 대답(vica_facts.ABOUT_SENTENCES)과 글자까지 같은가 — 정해진 대답이 켜졌을 때만(fixed_answers.on())."""
+    if reply not in vica_facts.ABOUT_SENTENCES.values():
+        return False
+    from . import fixed_answers
+    return fixed_answers.on()
 
 
 def choose_between(names) -> str:
@@ -78,6 +90,36 @@ def choose_between(names) -> str:
         a, b = names
         return f"{a}{'과' if josa_eun_neun(a) == '은' else '와'} {b} 중 어디로 갈까요?"
     return f"{', '.join(names)} 중 어디로 갈까요?"
+
+
+NOT_AVAILABLE = "제가 아는 목적지 중에서 {what}{josa} 없는데, 어디로 안내해드릴까요?"
+UNNAMED_PLACE = "말씀하신 곳"
+_WANTED_MAX_CHARS = 20
+
+
+def not_available(wanted: str) -> str:
+    """없는 곳을 찾을 때 되묻는 말. 찾는 곳 이름이 비었거나 길거나 줄바꿈·물음표·긴급어가 있거나 한글이 없으면 '말씀하신 곳'으로 말한다."""
+    from .emergency_filter import detect_emergency
+
+    what = (wanted or "").strip()
+    if (not what or len(what) > _WANTED_MAX_CHARS or "\n" in what or "?" in what or "？" in what
+            or detect_emergency(what)
+            or not any("가" <= ch <= "힣" for ch in what)):
+        what = UNNAMED_PLACE
+    return NOT_AVAILABLE.format(what=what, josa=josa_eun_neun(what))
+
+
+PLACES_REPLY = "{names}{josa} 안내할 수 있습니다."
+_PLACES_MAX = 3
+
+
+def places_sentence(names) -> str:
+    """갈 수 있는 곳을 알리는 말. 이름이 없으면 빈 글자(말하지 않는다 — 부르는 쪽이 지금 길로 둔다)."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    head = ", ".join(names[:_PLACES_MAX]) + (" 등" if len(names) > _PLACES_MAX else "")
+    return PLACES_REPLY.format(names=head, josa=_josa_euro(head))
 
 
 def all_phrases() -> dict[str, str]:

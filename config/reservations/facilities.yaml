@@ -1,0 +1,10 @@
+- name: 세미나실
+  aliases: [세미나룸]
+  default_hours: 2
+  open: '09:00'
+  close: '18:00'
+- name: 상담실
+  aliases: []
+  default_hours: 2
+  open: '09:00'
+  close: '18:00'

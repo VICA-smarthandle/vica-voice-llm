@@ -1,4 +1,4 @@
-"""마이크 점검기 휴대폰 중계 — 페이지 하나와 실시간 통로 하나(websockets 15, 새 의존성 없음)."""
+"""마이크 점검기 앱 중계 — 실시간 통로 하나(/ws, websockets 15, 새 의존성 없음)."""
 from __future__ import annotations
 
 import asyncio
@@ -15,8 +15,8 @@ DEFAULT_PORT = 8770
 
 
 class LiveServer:
-    def __init__(self, page_html: str, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
-        self._page = page_html.encode("utf-8")
+    def __init__(self, page_html: Optional[str] = None, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
+        self._page = page_html.encode("utf-8") if page_html is not None else None
         self._host, self._want_port = host, port
         self.port: Optional[int] = None
         self.commands: "queue.Queue[dict]" = queue.Queue()
@@ -32,9 +32,9 @@ class LiveServer:
     def start(self, timeout: float = 5.0) -> None:
         self._thread.start()
         if not self._ready.wait(timeout):
-            raise RuntimeError("휴대폰 중계를 열지 못했습니다(시간 초과)")
+            raise RuntimeError("앱 중계를 열지 못했습니다(시간 초과)")
         if self._error is not None:
-            raise RuntimeError(f"휴대폰 중계를 열지 못했습니다: {self._error}")
+            raise RuntimeError(f"앱 중계를 열지 못했습니다: {self._error}")
 
     def stop(self) -> None:
         """여러 번 불러도, 시작 전·시작 실패 뒤에 불러도 안전하다."""
@@ -82,12 +82,12 @@ class LiveServer:
     def _process_request(self, connection, request):
         if request.path == "/ws":
             return None
-        if request.path in ("/", "/index.html"):
+        if self._page is not None and request.path in ("/", "/index.html"):
             headers = Headers([("Content-Type", "text/html; charset=utf-8"),
                                ("Content-Length", str(len(self._page))),
                                ("Cache-Control", "no-store")])
             return Response(200, "OK", headers, self._page)
-        return connection.respond(404, "없는 주소입니다\n")
+        return connection.respond(404, "마이크 점검은 앱에서 합니다\n")
 
     async def _handler(self, ws) -> None:
         self._clients.add(ws)
